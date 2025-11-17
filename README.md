@@ -150,24 +150,22 @@ DRL_Robot_Path_Planning/
 
 ## ROS2 Workspace Usage
 
+### Additional install
+```bash
+apt update
+apt install ros-humble-rmw-cyclonedds-cpp
+
+apt-get update
+apt-get install -y   ros-humble-openvdb-vendor   ros-humble-spatio-temporal-voxel-layer
+```
+
 ### Building
 
 **Full workspace build:**
 ```bash
 cd ros2_ws
 source /opt/ros/humble/setup.bash
-colcon build
-```
-
-**Single package build:**
-```bash
-colcon build --packages-select scout_nav2
-```
-
-**Clean build:**
-```bash
-rm -rf build/ install/ log/
-colcon build
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
 ### Sourcing
@@ -335,31 +333,7 @@ docker run --gpus all nvidia/cuda:11.8.0-base-ubuntu22.04 nvidia-smi
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
-### Gazebo Display Issues
-
-For GUI applications (Gazebo, RViz):
-```bash
-# On host, allow X11 connections
-xhost +local:docker
-
-# Run container with display forwarding
-docker run --gpus all -it --rm \
-  --env="DISPLAY" \
-  --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
-  -v $(pwd):/root/DRL_Robot_Path_Planning \
-  --network host \
-  drl_path_planning
-```
-
 ### Build Failures
-
-**Clean and rebuild:**
-```bash
-cd ros2_ws
-rm -rf build/ install/ log/
-source /opt/ros/humble/setup.bash
-colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
-```
 
 **Check package dependencies:**
 ```bash
