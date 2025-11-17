@@ -182,60 +182,169 @@ echo 'source /root/DRL_Robot_Path_Planning/ros2_ws/install/setup.bash' >> ~/.bas
 
 ## Stable-Baselines3 Integration
 
-This project uses a locally cloned version of Stable-Baselines3 installed in editable mode, allowing you to:
+This project uses a locally cloned version of [Stable-Baselines3 (SB3)](https://github.com/DLR-RM/stable-baselines3) installed in editable mode. SB3 is a set of reliable implementations of reinforcement learning algorithms in PyTorch, providing state-of-the-art RL methods with extensive documentation and testing.
 
-- Modify RL algorithms for custom robot behaviors
-- Experiment with new network architectures
-- Add custom callbacks and wrappers
-- Debug training issues
+### Why Editable Install?
+
+Installing SB3 in editable mode allows you to:
+
+- **Customize algorithms:** Modify RL algorithms for specific robot behaviors
+- **Experiment freely:** Add new network architectures and features
+- **Debug efficiently:** Step through algorithm code during training
+- **Contribute back:** Develop improvements that can be shared with the community
+- **Add custom callbacks:** Implement specialized logging, checkpointing, or early stopping
+
+### Main Features
+
+| **Feature**                | **Supported** |
+| --------------------------- | ------------- |
+| State of the art RL methods | ✓ |
+| Documentation               | ✓ |
+| Custom environments         | ✓ |
+| Custom policies             | ✓ |
+| Common interface            | ✓ |
+| `Dict` observation space support | ✓ |
+| Jupyter/Notebook friendly   | ✓ |
+| Tensorboard support         | ✓ |
+| PEP8 code style             | ✓ |
+| Custom callbacks            | ✓ |
+| High code coverage          | ✓ |
+| Type hints                  | ✓ |
+
+### Available Algorithms
+
+**Core Algorithms (in main SB3 repository):**
+
+| **Name** | **Recurrent** | `Box` | `Discrete` | `MultiDiscrete` | `MultiBinary` | **Multi Processing** |
+| -------- | ------------- | ----- | ---------- | --------------- | ------------- | -------------------- |
+| A2C      | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| DDPG     | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| DQN      | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| HER      | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| PPO      | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| SAC      | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| TD3      | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+
+**Additional Algorithms (in [SB3-Contrib](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib)):**
+
+| **Name** | **Recurrent** | `Box` | `Discrete` | `MultiDiscrete` | `MultiBinary` | **Multi Processing** |
+| -------- | ------------- | ----- | ---------- | --------------- | ------------- | -------------------- |
+| ARS      | ✗ | ✓ | ✓ | ✗ | ✗ | ✓ |
+| CrossQ   | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| QR-DQN   | ✗ | ✗ | ✓ | ✗ | ✗ | ✓ |
+| RecurrentPPO | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| TQC      | ✗ | ✓ | ✗ | ✗ | ✗ | ✓ |
+| TRPO     | ✗ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Maskable PPO | ✗ | ✗ | ✓ | ✓ | ✓ | ✓ |
+
+**Action Space Types:**
+- `Box`: Continuous action space (N-dimensional box)
+- `Discrete`: Single discrete action from a list
+- `MultiDiscrete`: Multiple discrete actions (one from each set)
+- `MultiBinary`: Binary actions (any combination)
 
 ### Training Example
 
+**Basic Training:**
 ```python
 import gymnasium as gym
 from stable_baselines3 import PPO
 
+# Simple one-liner training
+model = PPO("MlpPolicy", "CartPole-v1").learn(10_000)
+```
+
+**Advanced Training with Custom ROS2 Environment:**
+```python
+import gymnasium as gym
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
+
 # Create custom ROS2 environment (to be implemented)
 env = gym.make("ScoutNav-v1")
+eval_env = gym.make("ScoutNav-v1")
 
-# Initialize PPO agent
+# Setup callbacks
+checkpoint_callback = CheckpointCallback(
+    save_freq=10000,
+    save_path="./models/",
+    name_prefix="scout_ppo"
+)
+
+eval_callback = EvalCallback(
+    eval_env,
+    best_model_save_path="./models/best/",
+    log_path="./logs/eval/",
+    eval_freq=5000,
+    deterministic=True,
+    render=False
+)
+
+# Initialize PPO agent with custom parameters
 model = PPO(
     "MlpPolicy",
     env,
     verbose=1,
-    device="cuda",  # Use GPU
-    tensorboard_log="./logs/"
+    device="cuda",  # Use GPU acceleration
+    tensorboard_log="./logs/tensorboard/",
+    learning_rate=3e-4,
+    n_steps=2048,
+    batch_size=64,
+    n_epochs=10,
+    gamma=0.99,
+    gae_lambda=0.95,
+    clip_range=0.2,
+    ent_coef=0.01
 )
 
-# Train the agent
-model.learn(total_timesteps=1_000_000)
+# Train the agent with callbacks
+model.learn(
+    total_timesteps=1_000_000,
+    callback=[checkpoint_callback, eval_callback]
+)
 
-# Save the model
-model.save("scout_navigation_ppo")
+# Save the final model
+model.save("scout_navigation_ppo_final")
 
 # Load and evaluate
-model = PPO.load("scout_navigation_ppo")
+model = PPO.load("scout_navigation_ppo_final")
 obs, info = env.reset()
 for _ in range(1000):
     action, _states = model.predict(obs, deterministic=True)
     obs, reward, terminated, truncated, info = env.step(action)
     if terminated or truncated:
         obs, info = env.reset()
+
+env.close()
 ```
 
-### Available Algorithms
+### Related Projects
 
-Stable-Baselines3 provides the following RL algorithms:
+- **[RL Baselines3 Zoo](https://github.com/DLR-RM/rl-baselines3-zoo)**: Training framework with tuned hyperparameters and scripts for training, evaluation, and hyperparameter tuning
+- **[SB3-Contrib](https://github.com/Stable-Baselines-Team/stable-baselines3-contrib)**: Experimental features like Recurrent PPO, TQC, QR-DQN, and Maskable PPO
+- **[Stable Baselines Jax (SBX)](https://github.com/araffin/sbx)**: Jax implementation with algorithms like DroQ and CrossQ (up to 20x faster!)
 
-| Algorithm | Action Space | Recurrent | Multi-Processing |
-|-----------|--------------|-----------|------------------|
-| A2C | Box, Discrete | ✗ | ✓ |
-| DDPG | Box | ✗ | ✓ |
-| DQN | Discrete | ✗ | ✓ |
-| HER | Box, Discrete | ✗ | ✓ |
-| PPO | Box, Discrete, MultiDiscrete | ✗ | ✓ |
-| SAC | Box | ✗ | ✓ |
-| TD3 | Box | ✗ | ✓ |
+### Installation & Testing
+
+SB3 is already installed in editable mode in the Docker container. To verify:
+
+```bash
+# Check installation
+pip show stable-baselines3
+
+# Run tests (if needed)
+cd /root/DRL_Robot_Path_Planning/stable-baselines3
+pip install -e '.[tests]'
+pytest tests/
+
+# Type checking
+pip install mypy
+make type
+
+# Code style check
+pip install ruff
+make lint
+```
 
 ## CycloneDDS Configuration
 
@@ -251,41 +360,182 @@ export CYCLONEDDS_URI=file:///root/DRL_Robot_Path_Planning/cyclonedds_config.xml
 - Max message size: 65500 bytes
 - Optimized for low-latency communication
 
-## Scout Robot Package
+## Scout Robot Navigation Package
 
-The `scout_nav2` package includes:
+The `scout_nav2` package provides a complete navigation solution for the AgileX Scout robot using Navigation2 (Nav2) stack with Ignition Gazebo v6 (Fortress). The robot is a skid-steering mobile robot with a 3D LiDAR sensor.
 
-- **agilex_scout**: Robot description (URDF), meshes, and Gazebo launch files
-- **scout_nav2**: Navigation2 parameter configuration and launch files
-- **nav2_bringup**: SLAM, localization, and navigation launch files
-- **aws-robomaker-small-warehouse-world**: Realistic warehouse simulation environment
+### Package Components
 
-### Launch Files
+The ROS2 workspace includes the following packages:
 
-**Gazebo Simulation:**
+1. **`agilex_scout`**: URDF robot description, meshes, Gazebo simulation configuration, and launch files for both simulation and real robot control
+2. **`scout_nav2`**: Navigation2 configuration files and launch files specifically tuned for the AgileX Scout robot
+   - `launch/`: Main launch file for the navigation stack
+   - `maps/`: Saved maps created by SLAM toolbox (pgm/yaml and data/posegraph formats)
+   - `params/`: YAML configuration files for different navigation scenarios
+   - `rviz/`: RViz configuration files for visualization
+3. **`nav2_bringup_custom`**: Custom fork of `nav2_bringup` package with additional features including `nav2_collision_monitor` node
+4. **`spatio-temporal-voxel-layer`**: Advanced costmap plugin for 3D obstacle detection
+5. **`aws-robomaker-small-warehouse-world`**: Realistic warehouse simulation environment with cluttered and open spaces
+
+### Dependencies
+
+Install required dependencies:
+
 ```bash
-ros2 launch agilex_scout simulate_control_gazebo.launch.py
+# Navigation and SLAM packages
+sudo apt install ros-humble-navigation2
+sudo apt install ros-humble-pointcloud-to-laserscan
+sudo apt install ros-humble-slam-toolbox
+
+# Gazebo simulation
+sudo apt install ros-humble-ros-gzfortress
+sudo apt install ignition-gazebo6
+
+# Advanced costmap layer (may require significant build time/memory)
+sudo apt install ros-humble-spatio-temporal-voxel-layer
+
+# DDS middleware (for optimized communication)
+sudo apt install ros-humble-rmw-cyclonedds-cpp
+
+# Alternative: Install spatio-temporal-voxel-layer via apt (faster)
+sudo apt install ros-humble-openvdb-vendor ros-humble-spatio-temporal-voxel-layer
 ```
 
-**SLAM Mapping:**
+### Navigation Configuration Files
+
+The `scout_nav2/params/` folder contains carefully tuned navigation parameters for different scenarios:
+
+| Configuration File | Localization | Robot Type | LiDAR Type | Description |
+| ------------------ | ------------ | ---------- | ---------- | ----------- |
+| `scout_amcl.yaml` | AMCL | Real Scout | 3D | Navigation with AMCL localization and SLAM toolbox mapping |
+| `scout_slam_localization.yaml` | SLAM Toolbox | Real Scout | 3D | Navigation using SLAM toolbox for localization only |
+| `sim_lidar2d_amcl.yaml` | AMCL | Simulated | 2D | Simulation with 2D LiDAR and AMCL localization |
+| `sim_lidar3d_amcl.yaml` | AMCL | Simulated | 3D | Simulation with 3D LiDAR and AMCL localization |
+| `sim_slam_localization.yaml` | SLAM Toolbox | Simulated | 3D | Simulation using SLAM toolbox for localization |
+
+The appropriate configuration is automatically selected based on launch file parameters.
+
+### Map Formats
+
+Maps are saved in `scout_nav2/maps/` with two possible formats:
+
+**1. AMCL-compatible maps (for `map_server`):**
+- `*.pgm`: Grayscale image of the 2D occupancy grid
+- `*.yaml`: Map metadata (resolution, origin, thresholds)
+
+**2. SLAM Toolbox serialized maps (for efficient localization):**
+- `*.data`: Binary serialized map data
+- `*.posegraph`: Pose graph for optimization
+
+### Launch Files & Usage
+
+#### Simulation Environment
+
+**Launch Gazebo simulation with Scout robot:**
+
 ```bash
-ros2 launch nav2_bringup slam_launch.py
+# Terminal 1: Start simulation
+ros2 launch agilex_scout simulate_control_gazebo.launch.py \
+  lidar_type:=3d \
+  rviz:=true
 ```
 
-**Localization:**
+**Parameters:**
+- `lidar_type`: Choose `3d` for PointCloud2 sensor or `2d` for LaserScan
+- `rviz`: Set to `true` to launch RViz visualization, `false` for Gazebo only
+
+**Launch Navigation2 stack:**
+
 ```bash
-ros2 launch nav2_bringup localization_launch.py
+# Terminal 2: Start navigation
+ros2 launch scout_nav2 nav2.launch.py \
+  simulation:=true \
+  slam:=true \
+  localization:=amcl
 ```
 
-**Navigation:**
+**Parameters:**
+- `simulation`: `true` for Gazebo simulation, `false` for real robot
+- `slam`: `true` for SLAM mapping mode, `false` for localization with existing map
+- `localization`: Choose between `amcl` (Adaptive Monte Carlo Localization) or `slam_toolbox`
+
+#### Real Robot Usage
+
+**Launch real Scout robot with LiDAR:**
+
 ```bash
-ros2 launch nav2_bringup navigation_launch.py
+# Terminal 1: Start robot and sensors
+ros2 launch agilex_scout scout_robot_lidar.launch.py
+
+# Terminal 2: Start navigation
+ros2 launch scout_nav2 nav2.launch.py \
+  simulation:=false \
+  slam:=false \
+  localization:=amcl
 ```
 
-**Complete Nav2 Stack:**
+### Building the Navigation Stack
+
+The navigation packages may require significant build time due to the `spatio-temporal-voxel-layer` dependency on `openvdb`:
+
 ```bash
-ros2 launch scout_nav2 nav2.launch.py
+cd /root/DRL_Robot_Path_Planning/ros2_ws
+source /opt/ros/humble/setup.bash
+
+# Standard build
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# If build consumes too much memory, limit parallel jobs
+MAKEFLAGS="-j4" colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+
+# Build only navigation packages
+colcon build --packages-select scout_nav2 agilex_scout nav2_bringup_custom
 ```
+
+### Navigation Workflow
+
+**1. SLAM Mapping (create a new map):**
+
+```bash
+# Start simulation with 3D LiDAR
+ros2 launch agilex_scout simulate_control_gazebo.launch.py lidar_type:=3d rviz:=true
+
+# Start SLAM mode
+ros2 launch scout_nav2 nav2.launch.py simulation:=true slam:=true localization:=slam_toolbox
+
+# Drive the robot around using teleop or Nav2 goals
+# Save the map when complete using SLAM Toolbox RViz plugin
+```
+
+**2. Localization & Navigation (use existing map):**
+
+```bash
+# Start simulation
+ros2 launch agilex_scout simulate_control_gazebo.launch.py lidar_type:=3d rviz:=true
+
+# Start navigation with AMCL localization
+ros2 launch scout_nav2 nav2.launch.py simulation:=true slam:=false localization:=amcl
+
+# Set initial pose estimate in RViz (2D Pose Estimate)
+# Send navigation goals using Nav2 Goal button in RViz
+```
+
+### Advanced Features
+
+- **Collision Monitoring**: Integrated `nav2_collision_monitor` for enhanced safety
+- **3D Obstacle Detection**: Spatio-temporal voxel layer for dynamic 3D environments
+- **Hybrid Approach**: Can combine classical Nav2 with RL-based path planning
+- **Real/Sim Parity**: Consistent parameter sets for both simulation and real robot deployment
+
+### Integration with DRL
+
+The Scout Nav2 package provides a foundation for integrating deep reinforcement learning:
+
+- **Sensor Data**: 3D LiDAR point clouds converted to 2D laser scans for RL observation space
+- **Action Space**: Velocity commands (linear and angular) via `cmd_vel` topic
+- **Reward Signals**: Can be derived from Nav2 costmaps, goal distance, and collision events
+- **Hybrid Control**: Switch between Nav2 planners and RL policies based on situation
 
 ## CUDA Environment
 
