@@ -42,27 +42,30 @@ The robot learns to navigate through complex environments (AWS Small Warehouse w
 ### 1. Build Docker Image
 
 ```bash
-docker build -t drl_path_planning .
+docker build -t drl_robot_path_planning:first .
 ```
 
 ### 2. Run Container
 
 **With GPU support:**
 ```bash
-docker run --gpus all -it --rm \
-  -v $(pwd):/root/DRL_Robot_Path_Planning \
-  --network host \
-  --env="DISPLAY" \
-  --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
-  drl_path_planning
-```
+docker run -it \
+  --privileged \
+  --gpus all \
+  --net=host \
+  --name DRL_Robot_Path_Planning \
+  -e DISPLAY=$DISPLAY \
+  -e NVIDIA_DRIVER_CAPABILITIES=all \
+  -e RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+  -e CYCLONEDDS_URI=file:///root/cyclonedds_config.xml \
+  -v /tmp/.X11-unix:/tmp/.X11-unix \
+  -v /home/sangukbae/DRL_Robot_Path_Planning:/root/DRL_Robot_Path_Planning \
+  -v /home/sangukbae/DRL_Robot_Path_Planning/cyclonedds_config.xml:/root/cyclonedds_config.xml \
+  drl_robot_path_planning:first \
+  /bin/bash
 
-**CPU only (for testing):**
-```bash
-docker run -it --rm \
-  -v $(pwd):/root/DRL_Robot_Path_Planning \
-  --network host \
-  drl_path_planning
+# in local terminal
+xhost +local:
 ```
 
 ### 3. Build ROS2 Workspace
