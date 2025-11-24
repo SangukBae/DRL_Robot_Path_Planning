@@ -66,5 +66,85 @@
                 </visual>
             </link>
         </model>
+        
+        <!-- === Scout Mini size rulers (0.612, 0.580, 0.245 m) === -->
+        <model name="scout_rulers">
+          <static>true</static>
+          <!-- world 원점 근처에 둠 -->
+          <pose>0 0 0 0 0 0</pose>
+          <link name="ruler_link">
+
+            <!-- 0.612 m 자 (X 방향, 빨간색) -->
+            <collision name="ruler_x_collision">
+              <!-- 길이 0.612, 중심을 x=0.306 에 둠 -->
+              <pose>0.306 0 0.01 0 0 0</pose>
+              <geometry>
+                <box>
+                  <size>0.612 0.02 0.02</size>
+                </box>
+              </geometry>
+            </collision>
+            <visual name="ruler_x_visual">
+              <pose>0.306 0 0.01 0 0 0</pose>
+              <geometry>
+                <box>
+                  <size>0.612 0.02 0.02</size>
+                </box>
+              </geometry>
+              <material>
+                <ambient>1 0 0 1</ambient>
+                <diffuse>1 0 0 1</diffuse>
+              </material>
+            </visual>
+
+            <!-- 0.580 m 자 (Y 방향, 초록색) -->
+            <collision name="ruler_y_collision">
+              <!-- 길이 0.580, 중심을 y=0.29 에 둠 -->
+              <pose>0 0.29 0.01 0 0 0</pose>
+              <geometry>
+                <box>
+                  <size>0.02 0.580 0.02</size>
+                </box>
+              </geometry>
+            </collision>
+            <visual name="ruler_y_visual">
+              <pose>0 0.29 0.01 0 0 0</pose>
+              <geometry>
+                <box>
+                  <size>0.02 0.580 0.02</size>
+                </box>
+              </geometry>
+              <material>
+                <ambient>0 1 0 1</ambient>
+                <diffuse>0 1 0 1</diffuse>
+              </material>
+            </visual>
+
+            <!-- 0.245 m 자 (Z 방향으로 세워진 자, 파란색) -->
+            <collision name="ruler_z_collision">
+              <!-- 높이 0.245, 바닥(0)~0.245 까지 세움: 중심 z=0.1225 -->
+              <pose>0 0 0.1225 0 0 0</pose>
+              <geometry>
+                <box>
+                  <size>0.02 0.02 0.245</size>
+                </box>
+              </geometry>
+            </collision>
+            <visual name="ruler_z_visual">
+              <pose>0 0 0.1225 0 0 0</pose>
+              <geometry>
+                <box>
+                  <size>0.02 0.02 0.245</size>
+                </box>
+              </geometry>
+              <material>
+                <ambient>0 0 1 1</ambient>
+                <diffuse>0 0 1 1</diffuse>
+              </material>
+            </visual>
+
+          </link>
+        </model>
+        <!-- === 자 모델 끝 === -->
     </world>
 </sdf>
