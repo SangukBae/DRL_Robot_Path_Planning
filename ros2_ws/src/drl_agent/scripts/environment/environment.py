@@ -21,15 +21,16 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import PointCloud2
 from visualization_msgs.msg import Marker, MarkerArray
-from gazebo_msgs.msg import EntityState
 
-from std_srvs.srv import Empty
-from gazebo_msgs.srv import SetEntityState
 from drl_agent_interfaces.srv import Step, Reset, Seed, GetDimensions, SampleActionSpace
 
 import point_cloud2 as pc2
 from file_manager import load_yaml
 from sensor_msgs.msg import LaserScan
+
+from geometry_msgs.msg import Pose
+from ros_gz_interfaces.msg import Entity as GzEntity
+from ros_gz_interfaces.srv import ControlWorld, SetEntityPose
 
 
 class Environment(Node):
@@ -200,24 +201,33 @@ class Environment(Node):
         self.srv_action_space_sample = self.create_service(
             SampleActionSpace, "action_space_sample", self.sample_action_callback
         )
+
+        # ----------------------------------------------------------------------------------------------
+        # ====================================Ignition Start============================================
+        # ----------------------------------------------------------------------------------------------
         # Initialize clients
-        self.unpause = self.create_client(
-            Empty, "/unpause_physics", callback_group=self.clients_callback_group
+        self.declare_parameter("world_name", "default")
+        self.world_name = (
+            self.get_parameter("world_name")
+            .get_parameter_value()
+            .string_value
         )
-        self.pause = self.create_client(
-            Empty, "/pause_physics", callback_group=self.clients_callback_group
+        # /world/<world_name>/control  (pause / reset 등)
+        self.world_control = self.create_client(
+            ControlWorld,
+            f"/world/{self.world_name}/control",
+            callback_group=self.clients_callback_group,
         )
-        self.reset_proxy = self.create_client(
-            Empty, "/reset_world", callback_group=self.clients_callback_group
+        # /world/<world_name>/set_pose (모델 텔레포트)
+        self.set_entity_pose = self.create_client(
+            SetEntityPose,
+            f"/world/{self.world_name}/set_pose",
+            callback_group=self.clients_callback_group,
         )
-        # self.set_model_state = self.create_client(
-        #     SetEntityState,
-        #     "gazebo/set_entity_state",
-        #     callback_group=self.clients_callback_group,
-        # )
-        self.set_model_state = self.create_client(
-            SetEntityState, "/gazebo/set_entity_state", callback_group=self.clients_callback_group
-        )
+        # ----------------------------------------------------------------------------------------------
+        # ====================================Ignition Finish===========================================
+        # ----------------------------------------------------------------------------------------------
+
         # Sensor subscriptions QoS
         qos_profile = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         qos_best = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -260,14 +270,14 @@ class Environment(Node):
         self.bins = [[start + i*width, start + (i+1)*width] for i in range(self.environment_dim)]
         self.bins[-1][-1] += eps
 
+        # ----------------------------------------------------------------------------------------------
+        # ====================================Ignition Start============================================
+        # ----------------------------------------------------------------------------------------------
         # Initialize commands
         self.velocity_command = Twist()
-        self.set_agent_state = EntityState()
-        self.set_agent_state.name = self.agent_name
-        self.set_obstacle_state = EntityState()
-        # Command requests
-        self.set_agent_state_req = SetEntityState.Request()
-        self.set_static_obs_state_req = SetEntityState.Request()
+        # ----------------------------------------------------------------------------------------------
+        # ====================================Ignition Finish===========================================
+        # ----------------------------------------------------------------------------------------------
 
         # Initialize environment and agent state
         self.environment_state = None
@@ -490,7 +500,7 @@ class Environment(Node):
             cmd_vel_topic = "/cmd_vel"
             odom_topic    = "/odometry"
             laser_topic   = "/laser_scan"
-        
+
         self.get_logger().info("[TOPICS]")
         self.get_logger().info(f"  cmd_vel_topic         : {cmd_vel_topic}")
         self.get_logger().info(f"  odom_topic            : {odom_topic}")
@@ -666,43 +676,85 @@ class Environment(Node):
             if self.agent_state is None:
                 return np.array([np.inf, 0.0, 0.0, 0.0], dtype=float)
             return self.agent_state.copy()
-
-    def set_gazebo_model_state(self, model_state):
-        """Chage the position of gazebo model"""
-        while not self.set_model_state.wait_for_service(timeout_sec=1.0):
+        
+    # ----------------------------------------------------------------------------------------------
+    # ====================================Ignition Start============================================
+    # ----------------------------------------------------------------------------------------------
+    def _wait_for_srv(self, client, name: str):
+        """공통: 서비스가 뜰 때까지 대기"""
+        while not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(
-                "Service /gazebo/set_entity_state not available, waiting again..."
+                f"Service {name} not available, waiting again..."
             )
+
+    def pause_world(self, pause: bool):
+        """Ignition 월드 일시정지 / 재개"""
+        srv_name = f"/world/{self.world_name}/control"
+        self._wait_for_srv(self.world_control, srv_name)
+
+        req = ControlWorld.Request()
+        req.world_control.pause = bool(pause)
         try:
-            self.set_model_state.call_async(model_state)
+            self.world_control.call_async(req)
         except Exception as e:
             self.get_logger().error(
-                "/gazebo/set_entity_state service call failed: %s" % str(e)
+                f"{srv_name} service call failed: {e}"
+            )
+            sys.exit(-1)
+
+    def reset_world(self):
+        """Ignition 월드 리셋 (시간 + 모델)"""
+        srv_name = f"/world/{self.world_name}/control"
+        self._wait_for_srv(self.world_control, srv_name)
+
+        req = ControlWorld.Request()
+        # 모든 것 리셋
+        req.world_control.reset.all = True
+        # 권장: 리셋하면서 바로 pause 상태로
+        req.world_control.pause = True
+        try:
+            self.world_control.call_async(req)
+        except Exception as e:
+            self.get_logger().error(
+                f"{srv_name} (reset) service call failed: {e}"
+            )
+            sys.exit(-1)
+
+    def set_entity_pose_ignition(self, name, x, y, z, qx, qy, qz, qw):
+        """Ignition 월드에서 특정 모델을 텔레포트"""
+        srv_name = f"/world/{self.world_name}/set_pose"
+        self._wait_for_srv(self.set_entity_pose, srv_name)
+
+        req = SetEntityPose.Request()
+        req.entity.name = str(name)
+        req.entity.type = GzEntity.MODEL
+
+        req.pose.position.x = float(x)
+        req.pose.position.y = float(y)
+        req.pose.position.z = float(z)
+        req.pose.orientation.x = float(qx)
+        req.pose.orientation.y = float(qy)
+        req.pose.orientation.z = float(qz)
+        req.pose.orientation.w = float(qw)
+
+        try:
+            self.set_entity_pose.call_async(req)
+        except Exception as e:
+            self.get_logger().error(
+                f"{srv_name} service call failed: {e}"
             )
             sys.exit(-1)
 
     def propagate_state(self, time_delta):
-        """Propagate the state of the environment for time_delata secons"""
-        while not self.unpause.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Service /unpause_physics not available, waiting again..."
-            )
-        try:
-            self.unpause.call_async(Empty.Request())
-        except Exception as e:
-            self.get_logger().error("/unpause_physics service call failed: %s" % str(e))
-            sys.exit(-1)
-        # propagate state for time_delta seconds
+        """Ignition 월드를 time_delta초 동안 돌렸다가 다시 pause"""
+        # 시뮬레이션 재개
+        self.pause_world(False)
         time.sleep(time_delta)
-        while not self.pause.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Service /pause_physics not available, waiting again..."
-            )
-        try:
-            self.pause.call_async(Empty.Request())
-        except Exception as e:
-            self.get_logger().error("/pause_physics service call failed: %s" % str(e))
-            sys.exit(-1)
+        # 다시 일시정지
+        self.pause_world(True)
+    # ----------------------------------------------------------------------------------------------
+    # ====================================Ignition Finish===========================================
+    # ----------------------------------------------------------------------------------------------
 
     def step_callback(self, request, response):
         target = False
@@ -780,17 +832,9 @@ class Environment(Node):
         """Resets the state of the environment and returns an initial observation, state"""
 
         """*****************************************************
-		** Start by reseting the world
-		*****************************************************"""
-        while not self.reset_proxy.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Service /reset_world not available, waiting again..."
-            )
-        try:
-            self.reset_proxy.call_async(Empty.Request())
-        except Exception as e:
-            self.get_logger().error("/reset_world service call failed: %s" % str(e))
-            sys.exit(-1)
+        ** Start by resetting Ignition world
+        *****************************************************"""
+        self.reset_world()
         time.sleep(self.time_delta)
 
         """*****************************************************
@@ -813,17 +857,17 @@ class Environment(Node):
             angle = self.current_pairs["start"]["theta"]
 
         quaternion = Quaternion.from_euler(0.0, 0.0, angle)
-        self.set_agent_state.pose.position.x = start_x
-        self.set_agent_state.pose.position.y = start_y
-        self.set_agent_state.pose.position.z = 0.4
-        self.set_agent_state.pose.orientation.x = quaternion.x
-        self.set_agent_state.pose.orientation.y = quaternion.y
-        self.set_agent_state.pose.orientation.z = quaternion.z
-        self.set_agent_state.pose.orientation.w = quaternion.w
-
-        self.set_agent_state_req.state = self.set_agent_state
-        # Set agent state
-        self.set_gazebo_model_state(self.set_agent_state_req)
+        # Ignition 월드에서 로봇 모델 텔레포트
+        self.set_entity_pose_ignition(
+            self.agent_name,          # 예: "scout_v2"
+            start_x,
+            start_y,
+            0.4,                      # z 높이 (현재 world에서 잘 쓰이던 값 유지)
+            quaternion.x,
+            quaternion.y,
+            quaternion.z,
+            quaternion.w,
+        )
 
         """*****************************************************
 		** Change goal and randomize obstacles
@@ -901,7 +945,7 @@ class Environment(Node):
         prev_obstacle_positions = []
         for i in range(1, self.num_of_obstacles + 1):
             position_ok = False
-            self.set_obstacle_state.name = "obstacle_" + str(i)
+            obstacle_name = f"obstacle_{i}"
             while not position_ok:
                 x = np.random.uniform(self.lower, self.upper)
                 y = np.random.uniform(self.lower, self.upper)
@@ -923,16 +967,17 @@ class Environment(Node):
                     if distance_to_other_obstacles < self.inter_entity_distance:
                         position_ok = False
 
-            self.set_obstacle_state.pose.position.x = x
-            self.set_obstacle_state.pose.position.y = y
-            self.set_obstacle_state.pose.position.z = 0.0
-            self.set_obstacle_state.pose.orientation.x = 0.0
-            self.set_obstacle_state.pose.orientation.y = 0.0
-            self.set_obstacle_state.pose.orientation.z = 0.0
-            self.set_obstacle_state.pose.orientation.w = 1.0
-            # Set obstacle state
-            self.set_static_obs_state_req.state = self.set_obstacle_state
-            self.set_gazebo_model_state(self.set_static_obs_state_req)
+            # Ignition 월드에서 obstacle_i 텔레포트
+            self.set_entity_pose_ignition(
+                obstacle_name,
+                x,
+                y,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            )
             prev_obstacle_positions.append((x, y))
 
     def check_dead_zone(self, x, y, use_cross_mask: bool = False):
