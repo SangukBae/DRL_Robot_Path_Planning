@@ -71,15 +71,16 @@
     <!-- Front Right Wheel -->
     <link name="front_right_wheel_link">
         <inertial>
-            <mass value="1.0" />
+            <!-- 질량/관성 상향 (기존 1.0 / 0.002013 등에서 4배 증가) -->
+            <mass value="4.0" />
             <origin xyz="0 0 0" />
             <inertia
-                ixx="0.002013"
+                ixx="0.008052"
                 ixy="0.0"
                 ixz="0.0"
-                iyy="0.002013"
+                iyy="0.008052"
                 iyz="0.0"
-                izz="0.002685" />
+                izz="0.010740" />
         </inertial>
         <visual>
             <origin xyz="0 -0.0375 0" rpy="0 0 0" />
@@ -120,20 +121,22 @@
         <child link="front_right_wheel_link" />
         <!-- 회전축: link z축(바퀴 회전) -->
         <axis xyz="0 1 0" rpy="0 0 0" />
+        <!-- 조인트 마찰 완화 (20 -> 4) -->
+        <dynamics damping="0.0" friction="4.0" />
     </joint>
 
     <!-- Front Left Wheel -->
     <link name="front_left_wheel_link">
         <inertial>
-            <mass value="1.0" />
+            <mass value="4.0" />
             <origin xyz="0 0 0" />
             <inertia
-                ixx="0.002013"
+                ixx="0.008052"
                 ixy="0.0"
                 ixz="0.0"
-                iyy="0.002013"
+                iyy="0.008052"
                 iyz="0.0"
-                izz="0.002685" />
+                izz="0.010740" />
         </inertial>
         <visual>
             <origin xyz="0 0.0375 0" rpy="0 0 0" />
@@ -170,20 +173,21 @@
         <parent link="base_link" />
         <child link="front_left_wheel_link" />
         <axis xyz="0 1 0" rpy="0 0 0" />
+        <dynamics damping="0.0" friction="4.0" />
     </joint>
 
     <!-- Rear Right Wheel -->
     <link name="rear_right_wheel_link">
         <inertial>
-            <mass value="1.0" />
+            <mass value="4.0" />
             <origin xyz="0 0 0" />
             <inertia
-                ixx="0.002013"
+                ixx="0.008052"
                 ixy="0.0"
                 ixz="0.0"
-                iyy="0.002013"
+                iyy="0.008052"
                 iyz="0.0"
-                izz="0.002685" />
+                izz="0.010740" />
         </inertial>
         <visual>
             <origin xyz="0 -0.0375 0" rpy="0 0 0" />
@@ -220,20 +224,21 @@
         <parent link="base_link" />
         <child link="rear_right_wheel_link" />
         <axis xyz="0 1 0" rpy="0 0 0" />
+        <dynamics damping="0.0" friction="4.0" />
     </joint>
 
     <!-- Rear Left Wheel -->
     <link name="rear_left_wheel_link">
         <inertial>
-            <mass value="1.0" />
+            <mass value="4.0" />
             <origin xyz="0 0 0" />
             <inertia
-                ixx="0.002013"
+                ixx="0.008052"
                 ixy="0.0"
                 ixz="0.0"
-                iyy="0.002013"
+                iyy="0.008052"
                 iyz="0.0"
-                izz="0.002685" />
+                izz="0.010740" />
         </inertial>
         <visual>
             <origin xyz="0 0.0375 0" rpy="0 0 0" />
@@ -270,6 +275,7 @@
         <parent link="base_link" />
         <child link="rear_left_wheel_link" />
         <axis xyz="0 1 0" rpy="0 0 0" />
+        <dynamics damping="0.0" friction="4.0" />
     </joint>
 
     <!-- ===================== Scout gazebo plugin ===================== -->
@@ -297,7 +303,8 @@
             <right_joint>rear_right_wheel</right_joint>
         
             <!-- 메뉴얼 기준 접지 기준 트랙폭 0.490m / 모델 축 간격 0.420m -->
-            <wheel_separation>0.410</wheel_separation>
+            <!-- 실제 축 간격(±0.205)을 반영하여 0.410으로 수정 -->
+            <wheel_separation>0.490</wheel_separation>
             <wheel_radius>0.080</wheel_radius>
         
             <!-- torque는 그대로 두고, 속도/가속도 제한을 설정 -->
@@ -305,13 +312,15 @@
         
             <max_linear_acceleration>2.0</max_linear_acceleration>
             <min_linear_acceleration>-2.0</min_linear_acceleration>
-            <max_angular_acceleration>5.0</max_angular_acceleration>
-            <min_angular_acceleration>-5.0</min_angular_acceleration>
+            <!-- 각가속도 한계 완화 (±2.0 -> ±1.0) -->
+            <max_angular_acceleration>1.0</max_angular_acceleration>
+            <min_angular_acceleration>-1.0</min_angular_acceleration>
         
             <max_linear_velocity>10.0</max_linear_velocity>
             <min_linear_velocity>-10.0</min_linear_velocity>
-            <max_angular_velocity>3.0</max_angular_velocity>
-            <min_angular_velocity>-3.0</min_angular_velocity>
+            <!-- 각속도 한계 완화 (±2.0 -> ±1.0) -->
+            <max_angular_velocity>1.0</max_angular_velocity>
+            <min_angular_velocity>-1.0</min_angular_velocity>
         
             <topic>cmd_vel</topic>
             <!-- 여기서 odom / tf / frame_id / child_frame_id는 제거 -->

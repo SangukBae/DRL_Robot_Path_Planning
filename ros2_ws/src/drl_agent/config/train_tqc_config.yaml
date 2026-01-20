@@ -1,0 +1,17 @@
+train_settings:
+  # 재현성
+  seed: 0
+
+  # 환경/롤아웃
+  max_episode_steps: 500          # 에피소드 최대 스텝(환경에 맞게 조정)
+  max_timesteps: 1000000           # 전체 학습 스텝 수
+
+  # 모델 로드/체크포인트/평가
+  load_model: false                # 기존 모델 이어서 학습할 때 true
+  use_checkpoints: true            # TD7와 동일한 체크포인트 에피소드 단위 학습 모드
+  eval_freq: 5000                  # 평가 주기(환경 스텝 기준)
+  eval_eps: 10                     # 평가 에피소드 수
+  timesteps_before_training: 25000 # 워밍업(랜덤 정책으로 버퍼 채우기) 후 학습 시작
+
+  # 로그/파일명 접두사
+  base_file_name: "tqc_agent"

@@ -1,0 +1,15 @@
+use_on_policy: true
+discount: 0.9
+gae_lambda: 0.95
+rollout_horizon: 20
+
+# 옵티마/학습 안정화
+policy_lr: 1.0e-4
+value_lr: 1.0e-4
+entropy_coef: 0.01
+value_loss_coef: 0.5
+max_grad_norm: 0.5
+
+# 기타(미사용이어도 기본값 덮어쓰기용)
+batch_size: 256
+buffer_size: 1000000

@@ -1,0 +1,17 @@
+train_settings:
+  # === 재현성 ===
+  seed: 0
+
+  # === 환경/롤아웃 ===
+  max_episode_steps: 500        # 환경에 맞게 조정
+  max_timesteps: 1000000
+
+  # === 모델 로드/체크포인트/평가 ===
+  load_model: false
+  use_checkpoints: true
+  eval_freq: 5000
+  eval_eps: 10
+  timesteps_before_training: 25000  # 워밍업(랜덤 정책) 후 학습 시작
+
+  # === 로그/파일명 접두사 ===
+  base_file_name: "tqc_ieqn_agent"

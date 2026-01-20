@@ -1,0 +1,36 @@
+hyperparameters:
+  # === Generic ===
+  batch_size: 256
+  buffer_size: 1000000
+  discount: 0.99
+
+  # Target soft-update (Polyak)
+  tau: 0.005
+  # null → every step; 숫자를 주면 그 스텝마다 소프트업데이트
+  target_update_rate: null
+
+  # === SAC specific ===
+  policy_freq: 1                 # actor/alpha 업데이트 주기(기본 매 스텝)
+  autotune_entropy: true         # true면 log_alpha 자동학습
+  target_entropy_scale: 1.0      # target_entropy = -action_dim * scale
+  initial_alpha: 0.2             # autotune_entropy=false일 때만 사용
+  alpha_lr: 0.0003               # log_alpha optimizer lr
+
+  # === PER(LAP) ===
+  priority_alpha: 0.6            # PER exponent
+  min_priority: 1.0              # 우선순위 하한
+
+  # === Checkpointing (TD7 스타일 유지) ===
+  max_eps_when_checkpointing: 20
+  steps_before_checkpointing: 750000
+  reset_weight: 0.9
+
+  # === Critic Model ===
+  critic_hdim: 256
+  critic_activ: "elu"
+  critic_lr: 0.0003
+
+  # === Actor Model ===
+  actor_hdim: 256
+  actor_activ: "relu"
+  actor_lr: 0.0003

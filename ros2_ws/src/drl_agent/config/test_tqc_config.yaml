@@ -1,0 +1,30 @@
+test_settings:
+  # 재현성
+  seed: 0
+
+  # 파일명 접두사(학습 때 저장한 접두사와 일치해야 load 성공)
+  base_file_name: "tqc_agent"
+
+  # 모델 저장 시점 문자열(학습 당시 저장된 폴더/파일명에 맞춰 입력)
+  save_date: "20251017"
+
+  # 에피소드 길이 및 체크포인트 사용
+  max_episode_steps: 500
+  use_checkpoints: true
+
+# (선택) 고정 시작/목표 쌍 — test 모드에서 사용, random_test면 무시
+start_goal_pairs:
+  - start: {x: 4.0,  y: 1.0,  theta: 3.141593}
+    goal:  {x: -5.0, y: -3.0}
+  - start: {x: -5.0, y: -1.0, theta: 0.0}
+    goal:  {x: 5.0,  y: 5.0}
+  - start: {x: 5.0,  y: -2.0, theta: 3.141593}
+    goal:  {x: -5.0, y: 3.0}
+  - start: {x: -4.0, y: 5.0, theta: 0.0}
+    goal:  {x: 5.0,  y: -3.0}
+  - start: {x: -4.0, y: -1.0, theta: 0.0}
+    goal:  {x: 5.0,  y: 3.0}
+
+# 참고:
+# - 오도메트리 토픽이 네임스페이스(/bunker/odom)면 런치에서 리맵하세요.
+# - base_file_name/save_date는 학습 시 저장된 모델 파일명 규칙과 반드시 일치해야 합니다.

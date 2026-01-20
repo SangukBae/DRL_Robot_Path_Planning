@@ -1,0 +1,38 @@
+hyperparameters:
+  # 학습 기본
+  discount: 0.99
+  batch_size: 256
+  buffer_size: 1000000
+
+  # TQC 핵심
+  n_quantiles: 25
+  n_critics: 5                      # 초기엔 2로 시작, 안정화되면 5로 올려도 됨
+  top_quantiles_to_drop_per_net: 2
+
+  # 타깃 네트워크
+  tau: 0.005                        # Polyak 계수
+  target_update_interval: 1         # 매 스텝마다 Polyak 업데이트
+
+  # 엔트로피(온도) 설정
+  ent_coef: "auto_1.0"              # 자동 조절(초기값 1.0). 고정 사용 시 0.2 같은 float
+  ent_coef_lr: 0.0003               # 온도 옵티마이저 학습률
+  # target_entropy: -1.0            # 명시 안 하면 코드에서 -action_dim으로 자동 설정
+
+  # 네트워크 폭/활성화/학습률
+  actor_hdim: 256
+  actor_activ: "relu"               # "relu"|"elu"
+  actor_lr: 0.0003
+
+  critic_hdim: 256
+  critic_activ: "elu"               # "relu"|"elu"
+  critic_lr: 0.0003
+
+  # 체크포인트(TrainTD7 호환 루틴)
+  reset_weight: 0.9
+  steps_before_checkpointing: 40000
+  max_eps_when_checkpointing: 50
+
+  # 우선순위 리플레이(옵션)
+  prioritized: false                # true로 켜면 아래 alpha/min_priority 사용
+  alpha: 0.4
+  min_priority: 1.0

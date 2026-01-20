@@ -1,0 +1,3 @@
+prepend-non-duplicate;IGN_GAZEBO_RESOURCE_PATH;share/aws_robomaker_hospital_world/models
+prepend-non-duplicate;IGN_GAZEBO_RESOURCE_PATH;share/aws_robomaker_hospital_world/fuel_models
+prepend-non-duplicate;IGN_GAZEBO_RESOURCE_PATH;share/aws_robomaker_hospital_world/worlds

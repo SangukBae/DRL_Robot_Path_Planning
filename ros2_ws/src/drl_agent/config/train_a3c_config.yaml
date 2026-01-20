@@ -1,0 +1,10 @@
+train_settings:
+  seed: 42
+  max_episode_steps: 500
+  load_model: false
+  max_timesteps: 200000
+  use_checkpoints: false   # A3C 온폴리시면 false 권장
+  eval_freq: 5000
+  timesteps_before_training: 1000
+  eval_eps: 5
+  base_file_name: a3c_navigation

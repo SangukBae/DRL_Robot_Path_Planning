@@ -242,26 +242,48 @@ class Environment(Node):
             callback_group=self.odom_callback_group,
         )
         self.odom
-        # Velodyne subscription
-        # self.velodyne = self.create_subscription(
-        #     PointCloud2,
-        #     "/velodyne_points",
-        #     self.update_environment_state,
-        #     qos_profile,
-        #     callback_group=self.velodyne_callback_group,
-        # )
-        # self.velodyne
 
-        # ✅ LaserScan 구독으로 교체 (예: /scanner/scan)
-        #    기존 PointCloud2("/velodyne_points") 구독은 제거/주석 처리
-        self.laser = self.create_subscription(
-            LaserScan,
-            laser_topic,
-            self.update_environment_state_from_scan,
-            qos_best,
-            callback_group=self.laser_callback_group,
-        )
-        self.laser
+        # === 관측 소스 선택: LaserScan vs PointCloud2 ===
+        self.declare_parameter("obs_source", "scan")          # "scan" 또는 "pointcloud"
+        self.declare_parameter("scan_topic", "/laser_scan")   # LaserScan 기본 토픽
+        self.declare_parameter("pointcloud_topic", "/points") # PointCloud2 기본 토픽
+
+        obs_source    = self.get_parameter("obs_source").get_parameter_value().string_value.lower()
+        scan_topic    = self.get_parameter("scan_topic").get_parameter_value().string_value
+        cloud_topic   = self.get_parameter("pointcloud_topic").get_parameter_value().string_value
+
+        self.laser    = None
+        self.velodyne = None
+
+        if obs_source == "scan":
+            self.get_logger().info(f"Observation source: LaserScan ({scan_topic})")
+            self.laser = self.create_subscription(
+                LaserScan,
+                scan_topic,
+                self.update_environment_state_from_scan,
+                qos_best,
+                callback_group=self.laser_callback_group,
+            )
+        elif obs_source == "pointcloud":
+            self.get_logger().info(f"Observation source: PointCloud2 ({cloud_topic})")
+            self.velodyne = self.create_subscription(
+                PointCloud2,
+                cloud_topic,
+                self.update_environment_state_from_cloud,
+                qos_profile,
+                callback_group=self.velodyne_callback_group,
+            )
+        else:
+            self.get_logger().warn(
+                f"Unknown obs_source '{obs_source}', falling back to LaserScan."
+            )
+            self.laser = self.create_subscription(
+                LaserScan,
+                scan_topic,
+                self.update_environment_state_from_scan,
+                qos_best,
+                callback_group=self.laser_callback_group,
+            )
 
         # Define bins for grouping LaserScan (FULL 360°)
         eps = 0.03
@@ -404,6 +426,44 @@ class Environment(Node):
                     vals.append(min(r, self.lidar_max_range))
             zmins.append(min(vals) if vals else float('inf'))
         self._zone_mins = zmins
+    
+    def _update_zone_mins_from_env_state(self):
+        """
+        환경 상태 벡터(self.environment_state)를 기반으로 존별 최소거리(self._zone_mins)를 계산.
+        LaserScan / PointCloud 어느 입력이든 공통으로 사용하기 위해,
+        env_state를 '가짜 LaserScan'으로 감싸서 기존 _update_zone_mins_simple() 로직을 재활용한다.
+        """
+        # 존 충돌 기능을 안 쓰면 바로 종료
+        if not getattr(self, "use_zone_collision", False):
+            self._zone_mins = None
+            return
+
+        # env_state가 아직 준비되지 않았으면 스킵
+        if self.environment_state is None or len(self.environment_state) != self.environment_dim:
+            self._zone_mins = None
+            return
+
+        # bins 경계로부터 빔 중심 각도 / 간격을 근사
+        try:
+            width = float(self.bins[0][1] - self.bins[0][0])   # 각 bin 폭 (rad)
+            ang0  = float(self.bins[0][0] + 0.5 * width)       # 첫 번째 빔 중심각
+        except Exception:
+            # bins 설정이 이상하면 존 충돌 비활성화
+            self._zone_mins = None
+            return
+
+        from types import SimpleNamespace
+        fake_scan = SimpleNamespace(
+            angle_min       = ang0,
+            angle_increment = width,
+            range_min       = 0.0,
+            range_max       = float(self.lidar_max_range),
+            ranges          = list(self.environment_state),
+        )
+
+        # env_state 기준으로 존 인덱스/최소값 다시 계산
+        self._zone_indices = None  # 강제로 재계산
+        self._update_zone_mins_simple(fake_scan)
 
     def _fmt_arr(self, arr):
         import numpy as np
@@ -555,37 +615,49 @@ class Environment(Node):
         response.max_action = self.max_action
         return response
 
-    def update_environment_state(self, velodyne_data):
-        """Updates environment state using pointcloud data from velodyne sensor
+    def update_environment_state_from_cloud(self, cloud_msg):
+        """Updates environment state using 360° LiDAR PointCloud2 data.
 
-        Reads velodyne point cloud data, converts it into distance data, and
-        selects the minimum value for each angle range as a state representation.
+        Reads 3D point cloud data (e.g., from Ouster), converts it into
+        planar distance data, and fills all 360° angular bins (self.bins)
+        with the minimum distance per sector.
         """
         with self.environment_state_lock:
+            # 초기값: lidar_max_range로 모두 채움
             self.environment_state = (
-                np.ones(self.environment_dim) * self.lidar_max_range
+                np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
             )
+
+            # PointCloud2 → (x, y, z) 리스트
             data = list(
                 pc2.read_points(
-                    velodyne_data, skip_nans=False, field_names=("x", "y", "z")
+                    cloud_msg, skip_nans=False, field_names=("x", "y", "z")
                 )
             )
-            for i in range(len(data)):
-                if data[i][2] > -0.2:
-                    dot = data[i][0] * 1 + data[i][1] * 0
-                    mag1 = math.sqrt(math.pow(data[i][0], 2) + math.pow(data[i][1], 2))
-                    mag2 = math.sqrt(math.pow(1, 2) + math.pow(0, 2))
-                    beta = math.acos(dot / (mag1 * mag2)) * np.sign(data[i][1])
-                    dist = math.sqrt(
-                        data[i][0] ** 2 + data[i][1] ** 2 + data[i][2] ** 2
-                    )
 
+            for x, y, z in data:
+                # 바닥/노이즈 필터 (기존 조건 유지)
+                if z > -0.2:
+                    # 각도(beta): 로봇 기준 평면 각도 [-pi, pi]
+                    beta = math.atan2(y, x)
+
+                    # 거리: 3D 거리 그대로 사용, lidar_max_range로 클램프
+                    dist = math.sqrt(x * x + y * y + z * z)
+                    dist = min(dist, self.lidar_max_range)
+
+                    # 공통 bins(360°)에 투영
                     for j in range(len(self.bins)):
                         if self.bins[j][0] <= beta < self.bins[j][1]:
-                            self.environment_state[j] = min(
-                                self.environment_state[j], dist
-                            )
+                            if dist < self.environment_state[j]:
+                                self.environment_state[j] = dist
                             break
+
+            # 포인트클라우드 기반 env_state를 이용해 존 최소거리 계산
+            try:
+                self._update_zone_mins_from_env_state()
+            except Exception as e:
+                self.get_logger().warn(f"zone mins update (cloud) failed: {e}")
+
 
     def update_environment_state_from_scan(self, scan):
         """Updates environment state using LaserScan data (from pointcloud_to_laserscan)
@@ -627,9 +699,9 @@ class Environment(Node):
             
             # (for r in scan.ranges:) 루프 끝난 직후
             try:
-                self._update_zone_mins_simple(scan)
+                self._update_zone_mins_from_env_state()
             except Exception as e:
-                self.get_logger().warn(f"zone mins update failed: {e}")
+                self.get_logger().warn(f"zone mins update (scan) failed: {e}")
 
     def get_environment_state(self):
         """Returns a copy of the environment state"""

@@ -4,121 +4,156 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Deep Reinforcement Learning (DRL) based robot path planning project using ROS2 Humble with Gazebo simulation. The project uses Docker for containerized development with CUDA 11.8 support for GPU-accelerated training.
+Deep Reinforcement Learning (DRL) based robot path planning using ROS2 Humble and Gazebo simulation. The system trains agents (TQC, TD7, SAC, A3C algorithms) to navigate a Scout Mini robot through environments with obstacles.
 
-## Development Environment
-
-### Docker Setup
-
-The project runs in a Docker container based on `nvidia/cuda:11.8.0-devel-ubuntu22.04` with ROS2 Humble.
-
-**Build the Docker image:**
-```bash
-docker build -t drl_path_planning .
-```
-
-**Run the container with GPU support:**
-```bash
-docker run --gpus all -it --rm \
-  -v $(pwd):/root/drl_path_final \
-  --network host \
-  drl_path_planning
-```
-
-### Key Dependencies
-
-- **ROS2:** Humble (Ubuntu 22.04 Jammy)
-- **Python:** 3.10 (system default)
-- **PyTorch:** 2.4.1 with CUDA 11.8
-  - Installation: `torch==2.4.1 torchvision==0.19.1 torchaudio==2.4.1 --index-url https://download.pytorch.org/whl/cu118`
-- **Additional ML libraries:** spconv-cu118, torch-scatter
-- **Simulator:** Gazebo (via ros-humble-gazebo-*)
-- **Build system:** colcon
-
-## ROS2 Workspace
-
-The ROS2 workspace is located at `ros2_ws/`.
-
-### Building the Workspace
+## Build Commands
 
 ```bash
-cd ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build
-```
+# Build entire workspace
+cd ros2_ws && source /opt/ros/humble/setup.bash && colcon build
 
-### After Building
+# Build single package
+colcon build --packages-select drl_agent
 
-Source the workspace:
-```bash
+# Source after build
 source ros2_ws/install/setup.bash
+
+# Clean build
+rm -rf build/ install/ log/ && colcon build
 ```
 
-### Building a Single Package
+## Running the System
 
+### DRL Training/Testing
 ```bash
-colcon build --packages-select <package_name>
+# Train TQC agent (requires Gazebo running separately)
+ros2 run drl_agent train_tqc_agent.py
+
+# Test TQC agent
+ros2 launch drl_agent test_tqc.launch.py
+
+# Run environment node standalone
+ros2 run drl_agent environment.py --ros-args -p environment_mode:=train
 ```
 
-### Clean Build
-
+### Gazebo Simulation
 ```bash
-rm -rf build/ install/ log/
-colcon build
+# Launch Gazebo with Scout Mini robot
+ros2 launch scout_gazebo_sim scout_mini_empty_world.launch.py
+
+# Spawn robot only
+ros2 launch scout_gazebo_sim spawn_scout_mini.launch.py
 ```
 
-## CycloneDDS Configuration
-
-The project uses CycloneDDS as the DDS middleware with custom configuration in `cyclonedds_config.xml`:
-- Network interface: loopback (lo) - configured for Docker containers
-- Receive buffer: 10MB-256MB
-- Max message size: 65500B
-
-To use this configuration:
+### Navigation Stack
 ```bash
+# Nav2 with localization
+ros2 launch scout_nav2 nav2.launch.py slam:=False
+
+# Nav2 with SLAM
+ros2 launch scout_nav2 nav2.launch.py slam:=True
+```
+
+## Docker Environment
+
+```bash
+# Build image
+docker build -t drl_path_planning .
+
+# Run with GPU
+docker run --gpus all -it --rm -v $(pwd):/root/drl_path_final --network host drl_path_planning
+
+# Set CycloneDDS for container communication
 export CYCLONEDDS_URI=file://$(pwd)/cyclonedds_config.xml
 ```
 
-## Architecture Notes
+## Architecture
 
-### Directory Structure
+### Service-Based Environment Interface
+
+The DRL system uses ROS2 services for agent-environment communication:
 
 ```
-DRL_Robot_Path_Planning/
-├── Dockerfile              # Container definition with CUDA + ROS2 Humble
-├── cyclonedds_config.xml   # DDS middleware configuration
-└── ros2_ws/                # ROS2 workspace
-    └── src/                # ROS2 packages go here
+Environment Node (environment.py)          Agent Node (train_*_agent.py)
+├── /reset           ←──────────────────── Calls reset at episode start
+├── /step            ←──────────────────── Calls step with action
+├── /get_dimensions  ←──────────────────── Gets state_dim, action_dim
+├── /seed            ←──────────────────── Sets random seed
+└── /action_space_sample ←──────────────── Samples random action (warmup)
 ```
 
-### Expected Package Types
+Service definitions are in `drl_agent_interfaces/srv/`.
 
-Based on the project name and setup, this workspace will likely contain:
-- **DRL training nodes:** Python nodes implementing reinforcement learning algorithms
-- **Robot simulation packages:** URDF models, Gazebo worlds
-- **Path planning nodes:** Nodes for executing learned policies
-- **Sensor processing:** LiDAR, camera, or other perception packages
+### Key ROS2 Packages
 
-### CUDA Environment Variables
+| Package | Purpose |
+|---------|---------|
+| `drl_agent` | DRL environment, policies, training scripts |
+| `drl_agent_interfaces` | Custom service/action message definitions |
+| `ugv_gazebo_sim` | Gazebo simulation for Scout Mini robot |
+| `scout_nav2` | Nav2 configuration and launch files |
 
-When working with GPU-accelerated training:
-```bash
-CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
-CUDNN_INCLUDE_DIR=/usr/local/cuda/include
-CUDNN_LIB_DIR=/usr/local/cuda/lib64
+### DRL State/Action Space
+
+- **State (80D)**: Agent pose (4D) + LiDAR observations (76D)
+- **Action (2D)**: Linear velocity [-1.0, 1.0], Angular velocity [-1.4, 1.4] rad/s
+- **Topics**: `/cmd_vel` (commands), `/odometry` (state), `/laser_scan` or `/points` (sensors)
+
+### Algorithm Implementations
+
+Located in `drl_agent/scripts/policy/`:
+- `tqc_agent.py` - Truncated Quantile Critics (primary algorithm)
+- `td7_agent.py` - Twin Delayed DDPG v7
+- `sac_agent.py` - Soft Actor-Critic
+- `a3c_agent.py` - Asynchronous Advantage Actor-Critic
+
+Each has corresponding `train_*.py` and `test_*.py` scripts.
+
+## Configuration Files
+
+All in `drl_agent/config/`:
+
+| File | Purpose |
+|------|---------|
+| `environment.yaml` | State/action dims, collision thresholds, zone detection params |
+| `hyperparameters_tqc.yaml` | TQC network architecture, learning rates, buffer size |
+| `train_tqc_config.yaml` | Training params: max steps, eval frequency, warmup |
+| `test_tqc_config.yaml` | Testing params: episodes, model path |
+
+## Key Training Parameters
+
+From config files:
+- Max timesteps: 1,000,000
+- Warmup steps: 25,000 (random actions before training)
+- Eval frequency: 5,000 steps
+- Batch size: 256
+- Buffer size: 1,000,000
+- Goal threshold: 0.42m
+- Collision threshold: 0.7m (zone-based with 8 zones)
+
+## File Organization
+
+```
+ros2_ws/src/
+├── drl_agent/
+│   ├── scripts/
+│   │   ├── environment/    # Environment node and interface
+│   │   ├── policy/         # DRL algorithms and train/test scripts
+│   │   └── utils/          # Replay buffer, file manager, plotting
+│   ├── config/             # YAML configuration files
+│   └── launch/             # ROS2 launch files
+├── drl_agent_interfaces/   # Custom ROS2 messages (srv/, action/)
+├── ugv_gazebo_sim/         # Robot URDF, Gazebo config, worlds
+└── scout_nav2/             # Nav2 configuration
 ```
 
 ## Common Issues
 
-### GraphicsMagick Dependencies
-On Ubuntu 22.04 (Jammy), the package name is `libgraphicsmagick++-dev` (not `libgraphicsmagick++1-dev`). The Dockerfile already handles this.
-
 ### rosdep Installation
-When running `rosdep install`, skip conflicting keys:
 ```bash
 rosdep install --from-paths src -yi --rosdistro humble \
   --skip-keys='libgraphicsmagick++1-dev graphicsmagick-libmagick-dev-compat'
 ```
 
-### DDS Communication in Docker
-The CycloneDDS configuration uses loopback interface for container-local communication. Adjust `cyclonedds_config.xml` if inter-container or host-container communication is needed.
+### DDS in Docker
+CycloneDDS uses loopback interface. Edit `cyclonedds_config.xml` for inter-container communication.

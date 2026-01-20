@@ -43,7 +43,12 @@ def generate_launch_description():
             {"use_sim_time": use_sim_time, "robot_description": robot_description_raw}
         ],
         arguments=[robot_description_raw],
-        remappings=[("/tf", "tf"), ("/tf_static", "tf_static")],
+        # remappings=[("/tf", "tf"), ("/tf_static", "tf_static")],
+        remappings=[
+        # tf / tf_static은 이제 건드리지 않고,
+        # joint_states만 전역 토픽으로 연결
+        ("joint_states", "/joint_states"),
+    ],
     )
 
     return LaunchDescription(

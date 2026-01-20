@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>drl_agent</name>
+  <version>0.0.0</version>
+  <description>A DRL agent package for mobile robot navigation</description>
+  <maintainer email="anurye.yesuf@gmail.com">Ahmed Yesuf Nurye</maintainer>
+  <license>MIT</license>
+
+  <!-- Build tool -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <!-- Test dependencies -->
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+  
+  <!-- Runtime / build dependencies -->
+  <depend>rclpy</depend>
+  <!-- Gazebo Classic 전용 패키지였던 drl_agent_gazebo는 Fortress 환경에서는 사용하지 않으므로 제거 -->
+  <!-- <depend>drl_agent_gazebo</depend> -->
+  <depend>drl_agent_interfaces</depend>
+
+  <!-- Python pip dependencies (ROS deb 패키지 래퍼) -->
+  <depend>python3-tensorboard-pip</depend>
+  <depend>python3-squaternion-pip</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
