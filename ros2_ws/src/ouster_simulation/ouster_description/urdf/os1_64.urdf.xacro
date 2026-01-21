@@ -1,0 +1,90 @@
+<?xml version="1.0"?>
+<!-- Modified from the work of Wil Selby (https://github.com/wilselby/ouster_example/blob/master/ouster_description/urdf/OS1-64.urdf.xacro) -->
+<!-- Updated for Gazebo Ignition (Gazebo Sim) compatibility -->
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="os1_64">
+  <xacro:property name="PI" value="3.1415926535897931"/>
+
+  <xacro:macro name="os1_64" params="*origin parent:=base name:=os reduced:=true prefix:=/os1_cloud_node hz:=10 samples:=512 min_range:=0.8 max_range:=100 noise:=0.008 min_angle_v:=-16.6 max_angle_v:=16.6">
+    <xacro:property name="file_visual" value="os1_64"/>
+
+    <joint name="${name}_joint" type="fixed">
+      <xacro:insert_block name="origin" />
+      <parent link="${parent}_link"/>
+      <child link="${name}_sensor"/>
+    </joint>
+
+    <link name="${name}_sensor">
+      <inertial>
+        <mass value="0.425"/>
+        <origin xyz="0 0 0.03675" rpy="0 0 0" />
+        <inertia ixx="0.000308429" ixy="0" ixz="0"
+                 iyy="0.000308429" iyz="0" izz="0.00034589"/>
+      </inertial>
+      <collision name="lidar_collision">
+        <origin xyz="0 0 0.03675" rpy="0 0 0" />
+        <geometry>
+          <cylinder radius="0.04350" length="0.07350"/>
+        </geometry>
+      </collision>
+      <visual name="lidar_visual">
+        <origin xyz="0 0 0.3" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="file://$(find ouster_description)/meshes/${file_visual}.dae" />
+        </geometry>
+      </visual>
+    </link>
+
+    <link name="${name}_lidar">
+      <pose>0 0 0 0 0 ${PI}</pose>
+    </link>
+    <joint name="${name}_lidar_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 ${PI}" />
+      <parent link="${name}_sensor"/>
+      <child link="${name}_lidar"/>
+    </joint>
+
+    <!-- Gazebo Ignition system plugins (World level) -->
+    <gazebo>
+      <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
+        <render_engine>ogre2</render_engine>
+      </plugin>
+    </gazebo>
+
+    <!-- Gazebo Ignition (Gazebo Sim) sensor configuration -->
+    <gazebo reference="${name}_lidar">
+      <sensor name='${name}_lidar' type='gpu_lidar'>
+        <topic>/ouster/pointcloud</topic>
+        <update_rate>${hz}</update_rate>
+        <ignition_frame_id>${name}_lidar</ignition_frame_id>
+        <lidar>
+          <scan>
+            <horizontal>
+              <samples>${samples}</samples>
+              <resolution>1</resolution>
+              <min_angle>-${PI}</min_angle>
+              <max_angle>${PI}</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>64</samples>
+              <resolution>1</resolution>
+              <min_angle>${min_angle_v*PI/180.0}</min_angle>
+              <max_angle>${max_angle_v*PI/180.0}</max_angle>
+            </vertical>
+          </scan>
+          <range>
+            <min>${min_range}</min>
+            <max>${max_range}</max>
+            <resolution>0.03</resolution>
+          </range>
+          <noise>
+            <type>gaussian</type>
+            <mean>0.0</mean>
+            <stddev>${noise}</stddev>
+          </noise>
+        </lidar>
+        <alwaysOn>1</alwaysOn>
+        <visualize>true</visualize>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+</robot>

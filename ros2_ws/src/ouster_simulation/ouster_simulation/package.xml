@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ouster_simulation</name>
+  <version>2.0.3</version>
+  <description>
+    Metapackage allowing easy installation of Ouster simulation components.
+  </description>
+
+  <license>BSD</license>
+  <author>Seung Woo EUN</author>
+  <maintainer email="sweunwave@knu.ac.kr">Seung Woo EUN</maintainer>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>ouster_description</exec_depend>
+  <!-- ouster_gazebo_plugins removed: using Ignition built-in sensors + ros_gz_bridge -->
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+
+</package>
