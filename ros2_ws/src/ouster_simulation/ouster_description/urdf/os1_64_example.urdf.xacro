@@ -31,9 +31,21 @@
     </inertial>
   </link>
 
-  <xacro:include filename="$(find ouster_description)/urdf/os1_64.urdf.xacro"/>
+  <!-- <xacro:include filename="$(find ouster_description)/urdf/os1_64.urdf.xacro"/>
   <xacro:os1_64 parent="base_footprint" name="os" prefix="/ouster" hz="10" samples="512">
     <origin xyz="0 0 0.4" rpy="0 0 0" />
+  </xacro:os1_64> -->
+  <xacro:include filename="$(find ouster_description)/urdf/os1_64.urdf.xacro"/>
+  <xacro:os1_64 parent="base"
+                name="os"
+                hz="10"
+                samples="1024"
+                min_range="0.5"
+                max_range="100.0"
+                min_angle_v="-21.2"
+                max_angle_v="21.2"
+                noise="0.01">
+    <origin xyz="0 0 0.3" rpy="0 0 0"/>
   </xacro:os1_64>
 
 </robot>

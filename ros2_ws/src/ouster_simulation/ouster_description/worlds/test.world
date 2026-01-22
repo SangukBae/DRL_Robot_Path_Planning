@@ -3,6 +3,16 @@
 <!-- System plugins removed - Ignition loads them automatically -->
 <sdf version='1.8'>
   <world name='default'>
+    <!-- Global RGL scene manager required to upload meshes to GPU -->
+    <plugin name='rgl::RGLServerPluginManager' filename='RGLServerPluginManager'>
+      <do_ignore_entities_in_lidar_link>true</do_ignore_entities_in_lidar_link>
+    </plugin>
+
+    <!-- Gazebo Ignition system plugins -->
+    <plugin name='gz::sim::systems::Physics' filename='ignition-gazebo-physics-system'/>
+    <plugin name='gz::sim::systems::UserCommands' filename='ignition-gazebo-user-commands-system'/>
+    <plugin name='gz::sim::systems::SceneBroadcaster' filename='ignition-gazebo-scene-broadcaster-system'/>
+    <plugin name='gz::sim::systems::Contact' filename='ignition-gazebo-contact-system'/>
 
     <!-- Lighting -->
     <light name='sun' type='directional'>
@@ -61,7 +71,7 @@
     <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
     <atmosphere type='adiabatic'/>
 
-    <physics name='default_physics' type='ode'>
+    <physics name='default_physics' type='ignored'>
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1</real_time_factor>
       <real_time_update_rate>1000</real_time_update_rate>

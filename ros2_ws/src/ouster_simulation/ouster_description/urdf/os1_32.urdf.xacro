@@ -27,7 +27,7 @@
         </geometry>
       </collision>
       <visual name="lidar_visual">
-        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <origin xyz="0 0 0.3" rpy="0 0 0"/>
         <geometry>
           <mesh filename="file://$(find ouster_description)/meshes/${file_visual}.dae" />
         </geometry>
@@ -44,46 +44,44 @@
     </joint>
 
     <!-- Gazebo Ignition system plugins (World level) -->
-    <gazebo>
+    <!-- <gazebo>
       <plugin filename="ignition-gazebo-sensors-system" name="ignition::gazebo::systems::Sensors">
         <render_engine>ogre2</render_engine>
       </plugin>
-    </gazebo>
+    </gazebo> -->
 
-    <!-- Gazebo Ignition (Gazebo Sim) sensor configuration -->
+    <!-- RGL Gazebo Plugin sensor configuration (replaces gpu_lidar) -->
     <gazebo reference="${name}_lidar">
-      <sensor name='${name}_lidar' type='gpu_lidar'>
-        <topic>/ouster/pointcloud</topic>
-        <update_rate>${hz}</update_rate>
-        <ignition_frame_id>${name}_lidar</ignition_frame_id>
-        <lidar>
-          <scan>
-            <horizontal>
-              <samples>${samples}</samples>
-              <resolution>1</resolution>
-              <min_angle>-${PI}</min_angle>
-              <max_angle>${PI}</max_angle>
-            </horizontal>
-            <vertical>
-              <samples>32</samples>
-              <resolution>1</resolution>
-              <min_angle>${min_angle_v*PI/180.0}</min_angle>
-              <max_angle>${max_angle_v*PI/180.0}</max_angle>
-            </vertical>
-          </scan>
+      <sensor name="${name}_lidar" type="custom">
+        <plugin filename="RGLServerPluginInstance" name="rgl::RGLServerPluginInstance">
           <range>
             <min>${min_range}</min>
             <max>${max_range}</max>
-            <resolution>0.03</resolution>
           </range>
-          <noise>
-            <type>gaussian</type>
-            <mean>0.0</mean>
-            <stddev>${noise}</stddev>
-          </noise>
-        </lidar>
-        <alwaysOn>1</alwaysOn>
-        <visualize>true</visualize>
+
+          <update_rate>${hz}</update_rate>
+          <update_on_paused_sim>false</update_on_paused_sim>
+
+          <!-- Match ros_gz_bridge mapping in your launch -->
+          <topic>/ouster/pointcloud/points</topic>
+
+          <!-- frame_id in PointCloudPacked header -->
+          <frame>${name}_lidar</frame>
+
+          <!-- Use uniform pattern (no env var required) -->
+          <pattern_uniform>
+            <horizontal>
+              <samples>${samples}</samples>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>32</samples>
+              <min_angle>${min_angle_v*PI/180.0}</min_angle>
+              <max_angle>${max_angle_v*PI/180.0}</max_angle>
+            </vertical>
+          </pattern_uniform>
+        </plugin>
       </sensor>
     </gazebo>
   </xacro:macro>
