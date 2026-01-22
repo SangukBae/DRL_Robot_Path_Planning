@@ -35,10 +35,11 @@
     </link>
 
     <link name="${name}_lidar">
-      <pose>0 0 0 0 0 ${PI}</pose>
+      <!-- <pose>0 0 0 0 0 ${PI}</pose> -->
     </link>
     <joint name="${name}_lidar_joint" type="fixed">
-      <origin xyz="0 0 0" rpy="0 0 ${PI}" />
+      <!-- <origin xyz="0 0 0" rpy="0 0 ${PI}" /> -->
+      <origin xyz="0 0 0" rpy="0 0 0" />
       <parent link="${name}_sensor"/>
       <child link="${name}_lidar"/>
     </joint>
@@ -68,19 +69,8 @@
           <!-- frame_id in PointCloudPacked header -->
           <frame>${name}_lidar</frame>
 
-          <!-- Use uniform pattern (no env var required) -->
-          <pattern_uniform>
-            <horizontal>
-              <samples>${samples}</samples>
-              <min_angle>-3.14159</min_angle>
-              <max_angle>3.14159</max_angle>
-            </horizontal>
-            <vertical>
-              <samples>64</samples>
-              <min_angle>${min_angle_v*PI/180.0}</min_angle>
-              <max_angle>${max_angle_v*PI/180.0}</max_angle>
-            </vertical>
-          </pattern_uniform>
+          <!-- Use preset pattern (requires RGL_PATTERNS_DIR env var) -->
+          <pattern_preset>OS1 64</pattern_preset>
         </plugin>
       </sensor>
     </gazebo>
