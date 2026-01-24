@@ -1,85 +1,85 @@
-# AWS RoboMaker Hospital World ROS package
+# aws-robomaker-hospital-world
 
-**Visit the [AWS RoboMaker website](https://aws.amazon.com/robomaker/) to learn more about building intelligent robotic applications with Amazon Web Services.**
+## Overview
 
-![Model: Hospital World](docs/images/hospital_world.jpg)
-### Supported versions of Gazebo
-7.14.0+ | 9.16.0+
+AWS RoboMaker Hospital 시뮬레이션 환경 패키지.
+1~3층 병원 월드와 80개 모델(의료장비, 가구, 환자 등)을 포함한다.
 
-Note: `python3` and `python3-pip` is required to run this world.
+Gazebo Classic과 Ignition Gazebo 두 버전을 지원한다.
 
-## 3D Models included in this Gazebo World
+## Quick Start
 
-| Model (/models)       | Picture           |
-| :------------- |:-------------:|
-| **aws_robomaker_hospital_elevator_01_car, aws_robomaker_hospital_elevator_01_door, aws_robomaker_hospital_elevator_01_portal**     | ![Model: Elevator](docs/images/elevator.png) |
-| **aws_robomaker_hospital_curtain_closed_01, aws_robomaker_hospital_curtain_half_open_01, aws_robomaker_hospital_curtain_open_01**     | ![Model: Curtains](docs/images/curtains.png) |
-| **aws_robomaker_hospital_nursesstation_01**    | ![Model: Nurses Station](docs/images/nurses_station.png)
-| **aws_robomaker_hospital_hospitalsign_01**    | ![Model: Hospital Sign](docs/images/hospital_sign.png)
-| **aws_robomaker_hospital_floor_01_floor**    | ![Model: Hospital Floor](docs/images/hospital_floor.png)
-| **aws_robomaker_hospital_floor_01_walls**    | ![Model: Hospital Walls and Layout](docs/images/hospital_walls.png)
-| **aws_robomaker_hospital_floor_01_ceiling**    | ![Model: Ceiling](docs/images/hospital_ceiling.png)
-
-We also reference the following models from https://app.ignitionrobotics.org/fuel/models:
-
-*XRayMachine, IVStand, BloodPressureMonitor, BPCart, BMWCart, CGMClassic, StorageRack, Chair, InstrumentCart1, Scrubs, PatientWheelChair, WhiteChipChair, TrolleyBed, SurgicalTrolley, PotatoChipChair, VisitorKidSit, FemaleVisitorSit, AdjTable, MopCart3, MaleVisitorSit, Drawer, OfficeChairBlack, ElderLadyPatient, ElderMalePatient, InstrumentCart2, MetalCabinet, BedTable, BedsideTable, AnesthesiaMachine, TrolleyBedPatient, Shower, SurgicalTrolleyMed, StorageRackCovered, KitchenSink, Toilet, VendingMachine, ParkingTrolleyMin, PatientFSit, MaleVisitorOnPhone, FemaleVisitor, MalePatientBed, StorageRackCoverOpen, ParkingTrolleyMax*
-
-
-# Include the world from another package
-
-* Update .rosinstall to clone this repository and run `rosws update`
-
-```
-- git: {local-name: src/aws-robomaker-hospital-world, uri: 'https://github.com/aws-robotics/aws-robomaker-hospital-world.git', version: ros2}
-```
-* Add the following to your launch file:
-* Add the following include to the ROS2 launch file you are using:
-```python
-    import os
-    from ament_index_python.packages import get_package_share_directory
-    from launch import LaunchDescription
-    from launch.actions import IncludeLaunchDescription
-    from launch.launch_description_sources import PythonLaunchDescriptionSource
-    def generate_launch_description():
-        hospital_pkg_dir = get_package_share_directory('aws_robomaker_hospital_world')
-        hospital_launch_path = os.path.join(warehouse_pkg_dir, 'launch')
-        hospital_world_cmd = IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([hospital_launch_path, '/hospital.launch.py'])
-        )
-        ld = LaunchDescription()
-        ld.add_action(hospital_world_cmd)
-        return ld
-```
-
-# Load directly into Gazebo (without ROS2)
 ```bash
-chmod +x setup.sh
-./setup.sh
-export GAZEBO_MODEL_PATH=`pwd`/models:`pwd`/fuel_models
-gazebo worlds/hospital.world
-```
+# 1) Hospital world (Gazebo Classic)
+ros2 launch aws_robomaker_hospital_world hospital.launch.py gui:=true
 
-# ROS2 Launch with Gazebo viewer (without a robot)
-```bash
-# build for ROS2
-rosdep install --from-paths . --ignore-src -r -y
-colcon build
+# 2) Hospital world (Ignition Gazebo)
+ros2 launch aws_robomaker_hospital_world hospital_ignition.launch.py
 
-# run in ROS2
-source install/setup.sh
+# 3) 시각적 확인용 뷰어
 ros2 launch aws_robomaker_hospital_world view_hospital.launch.py
+
+# 4) Scout 로봇과 함께 실행
+ros2 launch agilex_scout simulate_control_gazebo_ignition.launch.py rviz:=true
 ```
 
-# Building
-Include this as a .rosinstall dependency in your SampleApplication simulation workspace. `colcon build` will build this repository.
+## Interfaces
 
-To build it outside an application, note there is no robot workspace. It is a simulation workspace only.
+### World Files
 
-```bash
-$ rosws update
-$ rosdep install --from-paths . --ignore-src -r -y
-$ chmod +x setup.sh
-$ ./setup.sh
-$ colcon build
-```
+| 파일 | 층수 | 용도 |
+|------|------|------|
+| `worlds/hospital.world` | 1층 | 기본 시뮬레이션 |
+| `worlds/hospital_two_floors.world` | 2층 | 다층 네비게이션 |
+| `worlds/hospital_three_floors.world` | 3층 | 복잡한 환경 |
+| `worlds/hospital_ignition.world` | 1층 | Ignition Gazebo용 |
 
+### Gazebo Plugins (hospital_ignition.world)
+
+| 플러그인 | 역할 |
+|---------|------|
+| `RGLServerPluginManager` | RGL LiDAR 지원 |
+| `gz::sim::systems::Physics` | 물리 시뮬레이션 |
+| `gz::sim::systems::Sensors` | 센서 시뮬레이션 |
+
+## Configuration
+
+| 경로 | 역할 |
+|------|------|
+| `models/` | 커스텀 병원 모델 37개 (벽, 바닥, 커튼 등) |
+| `fuel_models/` | Ignition Fuel 모델 43개 (의료장비, 환자 등) |
+| `env-hooks/` | Gazebo 리소스 경로 설정 |
+
+**주요 모델:**
+- 병원 구조: `hospital_floor_01_*`, `hospital_elevator_*`, `hospital_curtain_*`
+- 의료장비: `TrolleyBed`, `IVStand`, `XRayMachine`, `AnesthesiaMachine`
+- 가구: `Chair`, `BedsideTable`, `MetalCabinet`
+
+## Dependencies / Assumptions
+
+### 의존성
+
+- `gazebo_ros`, `gazebo`, `gazebo_plugins` (Classic)
+- Ignition Gazebo Fortress (Ignition 버전)
+- Python: `docopt`, `requests`, `lxml` (Fuel 모델 다운로드용)
+
+### 전제조건
+
+- RGL LiDAR 사용 시 `hospital_ignition.world`에 `RGLServerPluginManager` 플러그인 필요
+- Fuel 모델은 `setup.sh` 또는 `fuel_utility.py`로 사전 다운로드 필요
+- 환경변수 `IGN_GAZEBO_RESOURCE_PATH`에 모델 경로 포함 필요
+
+## Troubleshooting
+
+| 증상 | 조치 |
+|------|------|
+| 모델 로드 실패 | `IGN_GAZEBO_RESOURCE_PATH` 환경변수 확인, `source install/setup.bash` 실행 |
+| Fuel 모델 없음 | `python3 fuel_utility.py download -m [MODEL] -d fuel_models` 실행 |
+| Ignition 실행 안됨 | `ign gazebo --version` 확인, Fortress 버전 필요 |
+| RGL LiDAR 동작 안함 | world 파일에 `RGLServerPluginManager` 플러그인 추가 여부 확인 |
+
+## 이 README에서 다루지 않음
+
+- Fuel 모델 상세 목록: `fuel_models/database.config` 참고
+- 로봇 스폰 및 네비게이션: `agilex_scout`, `scout_nav2` 패키지 README 참고
+- World 파일 커스터마이징: `worlds/*.world` 파일 직접 편집
