@@ -1,6 +1,16 @@
 <?xml version='1.0' encoding='utf-8'?>
 <sdf version="1.8">
   <world name="default">
+    <!-- Global RGL scene manager required to upload meshes to GPU -->
+    <plugin name='rgl::RGLServerPluginManager' filename='RGLServerPluginManager'>
+      <do_ignore_entities_in_lidar_link>true</do_ignore_entities_in_lidar_link>
+    </plugin>
+
+    <!-- Gazebo Ignition system plugins -->
+    <plugin name='gz::sim::systems::Physics' filename='ignition-gazebo-physics-system'/>
+    <plugin name='gz::sim::systems::UserCommands' filename='ignition-gazebo-user-commands-system'/>
+    <plugin name='gz::sim::systems::SceneBroadcaster' filename='ignition-gazebo-scene-broadcaster-system'/>
+    <plugin name='gz::sim::systems::Contact' filename='ignition-gazebo-contact-system'/>
 
     <frame name="map"/>
 
@@ -225,7 +235,14 @@
       <include>
         <uri>model://TrolleyBed</uri>
         <static>true</static>
-        <pose>4.85934 -4.87229 0 0 0 0</pose>
+        <pose>11.4 -4.20 0 0 0 3.14</pose>
+      </include>
+    </model>
+    <model name="TrolleyBed_2">
+      <include>
+        <uri>model://TrolleyBed</uri>
+        <static>true</static>
+        <pose>11.4 -0.34 0 0 0 3.14</pose>
       </include>
     </model>
     <model name="SurgicalTrolley_1">
