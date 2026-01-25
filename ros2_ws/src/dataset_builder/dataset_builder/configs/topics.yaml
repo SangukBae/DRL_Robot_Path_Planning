@@ -1,0 +1,21 @@
+# Topics to record for dataset (Ignition Gazebo Fortress)
+# Topic names match ros2_gz_bridge configuration
+topics:
+  # 3D LiDAR point cloud (Ouster OS1-64 via RGL)
+  - /points
+  # RGBD Camera point cloud
+  - /depth_camera/points
+  # RGBD Camera images
+  - /depth_camera/image
+  - /depth_camera/depth_image
+  # Odometry (bridged from /scout/odometry)
+  - /odometry
+  # Transforms
+  - /tf
+  - /tf_static
+  # Simulation clock
+  - /clock
+  # IMU data
+  - /imu
+  # Velocity commands (for recording control inputs)
+  - /cmd_vel
