@@ -38,12 +38,6 @@ source /opt/ros/humble/setup.bash
 # 전체 빌드
 colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 
-# 단일 패키지
-colcon build --packages-select drl_agent
-
-# 메모리 제한 빌드
-MAKEFLAGS="-j4" colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
-
 # 소스
 source install/setup.bash
 ```
