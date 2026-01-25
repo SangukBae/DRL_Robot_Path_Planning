@@ -70,7 +70,9 @@ class MetadataLogger(Node):
         # Initialize state
         self.segment_counter = 0
         self.current_segment_start_time = None
+        self.current_segment_start_sim_time = None  # Track sim time separately
         self.latest_odom = None
+        self.clock_initialized = False  # Wait for stable clock
 
         # Setup TF buffer if using TF
         self.tf_buffer = None
@@ -90,10 +92,13 @@ class MetadataLogger(Node):
                 10
             )
 
-        # Timer for segment management
+        # Timer for segment management - use short interval and check sim time manually
+        # This avoids issues with sim time jumps causing premature segment transitions
+        self.check_interval_sec = 1.0  # Check every 1 second (wall clock)
         self.segment_timer = self.create_timer(
-            float(self.segment_duration_sec),
-            self.segment_timer_callback
+            self.check_interval_sec,
+            self.segment_timer_callback,
+            clock=self.get_clock()  # Use node's clock (respects use_sim_time)
         )
 
         self.get_logger().info(f'Metadata logger initialized for run_id: {self.run_id}')
@@ -103,8 +108,8 @@ class MetadataLogger(Node):
         self.get_logger().info(f'Pose source: {self.pose_source}')
         self.get_logger().info(f'Fixed frame: {self.fixed_frame}, Base frame: {self.base_frame}')
 
-        # Create first segment immediately
-        self.create_new_segment()
+        # Don't create first segment here - wait for clock to stabilize
+        self.get_logger().info('Waiting for clock to stabilize before creating first segment...')
 
     def odom_callback(self, msg: Odometry) -> None:
         """Store latest odometry message."""
@@ -183,7 +188,9 @@ class MetadataLogger(Node):
         # Start new segment
         self.segment_counter += 1
         segment_id = self._segment_id(self.segment_counter)
-        self.current_segment_start_time = self.get_clock().now()
+        now = self.get_clock().now()
+        self.current_segment_start_time = now
+        self.current_segment_start_sim_time = now.nanoseconds  # Track for duration check
 
         # Get pose at segment start
         pose_at_start = self.get_current_pose()
@@ -233,8 +240,42 @@ class MetadataLogger(Node):
             self.get_logger().error(f'Failed to close segment {segment_id}: {e}')
 
     def segment_timer_callback(self) -> None:
-        """Timer callback to create new segments."""
-        self.create_new_segment()
+        """Timer callback to check if segment duration has elapsed.
+
+        Uses simulation time elapsed since segment start to determine
+        when to create a new segment. This approach handles:
+        - Sim time jumps at Gazebo startup
+        - Variable RTF (Real-Time Factor)
+        - Clock initialization delays
+        """
+        current_time = self.get_clock().now()
+
+        # Wait for clock to be valid (non-zero for sim time)
+        if self.use_sim_time:
+            current_time_sec = current_time.nanoseconds / 1e9
+            if current_time_sec < 1.0:
+                # Clock not yet initialized or just started
+                return
+
+        # Initialize clock and create first segment
+        if not self.clock_initialized:
+            self.clock_initialized = True
+            self.get_logger().info(
+                f'Clock stabilized at {current_time.nanoseconds / 1e9:.2f}s, creating first segment'
+            )
+            self.create_new_segment()
+            return
+
+        # Check if segment duration has elapsed
+        if self.current_segment_start_sim_time is not None:
+            elapsed_ns = current_time.nanoseconds - self.current_segment_start_sim_time
+            elapsed_sec = elapsed_ns / 1e9
+
+            if elapsed_sec >= self.segment_duration_sec:
+                self.get_logger().info(
+                    f'Segment duration reached ({elapsed_sec:.1f}s >= {self.segment_duration_sec}s)'
+                )
+                self.create_new_segment()
 
 
 def main(args=None):
