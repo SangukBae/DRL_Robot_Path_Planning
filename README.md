@@ -83,6 +83,35 @@ ros2 launch drl_agent test_tqc.launch.py
 
 DRL 알고리즘 상세: `ros2_ws/src/drl_agent/` 참고
 
+### 4. 데이터셋 수집 (Offline RL)
+
+```bash
+# 1) Gazebo 시뮬레이션 실행
+ros2 launch agilex_scout simulate_control_gazebo_ignition.launch.py rviz:=true
+
+# 2) 데이터셋 녹화 시작 (별도 터미널)
+ros2 launch dataset_builder record_run.launch.py run_id:=test_run_01
+
+# 커스텀 파라미터로 실행
+ros2 launch dataset_builder record_run.launch.py \
+  dataset_root:=/path/to/data \
+  run_id:=my_run_01 \
+  world_name:=aws_hospital \
+  segment_duration_sec:=300 \
+  notes:="Test run with obstacles"
+```
+
+| 파라미터 | 기본값 | 설명 |
+|---------|--------|------|
+| `dataset_root` | `ros2_ws/data` | 데이터 저장 루트 경로 |
+| `run_id` | `auto` | 실행 ID (auto 시 타임스탬프 자동 생성) |
+| `segment_duration_sec` | `600` | 세그먼트 분할 간격 (초) |
+| `world_name` | `unknown_world` | Gazebo 월드 이름 |
+| `use_sim_time` | `true` | 시뮬레이션 시간 사용 여부 |
+| `notes` | `` | 실행 메모 |
+
+녹화 중지: `Ctrl+C` (마지막 세그먼트 자동 저장)
+
 ## Environment Variables
 
 ```bash
@@ -138,5 +167,6 @@ xhost +local:
 | `depth_d455` | `ros2_ws/src/depth_d455/` | Intel RealSense D455 |
 | `aws-robomaker-small-warehouse-world` | `ros2_ws/src/scout_nav2/aws-robomaker-small-warehouse-world/` | Warehouse 시뮬레이션 환경 |
 | `aws-robomaker-hospital-world` | `ros2_ws/src/aws-robomaker-hospital-world/` | Hospital 시뮬레이션 환경 |
+| `dataset_builder` | `ros2_ws/src/dataset_builder/` | Offline RL 데이터셋 수집 및 메타데이터 로깅 |
 
 각 패키지 상세 사용법은 해당 패키지 디렉토리의 README 참고.
