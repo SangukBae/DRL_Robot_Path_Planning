@@ -64,6 +64,9 @@ ros2 launch scout_nav2 nav2.launch.py simulation:=true slam:=false localization:
 
 # SLAM 매핑
 ros2 launch scout_nav2 nav2.launch.py simulation:=true slam:=true localization:=slam_toolbox
+
+# LIO-SAM (Ignition Gazebo)
+ros2 launch lio_sam run_scout_ignition.launch.py
 ```
 
 Nav2 파라미터 상세: `ros2_ws/src/scout_nav2/scout_nav2/params/` 참고
