@@ -104,6 +104,22 @@ ros2 launch dataset_builder record_run.launch.py \
   notes:="Test run with obstacles"
 ```
 
+#### (옵션) OctoMap으로 사전 PCD 맵 생성
+
+```bash
+# 1) OctoMap 서버 실행 (별도 터미널)
+ros2 launch octomap_server octomap_scout_ignition.launch.py
+
+# 2) 로봇 주행으로 맵 누적 후 OctoMap 저장 (.bt/.ot)
+ros2 run octomap_server octomap_saver_node --ros-args -p octomap_path:=/path/to/maps/scout_map.bt
+
+# 3) OctoMap 포인트클라우드 저장 (pcl_ros 필요)
+ros2 run pcl_ros pointcloud_to_pcd --ros-args \
+  -r input:=/octomap_point_cloud_centers \
+  -p prefix:=/path/to/maps/scout_map_ \
+  -p binary:=true
+```
+
 | 파라미터 | 기본값 | 설명 |
 |---------|--------|------|
 | `dataset_root` | `ros2_ws/data` | 데이터 저장 루트 경로 |
