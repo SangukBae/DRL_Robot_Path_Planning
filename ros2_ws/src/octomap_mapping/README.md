@@ -44,3 +44,12 @@ Note: The extension of octomap path should be `.bt` or `.ot`
 | compress_map | `true` | 퍼블리시 시 맵 압축 여부 |
 | publish_free_space | `false` | 자유 공간 마커 퍼블리시 여부 |
 | latch | `true` | 맵 토픽 래치 사용 여부 |
+
+### OctoMap 저장 명령어 차이
+
+아래 표는 OctoMap 저장 명령과 PCD 저장 명령이 사용하는 입력과 저장 데이터의 차이를 정리한 것입니다.
+
+| 명령어 | 입력(토픽/서비스) | 저장 데이터 | 저장 형식 |
+| --- | --- | --- | --- |
+| `ros2 run octomap_server octomap_saver_node --ros-args -p octomap_path:=...` | 서비스 `/octomap_binary` (기본), `full:=true`면 `/octomap_full` | OctoMap 옥트리 전체(점유/미점유 확률 포함) | `.bt`(binary) 또는 `.ot`(full) |
+| `ros2 run pcl_ros pointcloud_to_pcd --ros-args -r input:=/octomap_point_cloud_centers ...` | 토픽 `/octomap_point_cloud_centers` (PointCloud2) | 점유된 보셀 중심점으로 만든 포인트클라우드 | `.pcd` |
