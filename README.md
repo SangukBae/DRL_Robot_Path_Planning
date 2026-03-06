@@ -56,6 +56,35 @@ ros2 launch agilex_scout simulate_control_gazebo.launch.py lidar_type:=3d rviz:=
 
 > **RGL LiDAR 사용 시**: world 파일에 `RGLServerPluginManager` 플러그인 필요, `RGL_PATTERNS_DIR` 환경변수 설정 필요.
 
+#### 맵 실행 명령어
+
+**Ignition Gazebo**
+
+```bash
+# Hospital World
+ros2 launch aws_robomaker_hospital_world hospital_ignition.launch.py
+
+# Bookstore World
+ros2 launch aws_robomaker_bookstore_world bookstore_ignition.launch.py
+
+# Small House World
+ros2 launch aws_robomaker_small_house_world small_house_ignition.launch.py
+
+# Small Warehouse World - 지붕 있는 버전 (기본값)
+ros2 launch aws_robomaker_small_warehouse_world small_warehouse_ignition.launch.py
+
+# Small Warehouse World - 지붕 없는 버전
+ros2 launch aws_robomaker_small_warehouse_world small_warehouse_ignition.launch.py world:=no_roof_small_warehouse
+```
+
+**Classic Gazebo**
+
+```bash
+ros2 launch aws_robomaker_bookstore_world bookstore.launch.py
+ros2 launch aws_robomaker_small_house_world small_house.launch.py
+ros2 launch aws_robomaker_small_warehouse_world small_warehouse.launch.py
+```
+
 ### 2. Navigation2
 
 ```bash
