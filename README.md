@@ -107,18 +107,33 @@ ros2 launch dataset_builder record_run.launch.py \
 #### (옵션) OctoMap으로 사전 PCD 맵 생성
 
 ```bash
-# 1) OctoMap 서버 실행 (별도 터미널)
+# 1) Gazebo 시뮬레이션 실행 (별도 터미널)
+ros2 launch agilex_scout simulate_control_gazebo_ignition.launch.py rviz:=false
+
+# 2) OctoMap 서버 실행 (별도 터미널) - 기본: odom frame
 ros2 launch octomap_server octomap_scout_ignition.launch.py
 
-# 2) 로봇 주행으로 맵 누적 후 OctoMap 저장 (.bt/.ot)
+# LIO-SAM 사용 시 map frame으로 전환
+ros2 launch octomap_server octomap_scout_ignition.launch.py frame_id:=map
+
+# 해상도/범위 조정 (기본: resolution=0.05, max_range=20.0)
+ros2 launch octomap_server octomap_scout_ignition.launch.py resolution:=0.1 max_range:=15.0
+
+# 3) 로봇 주행으로 맵 누적 후 OctoMap 저장 (.bt/.ot)
 ros2 run octomap_server octomap_saver_node --ros-args -p octomap_path:=/path/to/maps/scout_map.bt
 
-# 3) OctoMap 포인트클라우드 저장 (pcl_ros 필요)
+# 4) OctoMap 포인트클라우드 저장 (pcl_ros 필요)
 ros2 run pcl_ros pointcloud_to_pcd --ros-args \
   -r input:=/octomap_point_cloud_centers \
   -p prefix:=/path/to/maps/scout_map_ \
   -p binary:=true
 ```
+
+| 파라미터 | 기본값 | 설명 |
+|---------|--------|------|
+| `frame_id` | `odom` | 고정 프레임 (Gazebo 단독: `odom`, LIO-SAM 사용 시: `map`) |
+| `resolution` | `0.05` | OctoMap 해상도 (m/voxel) |
+| `max_range` | `20.0` | 레이 캐스팅 최대 거리 (m) |
 
 | 파라미터 | 기본값 | 설명 |
 |---------|--------|------|
