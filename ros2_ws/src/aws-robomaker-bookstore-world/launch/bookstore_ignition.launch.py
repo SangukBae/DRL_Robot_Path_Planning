@@ -3,7 +3,7 @@ from os import environ
 from ament_index_python.packages import get_package_share_directory
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, Shutdown
+from launch.actions import ExecuteProcess, Shutdown
 
 
 def generate_launch_description():
@@ -33,6 +33,7 @@ def generate_launch_description():
             environ.get('LD_LIBRARY_PATH', ''),
         ])),
         'IGN_GAZEBO_RESOURCE_PATH': ':'.join(filter(None, [
+            pkg_dir,
             os.path.join(pkg_dir, 'models'),
             os.path.join(pkg_dir, 'worlds'),
             environ.get('IGN_GAZEBO_RESOURCE_PATH', ''),

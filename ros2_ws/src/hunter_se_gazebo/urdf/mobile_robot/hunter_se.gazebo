@@ -1,0 +1,86 @@
+<?xml version="1.0"?>
+<!--
+  Gazebo Ignition Fortress plugin definitions for AgileX Hunter SE (sensor-free).
+
+  Plugin name fix: gz::sim::systems::AckermannSteering  (NOT ignition::gazebo::systems::)
+  Parameter fix  : max_velocity / min_velocity / max_acceleration / min_acceleration
+                   (NOT max_linear_velocity / min_linear_velocity / ...)
+  Drive joints   : rear wheels only (RWD), matching the Unity Hunter SE prefab.
+
+  Active plugins:
+    JointStatePublisher – wheel joint states for robot_state_publisher
+    AckermannSteering   – Twist→Ackermann drive on /hunter_se/cmd_vel
+    OdometryPublisher   – ground-truth odometry on /hunter_se/odometry + TF at 50 Hz
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="hunter_se">
+
+  <!-- ===================== JOINT STATE PUBLISHER ===================== -->
+  <gazebo>
+    <plugin filename="ignition-gazebo-joint-state-publisher-system"
+            name="ignition::gazebo::systems::JointStatePublisher">
+    </plugin>
+  </gazebo>
+
+  <!-- ===================== ACKERMANN STEERING DRIVE =====================
+       Correct class name for Ignition Fortress: gz::sim::systems::AckermannSteering
+       Rear wheels are driven (RWD); front 2 steer (Ackermann).
+
+       Receives geometry_msgs/Twist via bridge /cmd_vel → /hunter_se/cmd_vel:
+         linear.x  → longitudinal speed (m/s)
+         angular.z → yaw rate (rad/s), converted internally to steering angle
+  ====================================================================== -->
+  <gazebo>
+    <plugin filename="ignition-gazebo-ackermann-steering-system"
+            name="gz::sim::systems::AckermannSteering">
+
+      <!-- Drive joints – rear wheels only (RWD / common rear-drive behavior) -->
+      <left_joint>rear_left_wheel</left_joint>
+      <right_joint>rear_right_wheel</right_joint>
+
+      <!-- Steering joints – front Ackermann revolutes -->
+      <left_steering_joint>front_left_steering</left_steering_joint>
+      <right_steering_joint>front_right_steering</right_steering_joint>
+
+      <!-- Geometry – aligned to HUNTER SE manual where practical.
+           steering_limit is the center-steering equivalent that keeps the
+           inner wheel near the manual's 22 deg maximum. -->
+      <kingpin_width>0.503404</kingpin_width>
+      <steering_limit>0.348193211911321</steering_limit>   <!-- 19.95 deg command overdrive to offset Gazebo understeer -->
+      <wheel_base>0.547696</wheel_base>
+      <wheel_separation>0.503404</wheel_separation>
+      <wheel_radius>0.136</wheel_radius>
+
+      <!-- Command topic (bridged from ROS2 /cmd_vel) -->
+      <topic>/hunter_se/cmd_vel</topic>
+
+      <!-- Velocity / acceleration limits (correct param names per official demo) -->
+      <min_velocity>-1.333</min_velocity>
+      <max_velocity>1.333</max_velocity>
+      <min_acceleration>-2.0</min_acceleration>
+      <max_acceleration>2.0</max_acceleration>
+
+      <!-- Internal odometry (not used by DRL; OdometryPublisher below is the source) -->
+      <odom_topic>/hunter_se/odometry_ackermann</odom_topic>
+      <frame_id>odom</frame_id>
+      <child_frame_id>base_footprint</child_frame_id>
+    </plugin>
+  </gazebo>
+
+  <!-- ===================== GROUND-TRUTH ODOMETRY =====================
+       nav_msgs/Odometry on /hunter_se/odometry + TF odom→base_footprint at 50 Hz.
+       This is the odometry source consumed by the DRL environment node.
+  ==================================================================== -->
+  <gazebo>
+    <plugin filename="libignition-gazebo6-odometry-publisher-system"
+            name="ignition::gazebo::systems::OdometryPublisher">
+      <odom_frame>odom</odom_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <odom_topic>/hunter_se/odometry</odom_topic>
+      <tf_topic>/hunter_se/tf</tf_topic>
+      <dimensions>2</dimensions>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <gaussian_noise>0.001</gaussian_noise>
+    </plugin>
+  </gazebo>
+
+</robot>

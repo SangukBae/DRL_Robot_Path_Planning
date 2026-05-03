@@ -16,6 +16,8 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 	</material>
 
 	<!-- choice of the lidar type: laserscan or pointcloud -->
+	<!-- COMMENTED OUT: Using Ouster OS1-64 LiDAR with RGL plugin instead -->
+	<!--
 	<xacro:arg name="lidar_type" default="3d" />
 	<xacro:property name="lidar_type" value="$(arg lidar_type)" />
 
@@ -25,8 +27,11 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 	<xacro:if value="${lidar_type == '3d'}">
 		<xacro:property name="lidar" value="lidar_3d" />
 	</xacro:if>
+	-->
 
 	<!-- LIDAR link and joint : cylinder on top of the robot center -->
+	<!-- COMMENTED OUT: Using Ouster OS1-64 LiDAR with RGL plugin instead -->
+	<!--
 	<link name="${lidar}">
 		<collision>
 			<origin xyz="0 0 0" rpy="0 0 0" />
@@ -61,6 +66,7 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 	<gazebo reference="${lidar}">
 		<material name="light_grey" />
 	</gazebo>
+	-->
 
 	<link name="imu_frame" />
 
@@ -123,10 +129,53 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 	<gazebo reference="imu_frame">
 		<sensor name="imu_sensor" type="imu">
 			<always_on>1</always_on>
-			<update_rate>1</update_rate>
+			<update_rate>200</update_rate>
 			<ignition_frame_id>imu_frame</ignition_frame_id>
 			<visualize>true</visualize>
 			<topic>/scout/imu</topic>
+			<!-- IMU noise parameters for simulation -->
+			<imu>
+				<angular_velocity>
+					<x>
+						<noise type="gaussian">
+							<mean>0.0</mean>
+							<stddev>2e-4</stddev>
+						</noise>
+					</x>
+					<y>
+						<noise type="gaussian">
+							<mean>0.0</mean>
+							<stddev>2e-4</stddev>
+						</noise>
+					</y>
+					<z>
+						<noise type="gaussian">
+							<mean>0.0</mean>
+							<stddev>2e-4</stddev>
+						</noise>
+					</z>
+				</angular_velocity>
+				<linear_acceleration>
+					<x>
+						<noise type="gaussian">
+							<mean>0.0</mean>
+							<stddev>1.7e-2</stddev>
+						</noise>
+					</x>
+					<y>
+						<noise type="gaussian">
+							<mean>0.0</mean>
+							<stddev>1.7e-2</stddev>
+						</noise>
+					</y>
+					<z>
+						<noise type="gaussian">
+							<mean>0.0</mean>
+							<stddev>1.7e-2</stddev>
+						</noise>
+					</z>
+				</linear_acceleration>
+			</imu>
 		</sensor>
 	</gazebo>
 
@@ -147,8 +196,79 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 		</gazebo>
 	</xacro:if>
 
-	<!-- ........................... 2D LIDAR = LASERSCAN ................................... -->
+	<!-- ........................... RGBD CAMERA (Intel RealSense D455, depth-priority approx) ................................... -->
+	<gazebo reference="rgbd_camera_frame">
+	  <sensor name="rgbd_camera" type="rgbd_camera">
+	    <ignition_frame_id>rgbd_camera_frame</ignition_frame_id>
+	
+	    <camera name="rgbd_camera">
+	      <!-- Depth FOV priority: 87 deg horizontal -->
+	      <horizontal_fov>1.51843645</horizontal_fov> <!-- 87 deg in rad -->
+	
+	      <!-- Intrinsics consistent with 1280x720 + HFOV=87deg
+	           fx = (width/2) / tan(HFOV/2) = 640 / tan(43.5deg) ≈ 674.29
+	           cx, cy set to image center -->
+	      <lens>
+	        <intrinsics>
+	          <fx>674.29</fx>
+	          <fy>674.29</fy>
+	          <cx>639.5</cx>
+	          <cy>359.5</cy>
+	          <s>0</s>
+	        </intrinsics>
+	      </lens>
+	
+	      <!-- Distortion: D455 "official spec" doesn't publish coefficients.
+	           If you don't have calibrated values, using zeros is typically safer than arbitrary numbers. -->
+	      <distortion>
+	        <k1>0.0</k1>
+	        <k2>0.0</k2>
+	        <k3>0.0</k3>
+	        <p1>0.0</p1>
+	        <p2>0.0</p2>
+	        <center>0.5 0.5</center>
+	      </distortion>
+	
+	      <!-- Output resolution: match max depth output resolution -->
+	      <image>
+	        <width>1280</width>
+	        <height>720</height>
+	        <format>R8G8B8</format>
+	      </image>
+	
+	      <!-- RGB render clip (visualization) -->
+	      <clip>
+	        <near>0.1</near>
+	        <far>20.0</far>
+	      </clip>
+	
+	      <!-- Depth range: ideal 0.6–6m, Min-Z ~0.52m @ max res -->
+	      <depth_camera>
+	        <clip>
+	          <near>0.52</near>
+	          <far>6.0</far>
+	        </clip>
+	      </depth_camera>
+	
+	      <!-- Depth noise: spec doesn't define stddev; keep modest gaussian for realism.
+	           Increase stddev if you want noisier depth. -->
+	      <noise>
+	        <type>gaussian</type>
+	        <mean>0</mean>
+	        <stddev>0.0025</stddev>
+	      </noise>
+	    </camera>
+	
+	    <always_on>1</always_on>
+	    <update_rate>30</update_rate>
+	    <visualize>false</visualize>
+	    <topic>/scout/depth_camera</topic>
+	  </sensor>
+	</gazebo>
 
+	<!-- ........................... 2D LIDAR = LASERSCAN ................................... -->
+	<!-- COMMENTED OUT: Using Ouster OS1-64 LiDAR with RGL plugin instead -->
+	<!--
 	<gazebo reference="lidar_2d">
 		<sensor name='gpu_lidar' type='gpu_lidar'>
 			<topic>/scout/laser_scan</topic>
@@ -178,9 +298,11 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 			<visualize>true</visualize>
 		</sensor>
 	</gazebo>
+	-->
 
 	<!-- ........................... 3D LIDAR = POINTCLOUD ................................... -->
-
+	<!-- COMMENTED OUT: Using Ouster OS1-64 LiDAR with RGL plugin instead -->
+	<!--
 	<gazebo reference="lidar_3d">
 		<sensor name='gpu_lidar' type='gpu_lidar'>
 			<topic>/scout/pointcloud</topic>
@@ -216,6 +338,6 @@ https://answers.ros.org/question/246914/four-wheeled-skid-steering-in-gazebo-and
 			<visualize>true</visualize>
 		</sensor>
 	</gazebo>
-
+	-->
 
 </robot>

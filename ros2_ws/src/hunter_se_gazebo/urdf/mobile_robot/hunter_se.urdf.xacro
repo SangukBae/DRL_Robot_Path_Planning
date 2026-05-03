@@ -1,0 +1,144 @@
+<?xml version="1.0"?>
+<!--
+  AgileX Hunter SE – main robot URDF macro (sensor-free).
+
+  Dimensions tuned toward the HUNTER SE V2.0.0 user manual:
+    Wheelbase      : 0.5477 m
+    Track width    : 0.5034 m
+    Wheel radius   : 0.136 m
+    Wheel length   : 0.100 m  (tyre width)
+    Body (approx)  : 820 × 440 × 190 mm  (collision box, excluding wheel protrusion)
+    Total mass     : 42.0 kg
+
+  Drive type: Ackermann steering (front-wheel steer, rear-wheel drive).
+  Matches VehicleController.cs FrontWheelSteer + IRWD configuration.
+
+  Sensors: none. Add sensor xacro includes here when ready.
+
+  Visual meshes are stored in this package so the current simulation can stay
+  self-contained.
+-->
+<robot name="hunter_se" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:macro name="hunter_se" params="load_gazebo">
+
+    <!-- ==================== DIMENSIONS ==================== -->
+    <!-- Body collision box (excluding wheel protrusion) -->
+    <xacro:property name="base_x_size" value="0.820"/>
+    <xacro:property name="base_y_size" value="0.440"/>
+    <xacro:property name="base_z_size" value="0.190"/>
+
+    <!-- Ackermann kinematics / mesh placement.
+         Axles are not perfectly symmetric about the base origin because the
+         imported CAD mesh is forward-biased in X. These values make the
+         zero-steer visual extents land at about 817.55 x 644.0 x 303.63 mm. -->
+    <xacro:property name="front_axle_x"          value="0.339638"/>
+    <xacro:property name="rear_axle_x"           value="-0.208058"/>
+    <xacro:property name="wheelbase"             value="${front_axle_x - rear_axle_x}"/>
+    <xacro:property name="track"                 value="0.503404"/>
+    <!-- wheel-center Z relative to base_link (negative = below body center) -->
+    <xacro:property name="wheel_vertical_offset" value="-0.16713"/>
+
+    <xacro:property name="wheel_radius" value="0.136"/>
+    <xacro:property name="wheel_length" value="0.100"/>
+    <xacro:property name="mesh_root" value="package://hunter_se_gazebo/meshes"/>
+
+    <!-- ==================== BASE LINKS ==================== -->
+    <!-- base_footprint is on the ground directly below the robot centre -->
+    <link name="base_footprint"/>
+
+    <joint name="base_footprint_to_base_link" type="fixed">
+      <!-- z = wheel_radius - wheel_vertical_offset = 0.136 - (-0.16713)
+           = 0.30313 m. Together with the imported visual mesh offset, this
+           yields about 817.55 x 644.0 x 303.63 mm at zero steering. -->
+      <origin xyz="0 0 ${wheel_radius - wheel_vertical_offset}" rpy="0 0 0"/>
+      <parent link="base_footprint"/>
+      <child link="base_link"/>
+    </joint>
+
+    <link name="base_link"/>
+
+    <joint name="base_link_to_mobile_robot" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="base_link"/>
+      <child link="mobile_robot_base_link"/>
+    </joint>
+
+    <!-- ==================== MAIN CHASSIS ==================== -->
+    <link name="mobile_robot_base_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${mesh_root}/base_link.STL"/>
+        </geometry>
+        <material name="hunter_white">
+          <color rgba="1.0 1.0 1.0 1.0"/>
+        </material>
+      </visual>
+      <!-- Two collision boxes: main body + raised centre rail -->
+      <collision>
+        <origin xyz="0 0 0.008" rpy="0 0 0"/>
+        <geometry>
+          <box size="${base_x_size} ${base_y_size} ${base_z_size}"/>
+        </geometry>
+      </collision>
+      <collision>
+        <origin xyz="0 0 ${base_z_size/6}" rpy="0 0 0"/>
+        <geometry>
+          <box size="${base_x_size/5} ${base_y_size*1.5} ${base_z_size/3}"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <!-- Inertial link: solid-box approximation for 33 kg chassis,
+         0.82 × 0.44 × 0.19 m body. With 4 wheels at 2 kg and two
+         steering knuckles at 0.5 kg, total robot mass is about 42 kg. -->
+    <link name="inertial_link">
+      <inertial>
+        <mass value="33.0"/>
+        <origin xyz="0.0 0.0 0.0"/>
+        <inertia ixx="0.632" ixy="0" ixz="0"
+                 iyy="1.948" iyz="0"
+                 izz="2.382"/>
+      </inertial>
+    </link>
+
+    <joint name="inertial_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <parent link="mobile_robot_base_link"/>
+      <child link="inertial_link"/>
+    </joint>
+
+    <!-- ==================== WHEELS ==================== -->
+    <xacro:include filename="$(find hunter_se_gazebo)/urdf/mobile_robot/hunter_se_wheel.xacro"/>
+
+    <!-- Front steerable wheels (Ackermann) – counter-clockwise from front-right -->
+    <xacro:hunter_se_front_wheel wheel_prefix="front_right"
+      x="${front_axle_x}" y="${-track/2}" z="${wheel_vertical_offset}" phi="0"
+      steer_mesh="${mesh_root}/fr_steer_right_link.STL"
+      wheel_mesh="${mesh_root}/fr_right_link.STL"
+      wheel_visual_rpy="-1.5708 0 0"/>
+    <xacro:hunter_se_front_wheel wheel_prefix="front_left"
+      x="${front_axle_x}" y="${track/2}"  z="${wheel_vertical_offset}" phi="0"
+      steer_mesh="${mesh_root}/fr_steer_left_link.STL"
+      wheel_mesh="${mesh_root}/fr_left_link.STL"
+      wheel_visual_rpy="1.5708 0 0.016976"/>
+
+    <!-- Rear drive wheels -->
+    <xacro:hunter_se_rear_wheel wheel_prefix="rear_left"
+      x="${rear_axle_x}" y="${track/2}"  z="${wheel_vertical_offset}" phi="0"
+      wheel_mesh="${mesh_root}/re_left_link.STL"
+      wheel_visual_rpy="1.5708 0 0"/>
+    <xacro:hunter_se_rear_wheel wheel_prefix="rear_right"
+      x="${rear_axle_x}" y="${-track/2}" z="${wheel_vertical_offset}" phi="0"
+      wheel_mesh="${mesh_root}/re_right_link.STL"
+      wheel_visual_rpy="-1.5708 0 0"/>
+
+    <!-- ==================== GAZEBO PLUGINS ==================== -->
+    <xacro:if value="${load_gazebo}">
+      <xacro:include filename="$(find hunter_se_gazebo)/urdf/mobile_robot/hunter_se.gazebo"/>
+    </xacro:if>
+
+  </xacro:macro>
+
+</robot>

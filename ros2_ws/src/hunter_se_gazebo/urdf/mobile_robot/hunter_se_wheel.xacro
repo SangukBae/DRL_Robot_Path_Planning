@@ -1,0 +1,169 @@
+<?xml version="1.0"?>
+<!--
+  Wheel macros for AgileX Hunter SE.
+
+  Two macros:
+    hunter_se_front_wheel  – steerable front wheel
+                             (revolute steering joint + continuous wheel joint)
+    hunter_se_rear_wheel   – non-steerable rear drive wheel
+                             (continuous wheel joint only)
+
+  Physical specs (from Hunter SE.prefab):
+    wheel_radius = 0.136 m
+    wheel_length = 0.100 m  (tyre width)
+
+  Inertia (solid cylinder, m=3 kg, r=0.136, l=0.1):
+    Iyy (spin axis) = m·r²/2         = 3·0.018496/2  = 0.0277 kg·m²
+    Ixx = Izz       = m·(3r²+l²)/12  = 3·0.065488/12 = 0.0164 kg·m²
+-->
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="hunter_se">
+
+  <!-- ======================================================
+       Front steerable wheel
+       wheel_prefix : front_left | front_right
+       x, y, z      : steering joint origin relative to mobile_robot_base_link
+       phi          : roll offset (0 for both sides)
+  ====================================================== -->
+  <xacro:macro name="hunter_se_front_wheel" params="wheel_prefix x y z phi steer_mesh wheel_mesh wheel_visual_rpy">
+
+    <!-- Steering knuckle (massless hub between chassis and wheel) -->
+    <link name="${wheel_prefix}_steering_link">
+      <inertial>
+        <mass value="0.5"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="${steer_mesh}"/>
+        </geometry>
+        <material name="steering_dark_grey">
+          <color rgba="0.22 0.22 0.22 1.0"/>
+        </material>
+      </visual>
+    </link>
+
+    <!-- Revolute steering joint (axis = Z, limited to the manual's
+         maximum inner-wheel steering angle of about ±22°). -->
+    <joint name="${wheel_prefix}_steering" type="revolute">
+      <parent link="mobile_robot_base_link"/>
+      <child link="${wheel_prefix}_steering_link"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
+      <axis xyz="0 0 1"/>
+      <!-- Match the prefilter's 315.789 deg/s steering-rate target and give
+           the steering servo enough authority to reach the 22 deg physical
+           limit under tire load. -->
+      <limit lower="-0.3839724354387525" upper="0.3839724354387525" effort="1000.0" velocity="5.511"/>
+      <dynamics damping="0.05" friction="0.0"/>
+    </joint>
+
+    <link name="${wheel_prefix}_wheel_link">
+      <inertial>
+        <mass value="2.0"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.0109" ixy="0" ixz="0" iyy="0.0185" iyz="0" izz="0.0109"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="${wheel_visual_rpy}"/>
+        <geometry>
+          <mesh filename="${wheel_mesh}"/>
+        </geometry>
+        <material name="dark_grey">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder length="${wheel_length}" radius="${wheel_radius}"/>
+        </geometry>
+        <surface>
+          <contact>
+            <ode>
+              <min_depth>0.001</min_depth>
+              <kp>1000000000.0</kp>
+              <kd>0.0</kd>
+            </ode>
+          </contact>
+          <friction>
+            <ode>
+              <mu>0.9</mu>
+              <mu2>0.7</mu2>
+              <fdir1>1 0 0</fdir1>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+    </link>
+
+    <!-- Continuous wheel-spin joint (axis = Y)
+         Keep passive rolling resistance low. High joint friction made the
+         front free wheels behave like brakes after switching the model to RWD. -->
+    <joint name="${wheel_prefix}_wheel" type="continuous">
+      <parent link="${wheel_prefix}_steering_link"/>
+      <child link="${wheel_prefix}_wheel_link"/>
+      <origin xyz="0 0 0" rpy="${phi} 0 0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.05" friction="0.0"/>
+    </joint>
+
+  </xacro:macro>
+
+
+  <!-- ======================================================
+       Rear non-steerable drive wheel
+       wheel_prefix : rear_left | rear_right
+  ====================================================== -->
+  <xacro:macro name="hunter_se_rear_wheel" params="wheel_prefix x y z phi wheel_mesh wheel_visual_rpy">
+
+    <link name="${wheel_prefix}_wheel_link">
+      <inertial>
+        <mass value="2.0"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.0109" ixy="0" ixz="0" iyy="0.0185" iyz="0" izz="0.0109"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="${wheel_visual_rpy}"/>
+        <geometry>
+          <mesh filename="${wheel_mesh}"/>
+        </geometry>
+        <material name="dark_grey">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry>
+          <cylinder length="${wheel_length}" radius="${wheel_radius}"/>
+        </geometry>
+        <surface>
+          <contact>
+            <ode>
+              <min_depth>0.001</min_depth>
+              <kp>1000000000.0</kp>
+              <kd>0.0</kd>
+            </ode>
+          </contact>
+          <friction>
+            <ode>
+              <mu>0.9</mu>
+              <mu2>0.7</mu2>
+              <fdir1>1 0 0</fdir1>
+            </ode>
+          </friction>
+        </surface>
+      </collision>
+    </link>
+
+    <joint name="${wheel_prefix}_wheel" type="continuous">
+      <parent link="mobile_robot_base_link"/>
+      <child link="${wheel_prefix}_wheel_link"/>
+      <origin xyz="${x} ${y} ${z}" rpy="${phi} 0.0 0.0"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.05" friction="0.0"/>
+    </joint>
+
+  </xacro:macro>
+
+</robot>

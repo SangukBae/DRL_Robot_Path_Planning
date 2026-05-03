@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<!--
+  Top-level xacro entry point for the Hunter SE robot (sensor-free).
+
+  Args:
+    load_gazebo : true (default) | false
+                  false = static URDF for real-robot visualisation without plugins.
+-->
+<robot name="hunter_se" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <xacro:arg name="load_gazebo" default="true"/>
+
+  <xacro:include filename="$(find hunter_se_gazebo)/urdf/mobile_robot/hunter_se.urdf.xacro"/>
+  <xacro:hunter_se load_gazebo="$(arg load_gazebo)"/>
+
+</robot>

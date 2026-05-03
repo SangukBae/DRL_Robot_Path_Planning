@@ -1,12 +1,14 @@
 # python imports
 import os
+from os import environ
 from ament_index_python.packages import get_package_share_directory
 from math import pi
 
 # ros2 imports
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, Shutdown, TimerAction
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessStart
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 from launch.substitutions import (
@@ -15,8 +17,6 @@ from launch.substitutions import (
 	LaunchConfiguration,
 	PythonExpression,
 )
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
 
 
 def generate_launch_description():
@@ -46,17 +46,47 @@ def generate_launch_description():
 		choices=["3d", "2d"]
 	)
 
-	# include launch file with hospital world (Ignition Gazebo)
+	# Launch Ignition Gazebo with hospital world directly (avoids IncludeLaunchDescription
+	# which prevents RegisterEventHandler from referencing the Gazebo process)
 	hospital_world_dir = get_package_share_directory(
 		"aws_robomaker_hospital_world"
 	)
-	hospital_world_launch = IncludeLaunchDescription(
-		PythonLaunchDescriptionSource(
-			[
-				hospital_world_dir,
-				"/launch/hospital_ignition.launch.py",
-			]
-		)
+	hospital_world_file = os.path.join(
+		hospital_world_dir, "worlds", "hospital_ignition.world"
+	)
+
+	# RGL (Robotec GPU Lidar) plugin paths
+	rgl_install_dir = os.path.join(
+		os.path.expanduser("~"), "DRL_Robot_Path_Planning",
+		"third_party", "rgl", "RGLGazeboPlugin", "install"
+	)
+	rgl_server_plugin_path = os.path.join(rgl_install_dir, "RGLServerPlugin")
+	rgl_gui_plugin_path = os.path.join(rgl_install_dir, "RGLVisualize")
+
+	gz_env = {
+		# Server plugins: RGLServerPluginManager, RGLServerPluginInstance
+		"IGN_GAZEBO_SYSTEM_PLUGIN_PATH": ":".join(filter(None, [
+			rgl_server_plugin_path,
+			environ.get("IGN_GAZEBO_SYSTEM_PLUGIN_PATH", ""),
+			environ.get("LD_LIBRARY_PATH", ""),
+		])),
+		# GUI plugin: RGLVisualize (point cloud visualization in Gazebo GUI)
+		"IGN_GUI_PLUGIN_PATH": ":".join(filter(None, [
+			rgl_gui_plugin_path,
+			environ.get("IGN_GUI_PLUGIN_PATH", ""),
+		])),
+		# libRobotecGPULidar.so dependency resolution
+		"LD_LIBRARY_PATH": ":".join(filter(None, [
+			rgl_server_plugin_path,
+			environ.get("LD_LIBRARY_PATH", ""),
+		])),
+	}
+	hospital_world_launch = ExecuteProcess(
+		cmd=["ign", "gazebo", "-v", "1", "-r", hospital_world_file],
+		output="screen",
+		additional_env=gz_env,
+		shell=False,
+		on_exit=Shutdown(),
 	)
 
 	# bridge configuration file
@@ -115,7 +145,8 @@ def generate_launch_description():
 		],
 	)
 
-	# spawn Scout robot from xacro description published in robot description topic
+	# spawn Scout robot after Gazebo world is ready
+	# TimerAction delays spawn until Gazebo has finished loading the world
 	spawn_robot_urdf_node = Node(
 		name="spawn_robot_urdf",
 		package="ros_gz_sim",
@@ -140,6 +171,17 @@ def generate_launch_description():
 		],
 		output="screen",
 	)
+	spawn_robot_after_gazebo = RegisterEventHandler(
+		event_handler=OnProcessStart(
+			target_action=hospital_world_launch,
+			on_start=[
+				TimerAction(
+					period=5.0,
+					actions=[spawn_robot_urdf_node],
+				)
+			],
+		)
+	)
 
 	rviz2_file = os.path.join(
 		get_package_share_directory("agilex_scout"),
@@ -156,29 +198,32 @@ def generate_launch_description():
 	)
 
 	# static transform from world to map
-	static_tf = Node(
-		package="tf2_ros",
-		executable="static_transform_publisher",
-		arguments=[
-			"--x",
-			"0.0",
-			"--y",
-			"0.0",
-			"--z",
-			"0.0",
-			"--yaw",
-			"0.0",
-			"--pitch",
-			"0.0",
-			"--roll",
-			"0.0",
-			"--frame-id",
-			"world",
-			"--child-frame-id",
-			"map",
-		],
-		parameters=[{"use_sim_time": True}]
-	)
+	# NOTE: Disabled for LIO-SAM - creates disconnected TF tree
+	# LIO-SAM's odom frame serves as the world reference
+	# Uncomment if you need world->map for other purposes
+	# static_tf = Node(
+	# 	package="tf2_ros",
+	# 	executable="static_transform_publisher",
+	# 	arguments=[
+	# 		"--x",
+	# 		"0.0",
+	# 		"--y",
+	# 		"0.0",
+	# 		"--z",
+	# 		"0.0",
+	# 		"--yaw",
+	# 		"0.0",
+	# 		"--pitch",
+	# 		"0.0",
+	# 		"--roll",
+	# 		"0.0",
+	# 		"--frame-id",
+	# 		"world",
+	# 		"--child-frame-id",
+	# 		"map",
+	# 	],
+	# 	parameters=[{"use_sim_time": True}]
+	# )
 
 	# simulate robot remote control
 	teleop_keyboard_node = Node(
@@ -215,10 +260,10 @@ def generate_launch_description():
 			odometry_source_arg,
 			rviz_arg,
 			lidar_type_arg,
-			static_tf,
+			# static_tf,  # Disabled for LIO-SAM
 			robot_state_publisher_node,
 			hospital_world_launch,
-			spawn_robot_urdf_node,
+			spawn_robot_after_gazebo,
 			bridge,
 			rviz2_node,
 			teleop_keyboard_node,

@@ -27,7 +27,7 @@
         </geometry>
       </collision>
       <visual name="lidar_visual">
-        <origin xyz="0 0 0.3" rpy="0 0 0"/>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry>
           <mesh filename="file://$(find ouster_description)/meshes/${file_visual}.dae" />
         </geometry>
@@ -64,13 +64,36 @@
           <update_on_paused_sim>false</update_on_paused_sim>
 
           <!-- Match ros_gz_bridge mapping in your launch -->
-          <topic>/ouster/pointcloud/points</topic>
+          <topic>/scout/pointcloud/points</topic>
 
           <!-- frame_id in PointCloudPacked header -->
           <frame>${name}_lidar</frame>
 
-          <!-- Use preset pattern (requires RGL_PATTERNS_DIR env var) -->
-          <pattern_preset>OS1 64</pattern_preset>
+          <!-- Use uniform pattern with explicit vertical FOV -->
+          <!-- NOTE: pattern_preset "OS1 64" has 0° vertical FOV (bug), using pattern_uniform instead -->
+          <!-- Ouster OS1-64: 64 channels, 1024 horizontal samples, ±16.6° vertical FOV -->
+          <!-- Angles in radians: 16.6° = 0.2897 rad, 180° = 3.14159 rad -->
+          <pattern_uniform>
+            <horizontal>
+              <samples>1024</samples>
+              <min_angle>-3.14159</min_angle>
+              <max_angle>3.14159</max_angle>
+            </horizontal>
+            <vertical>
+              <samples>64</samples>
+              <min_angle>-0.2897</min_angle>
+              <max_angle>0.2897</max_angle>
+            </vertical>
+          </pattern_uniform>
+
+          <!-- Channel configuration for ring ID and timestamp support -->
+          <channels>64</channels>
+          <horizontal_samples>1024</horizontal_samples>
+
+          <noise>
+            <mean>0.0</mean>
+            <stddev>0.01</stddev>
+          </noise>
         </plugin>
       </sensor>
     </gazebo>

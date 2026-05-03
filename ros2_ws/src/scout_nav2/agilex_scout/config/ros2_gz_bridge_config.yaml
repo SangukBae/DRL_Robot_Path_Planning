@@ -20,6 +20,8 @@
   direction: GZ_TO_ROS
 
 # scout pose tf
+# NOTE: Disabled when using LIO-SAM to avoid TF conflict
+# LIO-SAM publishes odom->base_footprint, Gazebo would publish odom->base_footprint too
 - ros_topic_name: "/tf"
   gz_topic_name: "/scout/tf"
   ros_type_name: "tf2_msgs/msg/TFMessage"
@@ -49,6 +51,7 @@
   direction: GZ_TO_ROS
 
 # tf static for any transforms that don't change
+# NOTE: Disabled - robot_state_publisher handles all static TF from URDF
 - ros_topic_name: "/tf_static"
   gz_topic_name: "/scout/tf_static"
   ros_type_name: "tf2_msgs/msg/TFMessage"
@@ -56,10 +59,44 @@
   direction: GZ_TO_ROS
 
 # IMU
-- ros_topic_name: "/imu"
+- ros_topic_name: "/scout/imu"
   gz_topic_name: "/scout/imu"
   ros_type_name: "sensor_msgs/msg/Imu"
   gz_type_name: "ignition.msgs.IMU"
   direction: GZ_TO_ROS
 
+# RGBD Camera - RGB image
+- ros_topic_name: "/depth_camera/image"
+  gz_topic_name: "/scout/depth_camera/image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "ignition.msgs.Image"
+  direction: GZ_TO_ROS
 
+# RGBD Camera - Depth image
+- ros_topic_name: "/depth_camera/depth_image"
+  gz_topic_name: "/scout/depth_camera/depth_image"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "ignition.msgs.Image"
+  direction: GZ_TO_ROS
+
+# RGBD Camera - Point cloud
+- ros_topic_name: "/depth_camera/points"
+  gz_topic_name: "/scout/depth_camera/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "ignition.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+
+# RGBD Camera - Camera info
+- ros_topic_name: "/depth_camera/camera_info"
+  gz_topic_name: "/scout/depth_camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "ignition.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# ⭐ 이 부분을 추가 (odometry 토픽)
+
+# - ros_topic_name: "/odometry/imu"
+#   gz_topic_name: "/scout/odometry"
+#   ros_type_name: "nav_msgs/msg/Odometry"
+#   gz_type_name: "ignition.msgs.Odometry"
+#   direction: GZ_TO_ROS

@@ -145,7 +145,7 @@ def generate_launch_description():
     """Generate launch description."""
     defaults = load_run_defaults()
 
-    dataset_root_default = str(defaults.get('dataset_root', '/root/drl_path_final/ros2_ws/data'))
+    dataset_root_default = str(defaults.get('dataset_root', '/root/DRL_Robot_Path_Planning/ros2_ws/data'))
     use_sim_time_default = 'true' if bool(defaults.get('use_sim_time', True)) else 'false'
     segment_duration_default = str(int(defaults.get('segment_duration_sec', 600)))
     base_frame_default = str(defaults.get('base_frame', 'base_link'))
