@@ -30,7 +30,7 @@ from sensor_msgs.msg import LaserScan
 
 from geometry_msgs.msg import Pose
 from ros_gz_interfaces.msg import Entity as GzEntity
-from ros_gz_interfaces.srv import ControlWorld, SetEntityPose
+from ros_gz_interfaces.srv import ControlWorld, SetEntityPose, SpawnEntity, DeleteEntity
 
 
 class Environment(Node):
@@ -152,6 +152,33 @@ class Environment(Node):
         self.max_action = self.environment_config["max_action"]
         self.actions_low = self.environment_config["actions_low"]
         self.actions_high = self.environment_config["actions_high"]
+        self.spawn_z = self.environment_config.get("spawn_z", 0.4)
+
+        # Obstacle spawn margin parameters
+        self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
+        self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
+        self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
+        self.obstacle_mutual_margin = self.environment_config.get("obstacle_mutual_margin", 1.2)
+
+        # Load obstacle catalog (same directory as environment.yaml)
+        catalog_file_name = self.environment_config.get("obstacle_catalog", "obstacle_catalog.yaml")
+        catalog_path = os.path.join(cfg_dir, catalog_file_name)
+        self.obstacle_catalog = []
+        if os.path.isfile(catalog_path):
+            try:
+                cat = load_yaml(catalog_path)
+                self.obstacle_catalog = cat.get("obstacles", [])
+                self.get_logger().info(
+                    f"Loaded {len(self.obstacle_catalog)} obstacle types from {catalog_path}"
+                )
+            except Exception as e:
+                self.get_logger().warn(f"Failed to load obstacle catalog: {e}")
+
+        # Names of obstacles currently present in the world (cleared each episode)
+        self.spawned_obstacle_names: list = []
+        # Monotonically increasing episode counter — used to generate unique obstacle names
+        # so a timed-out delete from the previous episode never collides with a new spawn.
+        self._episode_count = 0
 
         self.threshold_params_config = self.config["threshold_parameters"]
         self.goal_threshold = self.threshold_params_config["goal_threshold"]
@@ -222,6 +249,18 @@ class Environment(Node):
         self.set_entity_pose = self.create_client(
             SetEntityPose,
             f"/world/{self.world_name}/set_pose",
+            callback_group=self.clients_callback_group,
+        )
+        # /world/<world_name>/create  (runtime obstacle spawn)
+        self.spawn_entity_client = self.create_client(
+            SpawnEntity,
+            f"/world/{self.world_name}/create",
+            callback_group=self.clients_callback_group,
+        )
+        # /world/<world_name>/remove  (runtime obstacle delete)
+        self.delete_entity_client = self.create_client(
+            DeleteEntity,
+            f"/world/{self.world_name}/remove",
             callback_group=self.clients_callback_group,
         )
         # ----------------------------------------------------------------------------------------------
@@ -603,8 +642,14 @@ class Environment(Node):
         return response
 
     def sample_action_callback(self, _, response):
-        """Samples an action from the action space."""
-        action = np.random.uniform(self.actions_low, self.actions_high)
+        """Samples an action from the action space.
+
+        Returns actions in the normalized policy space [-1, 1] for each dimension.
+        _map_action_to_twist() then maps [-1, 1] → [actions_low, actions_high].
+        This is consistent with the action range that policy agents output and
+        with EnvInterface.step() which no longer remaps the first dimension.
+        """
+        action = np.random.uniform(-1.0, 1.0, size=self.action_dim)
         response.action = np.array(action, dtype=np.float32).tolist()
         return response
 
@@ -767,11 +812,14 @@ class Environment(Node):
         req = ControlWorld.Request()
         req.world_control.pause = bool(pause)
         try:
-            self.world_control.call_async(req)
+            future = self.world_control.call_async(req)
+            result = self._await_future(future)
+            if result is None:
+                self.get_logger().warn(f"{srv_name} (pause={pause}): timed out")
+            elif not result.success:
+                self.get_logger().warn(f"{srv_name} (pause={pause}): success=false")
         except Exception as e:
-            self.get_logger().error(
-                f"{srv_name} service call failed: {e}"
-            )
+            self.get_logger().error(f"{srv_name} service call failed: {e}")
             sys.exit(-1)
 
     def reset_world(self):
@@ -780,16 +828,17 @@ class Environment(Node):
         self._wait_for_srv(self.world_control, srv_name)
 
         req = ControlWorld.Request()
-        # 모든 것 리셋
         req.world_control.reset.all = True
-        # 권장: 리셋하면서 바로 pause 상태로
         req.world_control.pause = True
         try:
-            self.world_control.call_async(req)
+            future = self.world_control.call_async(req)
+            result = self._await_future(future)
+            if result is None:
+                self.get_logger().warn(f"{srv_name} (reset): timed out")
+            elif not result.success:
+                self.get_logger().warn(f"{srv_name} (reset): success=false")
         except Exception as e:
-            self.get_logger().error(
-                f"{srv_name} (reset) service call failed: {e}"
-            )
+            self.get_logger().error(f"{srv_name} (reset) service call failed: {e}")
             sys.exit(-1)
 
     def set_entity_pose_ignition(self, name, x, y, z, qx, qy, qz, qw):
@@ -810,11 +859,14 @@ class Environment(Node):
         req.pose.orientation.w = float(qw)
 
         try:
-            self.set_entity_pose.call_async(req)
+            future = self.set_entity_pose.call_async(req)
+            result = self._await_future(future)
+            if result is None:
+                self.get_logger().warn(f"{srv_name} (entity={name}): timed out")
+            elif not result.success:
+                self.get_logger().warn(f"{srv_name} (entity={name}): success=false")
         except Exception as e:
-            self.get_logger().error(
-                f"{srv_name} service call failed: {e}"
-            )
+            self.get_logger().error(f"{srv_name} service call failed: {e}")
             sys.exit(-1)
 
     def propagate_state(self, time_delta):
@@ -902,6 +954,7 @@ class Environment(Node):
 
     def reset_callback(self, _, response):
         """Resets the state of the environment and returns an initial observation, state"""
+        self._episode_count += 1
 
         """*****************************************************
         ** Start by resetting Ignition world
@@ -931,10 +984,10 @@ class Environment(Node):
         quaternion = Quaternion.from_euler(0.0, 0.0, angle)
         # Ignition 월드에서 로봇 모델 텔레포트
         self.set_entity_pose_ignition(
-            self.agent_name,          # 예: "scout_v2"
+            self.agent_name,
             start_x,
             start_y,
-            0.4,                      # z 높이 (현재 world에서 잘 쓰이던 값 유지)
+            self.spawn_z,             # environment.yaml spawn_z 값 사용
             quaternion.x,
             quaternion.y,
             quaternion.z,
@@ -944,9 +997,9 @@ class Environment(Node):
         """*****************************************************
 		** Change goal and randomize obstacles
 		*****************************************************"""
-        self.change_goal()
+        self.change_goal(start_x, start_y)
         if self.train_mode:
-            self.shuffle_obstacles(start_x, start_y)
+            self._spawn_random_obstacles(start_x, start_y)
         # Publish markers for rviz
         self.publish_markers([0.0, 0.0])
         # Propagate state for 2*time_delta seconds
@@ -965,23 +1018,17 @@ class Environment(Node):
         response.state = np.append(environment_state, agent_state).tolist()
         return response
 
-    def change_goal(self):
-        """Places a new goal and ensures its location is not on one of the obstacles"""
+    def change_goal(self, start_x=0.0, start_y=0.0):
+        """Places a new goal that is not in a dead zone and is far enough from start."""
         if self.train_mode:
-            # 로봇 시작점과의 최소 거리: 장애물 간격과 동일 값 사용
-            # min_start_goal_dist = float(getattr(self, "inter_entity_distance", 1.0))
             min_start_goal_dist = 3.0
-            sx = float(self.set_agent_state.pose.position.x)
-            sy = float(self.set_agent_state.pose.position.y)
-
             while True:
-                self.goal_x = random.uniform(self.upper, self.lower)
-                self.goal_y = random.uniform(self.upper, self.lower)
+                self.goal_x = random.uniform(self.lower, self.upper)
+                self.goal_y = random.uniform(self.lower, self.upper)
 
-                # 금지영역(필요 시 마스크 해제) + 로봇 시작점과의 최소거리 조건
                 if self.check_dead_zone(self.goal_x, self.goal_y, use_cross_mask=False):
                     continue
-                if math.hypot(self.goal_x - sx, self.goal_y - sy) < min_start_goal_dist:
+                if math.hypot(self.goal_x - start_x, self.goal_y - start_y) < min_start_goal_dist:
                     continue
                 break
         else:
@@ -1012,45 +1059,136 @@ class Environment(Node):
             done = collision = True
         return done, collision, min_laser
 
-    def shuffle_obstacles(self, start_x, start_y):
-        """Randomly changes the location of the obstacles upon reset"""
-        prev_obstacle_positions = []
-        for i in range(1, self.num_of_obstacles + 1):
-            position_ok = False
-            obstacle_name = f"obstacle_{i}"
-            while not position_ok:
-                x = np.random.uniform(self.lower, self.upper)
-                y = np.random.uniform(self.lower, self.upper)
+    # ------------------------------------------------------------------
+    # Dynamic obstacle spawn/delete  (replaces legacy shuffle_obstacles)
+    # ------------------------------------------------------------------
 
-                position_ok = not self.check_dead_zone(x, y, use_cross_mask=False)
-                distance_to_robot = np.linalg.norm([x - start_x, y - start_y])
-                distance_to_goal = np.linalg.norm([x - self.goal_x, y - self.goal_y])
-                if (
-                    distance_to_robot < self.inter_entity_distance
-                    or distance_to_goal < self.inter_entity_distance
-                ):
-                    position_ok = False
-                    continue
+    def _await_future(self, future, timeout: float = 3.0):
+        """Poll a service future until done or timed out.
 
-                for prev_x, prev_y in prev_obstacle_positions:
-                    distance_to_other_obstacles = np.linalg.norm(
-                        [x - prev_x, y - prev_y]
-                    )
-                    if distance_to_other_obstacles < self.inter_entity_distance:
-                        position_ok = False
+        Safe to call from inside a service callback when the node runs under
+        MultiThreadedExecutor: the other executor threads keep processing ROS
+        callbacks (including the service response) while this thread sleeps.
+        Returns the result, or None on timeout.
+        """
+        deadline = time.time() + timeout
+        while not future.done():
+            if time.time() > deadline:
+                self.get_logger().warn(f"Service future timed out after {timeout:.1f}s")
+                return None
+            time.sleep(0.05)
+        return future.result()
 
-            # Ignition 월드에서 obstacle_i 텔레포트
-            self.set_entity_pose_ignition(
-                obstacle_name,
-                x,
-                y,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            )
-            prev_obstacle_positions.append((x, y))
+    def _make_obstacle_sdf(self, model_name: str, uri: str) -> str:
+        """Return a minimal SDF string that includes a catalog model as static."""
+        return (
+            '<sdf version="1.8">'
+            f'<model name="{model_name}">'
+            "<static>true</static>"
+            f"<include><uri>{uri}</uri></include>"
+            "</model>"
+            "</sdf>"
+        )
+
+    def _spawn_entity_sdf(self, model_name: str, uri: str, x: float, y: float, yaw: float) -> bool:
+        """Spawn one static obstacle and wait for Gazebo's confirmation.
+
+        Returns True if Gazebo confirmed the spawn, False on failure or timeout.
+        """
+        req = SpawnEntity.Request()
+        req.entity_factory.name = model_name
+        req.entity_factory.allow_renaming = False
+        req.entity_factory.sdf = self._make_obstacle_sdf(model_name, uri)
+        req.entity_factory.pose.position.x = float(x)
+        req.entity_factory.pose.position.y = float(y)
+        req.entity_factory.pose.position.z = 0.0
+        q = Quaternion.from_euler(0.0, 0.0, float(yaw))
+        req.entity_factory.pose.orientation.x = float(q.x)
+        req.entity_factory.pose.orientation.y = float(q.y)
+        req.entity_factory.pose.orientation.z = float(q.z)
+        req.entity_factory.pose.orientation.w = float(q.w)
+        try:
+            future = self.spawn_entity_client.call_async(req)
+            result = self._await_future(future)
+            if result is None:
+                self.get_logger().warn(f"Spawn {model_name}: timed out")
+                return False
+            if not result.success:
+                self.get_logger().warn(f"Spawn {model_name}: Gazebo returned success=false")
+                return False
+            return True
+        except Exception as e:
+            self.get_logger().warn(f"SpawnEntity for {model_name}: {e}")
+            return False
+
+    def _delete_spawned_obstacles(self):
+        """Delete all obstacles from the previous episode and wait for each confirmation."""
+        if not self.spawned_obstacle_names:
+            return
+        for name in list(self.spawned_obstacle_names):
+            req = DeleteEntity.Request()
+            req.entity.name = name
+            req.entity.type = GzEntity.MODEL
+            try:
+                future = self.delete_entity_client.call_async(req)
+                result = self._await_future(future)
+                if result is None:
+                    self.get_logger().warn(f"Delete {name}: timed out (entity may linger)")
+                elif not result.success:
+                    self.get_logger().warn(f"Delete {name}: Gazebo returned success=false")
+            except Exception as e:
+                self.get_logger().warn(f"DeleteEntity for {name}: {e}")
+        self.spawned_obstacle_names.clear()
+
+    def _sample_free_pose(self, radius: float, placed: list, start_x: float, start_y: float):
+        """Sample a collision-free (x, y) for one obstacle.
+
+        placed: list of (x, y, radius) already committed this episode.
+        Returns (x, y) or None if no free position found within 200 tries.
+        """
+        arena = self.upper - self.obstacle_wall_margin
+        for _ in range(200):
+            x = np.random.uniform(-arena, arena)
+            y = np.random.uniform(-arena, arena)
+            if math.hypot(x - start_x, y - start_y) < self.obstacle_robot_margin + radius:
+                continue
+            if math.hypot(x - self.goal_x, y - self.goal_y) < self.obstacle_goal_margin + radius:
+                continue
+            ok = True
+            for px, py, pr in placed:
+                if math.hypot(x - px, y - py) < self.obstacle_mutual_margin + radius + pr:
+                    ok = False
+                    break
+            if ok:
+                return x, y
+        return None
+
+    def _spawn_random_obstacles(self, start_x: float, start_y: float):
+        """Delete previous episode's obstacles, then spawn num_of_obstacles new ones.
+
+        Each model is named with the current episode counter so that a timed-out
+        delete from the previous episode can never block a new spawn.
+        """
+        self._delete_spawned_obstacles()
+        if not self.obstacle_catalog or self.num_of_obstacles <= 0:
+            return
+        ep = self._episode_count
+        placed = []
+        for i in range(self.num_of_obstacles):
+            entry = random.choice(self.obstacle_catalog)
+            radius = float(entry.get("radius", 0.5))
+            result = self._sample_free_pose(radius, placed, start_x, start_y)
+            if result is None:
+                self.get_logger().warn(f"Could not place obstacle {i + 1} — skipping")
+                continue
+            x, y = result
+            yaw = np.random.uniform(-math.pi, math.pi) if entry.get("yaw_random", True) else 0.0
+            # Episode-scoped name: even if a previous delete timed out, the new
+            # name is unique so allow_renaming=False will not silently fail.
+            model_name = f"rl_obs_{ep:04d}_{i + 1:03d}"
+            if self._spawn_entity_sdf(model_name, entry["uri"], x, y, yaw):
+                self.spawned_obstacle_names.append(model_name)
+                placed.append((x, y, radius))
 
     def check_dead_zone(self, x, y, use_cross_mask: bool = False):
         """True면 금지영역, False면 허용.

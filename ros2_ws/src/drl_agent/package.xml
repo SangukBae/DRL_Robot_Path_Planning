@@ -19,6 +19,8 @@
   <!-- Gazebo Classic 전용 패키지였던 drl_agent_gazebo는 Fortress 환경에서는 사용하지 않으므로 제거 -->
   <!-- <depend>drl_agent_gazebo</depend> -->
   <depend>drl_agent_interfaces</depend>
+  <!-- ros_gz_interfaces: SpawnEntity / DeleteEntity / SetEntityPose / ControlWorld -->
+  <depend>ros_gz_interfaces</depend>
 
   <!-- Python pip dependencies (ROS deb 패키지 래퍼) -->
   <depend>python3-tensorboard-pip</depend>

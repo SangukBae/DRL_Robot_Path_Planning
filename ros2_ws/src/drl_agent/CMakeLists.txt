@@ -11,6 +11,8 @@ find_package(rclpy REQUIRED)
 # Gazebo Classic 전용 패키지였던 drl_agent_gazebo는 Fortress 환경에서는 사용하지 않으므로 제거
 # find_package(drl_agent_gazebo REQUIRED)
 find_package(drl_agent_interfaces REQUIRED)
+# ros_gz_interfaces: SpawnEntity / DeleteEntity / SetEntityPose / ControlWorld
+find_package(ros_gz_interfaces REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)

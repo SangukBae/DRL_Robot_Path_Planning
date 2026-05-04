@@ -2,18 +2,26 @@
 Launch file for AgileX Hunter SE (sensor-free) in Gazebo Ignition Fortress.
 
 Starts:
-  1. Ignition Gazebo with hospital world
+  1. Ignition Gazebo with the selected world (default: drl_arena)
   2. robot_state_publisher  – publishes URDF-based TF
   3. hunter_se_cmd_prefilter – Unity-like throttle / steering shaping
   4. ros_gz_bridge          – bridges filtered cmd_vel / odometry / tf / joint_states
   5. hunter_se_steering_monitor – prints front wheel steering angles
-  6. spawn_entity           – spawns hunter_se into Gazebo (delayed 5 s)
+  6. spawn_entity           – spawns hunter_se into Gazebo (5 s after Gazebo starts)
   7. RViz2                  – optional (rviz:=true|false)
   8. hunter_se_teleop_key.py – focused teleop window (W/S=fwd/bck, A/D=steer)
 
-Usage:
-  ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py
-  ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
+Supported worlds
+─────────────────
+  drl_arena   (default) – 15×15m enclosed arena, world name="default". Compatible
+                          with ros2_gz_bridge_config.yaml and environment.py.
+  hospital              – AWS hospital world, also world name="default".
+  <full path>           – Any .world file whose SDF world name is "default".
+
+NOTE: ros2_gz_bridge_config.yaml hardcodes /world/default/..., so only worlds
+      whose SDF <world name="default"> are compatible with this launch file.
+      In particular, worlds/empty.world (name="empty") is NOT supported here;
+      use hunter_se_validation_empty.launch.py for keyboard-drive testing.
 
 NOTE: RGL plugin must be installed at:
   ~/DRL_Robot_Path_Planning/third_party/rgl/RGLGazeboPlugin/install
@@ -28,6 +36,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
+    OpaqueFunction,
     RegisterEventHandler,
     Shutdown,
     TimerAction,
@@ -55,8 +64,19 @@ def generate_launch_description():
         choices=["true", "false"],
     )
 
+    world_arg = DeclareLaunchArgument(
+        name="world",
+        default_value="drl_arena",
+        description=(
+            "World to simulate. Supported names: 'drl_arena' (default), 'hospital'. "
+            "Or pass a full path to any .world file with <world name=\"default\">. "
+            "NOTE: worlds/empty.world is NOT compatible (uses name=\"empty\"); "
+            "use hunter_se_validation_empty.launch.py instead."
+        ),
+    )
+
     # ------------------------------------------------------------------ #
-    # Package paths / world file
+    # Package paths
     # ------------------------------------------------------------------ #
     hunter_se_pkg = get_package_share_directory("hunter_se_gazebo")
     hunter_se_resource_root = os.path.dirname(hunter_se_pkg)
@@ -66,6 +86,24 @@ def generate_launch_description():
         "worlds",
         "hospital_ignition.world",
     )
+
+    # AWS world package share dirs for model:// URI resolution
+    try:
+        warehouse_share = get_package_share_directory("aws_robomaker_small_warehouse_world")
+    except Exception:
+        warehouse_share = ""
+    try:
+        hospital_share = get_package_share_directory("aws_robomaker_hospital_world")
+    except Exception:
+        hospital_share = ""
+    try:
+        bookstore_share = get_package_share_directory("aws_robomaker_bookstore_world")
+    except Exception:
+        bookstore_share = ""
+    try:
+        house_share = get_package_share_directory("aws_robomaker_small_house_world")
+    except Exception:
+        house_share = ""
 
     # ------------------------------------------------------------------ #
     # RGL plugin paths (same as Scout v2 setup)
@@ -78,6 +116,20 @@ def generate_launch_description():
     rgl_server_plugin_path = os.path.join(rgl_install_dir, "RGLServerPlugin")
     rgl_gui_plugin_path    = os.path.join(rgl_install_dir, "RGLVisualize")
 
+    # Include both package-share root AND models/ sub-directory for each AWS
+    # package so that model:// URIs resolve correctly via GZ_SIM_RESOURCE_PATH.
+    aws_resource_paths = [p for p in [
+        warehouse_share,
+        os.path.join(warehouse_share, "models") if warehouse_share else "",
+        hospital_share,
+        os.path.join(hospital_share, "models") if hospital_share else "",
+        os.path.join(hospital_share, "fuel_models") if hospital_share else "",
+        bookstore_share,
+        os.path.join(bookstore_share, "models") if bookstore_share else "",
+        house_share,
+        os.path.join(house_share, "models") if house_share else "",
+    ] if p]
+
     gz_env = {
         # Fortress resolves package mesh URIs through Gazebo resource paths.
         # `package://hunter_se_gazebo/...` gets translated to
@@ -86,11 +138,13 @@ def generate_launch_description():
         "GZ_SIM_RESOURCE_PATH": ":".join(filter(None, [
             hunter_se_resource_root,
             hunter_se_pkg,
+            *aws_resource_paths,
             environ.get("GZ_SIM_RESOURCE_PATH", ""),
         ])),
         "IGN_GAZEBO_RESOURCE_PATH": ":".join(filter(None, [
             hunter_se_resource_root,
             hunter_se_pkg,
+            *aws_resource_paths,
             environ.get("IGN_GAZEBO_RESOURCE_PATH", ""),
         ])),
         "IGN_GAZEBO_SYSTEM_PLUGIN_PATH": ":".join(filter(None, [
@@ -109,15 +163,12 @@ def generate_launch_description():
     }
 
     # ------------------------------------------------------------------ #
-    # Ignition Gazebo
+    # Known world name → file path mapping (only worlds with name="default")
     # ------------------------------------------------------------------ #
-    gazebo_process = ExecuteProcess(
-        cmd=["ign", "gazebo", "-v", "1", "-r", hospital_world_file],
-        output="screen",
-        additional_env=gz_env,
-        shell=False,
-        on_exit=Shutdown(),
-    )
+    _known_worlds = {
+        "drl_arena": os.path.join(hunter_se_pkg, "worlds", "drl_arena.world"),
+        "hospital":  hospital_world_file,
+    }
 
     # ------------------------------------------------------------------ #
     # Robot description
@@ -182,7 +233,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # Spawn hunter_se (delayed until Gazebo world is ready)
+    # Spawn hunter_se
     # spawn z = wheel_radius - wheel_vertical_offset = 0.136 + 0.060 = 0.196 m
     # ------------------------------------------------------------------ #
     spawn_node = Node(
@@ -197,12 +248,33 @@ def generate_launch_description():
         ],
         output="screen",
     )
-    spawn_after_gazebo = RegisterEventHandler(
-        event_handler=OnProcessStart(
-            target_action=gazebo_process,
-            on_start=[TimerAction(period=5.0, actions=[spawn_node])],
+
+    # ------------------------------------------------------------------ #
+    # Ignition Gazebo  (world resolved at launch time; spawn attached to
+    # the resulting process via OnProcessStart so timing is robust even
+    # for slow-loading worlds or heavy plugin initialisation)
+    # ------------------------------------------------------------------ #
+    def start_gazebo(context, *args, **kwargs):
+        world = LaunchConfiguration("world").perform(context)
+        world_file = _known_worlds.get(world, world)  # fallback: treat as file path
+        gz_process = ExecuteProcess(
+            cmd=["ign", "gazebo", "-v", "1", "-r", world_file],
+            output="screen",
+            additional_env=gz_env,
+            shell=False,
+            on_exit=Shutdown(),
         )
-    )
+        # Wait for Gazebo to start, then delay 5 s before spawning the robot.
+        # This is robust to variable world / plugin load times.
+        spawn_after_gazebo = RegisterEventHandler(
+            event_handler=OnProcessStart(
+                target_action=gz_process,
+                on_start=[TimerAction(period=5.0, actions=[spawn_node])],
+            )
+        )
+        return [gz_process, spawn_after_gazebo]
+
+    gazebo_opaque = OpaqueFunction(function=start_gazebo)
 
     # ------------------------------------------------------------------ #
     # RViz2
@@ -229,9 +301,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         rviz_arg,
+        world_arg,
         robot_state_publisher_node,
-        gazebo_process,
-        spawn_after_gazebo,
+        gazebo_opaque,
         prefilter_node,
         bridge_node,
         steering_monitor_node,

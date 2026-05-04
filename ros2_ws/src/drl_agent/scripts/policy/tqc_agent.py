@@ -231,7 +231,9 @@ class Agent(object):
             self.buffer_size,
             self.batch_size,
             self.max_action,
-            normalize_actions=True,
+            # TQC actor and environment interface both operate in normalized
+            # action space [-1, 1]. Keep replay-buffer actions unchanged.
+            normalize_actions=False,
             prioritized=self.prioritized,
         )
 
@@ -323,7 +325,7 @@ class Agent(object):
         return hp
 
     def select_action(self, state, use_checkpoint=False, use_exploration=True):
-        """상태로부터 행동 선택 (tanh 스쿼시 → max_action 스케일)"""
+        """상태로부터 정규화 action [-1, 1] 선택"""
         with torch.no_grad():
             
             state_np = np.asarray(state, dtype=np.float32).reshape(1, -1)
@@ -332,9 +334,11 @@ class Agent(object):
             actor_to_use = self.checkpoint_actor if use_checkpoint else self.actor
             action = actor_to_use(state_t, deterministic=not use_exploration)
 
-            # [-1,1] 클램프 후 환경 스케일로 변환
+            # Keep the policy output in normalized action space [-1, 1].
+            # environment.py._map_action_to_twist() converts this into
+            # physical [v, w] commands using actions_low/high.
             action = action.clamp(-1, 1)
-            return (action.cpu().numpy().flatten() * self.max_action)
+            return action.cpu().numpy().flatten()
     
     def train(self):
         """Train the agent for one step"""

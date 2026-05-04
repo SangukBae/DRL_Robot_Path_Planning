@@ -42,3 +42,17 @@
   ros_type_name: "tf2_msgs/msg/TFMessage"
   gz_type_name: "ignition.msgs.Pose_V"
   direction: GZ_TO_ROS
+
+# 2-D GPU LiDAR scan (DRL environment node subscribes to /scan)
+- ros_topic_name: "/scan"
+  gz_topic_name: "/hunter_se/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "ignition.msgs.LaserScan"
+  direction: GZ_TO_ROS
+
+# Ouster OS1-64 point cloud
+- ros_topic_name: "/ouster/points"
+  gz_topic_name: "/hunter_se/pointcloud/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "ignition.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS

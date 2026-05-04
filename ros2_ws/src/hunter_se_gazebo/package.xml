@@ -5,7 +5,8 @@
   <version>0.0.0</version>
   <description>
     URDF and Gazebo Ignition Fortress simulation package for the AgileX Hunter SE robot
-    (sensor-free). Ackermann-steering (front-wheel steer, rear-wheel drive) UGV.
+    with Ouster OS1-64 and planar LiDAR sensors. Ackermann-steering
+    (front-wheel steer, rear-wheel drive) UGV.
     Kinematics sourced from the Unity Hunter SE.prefab in hunter_se_unity/.
   </description>
 
@@ -25,6 +26,7 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>python3-tk</exec_depend>
   <exec_depend>aws_robomaker_hospital_world</exec_depend>
+  <exec_depend>ouster_description</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

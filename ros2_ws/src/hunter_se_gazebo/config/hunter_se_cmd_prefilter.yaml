@@ -4,10 +4,10 @@ hunter_se_cmd_prefilter:
     command_timeout_sec: 0.5
     input_delay_sec: 0.05
     wheelbase_m: 0.547696
-    # Command-side steering overdrive to offset Gazebo understeer. The logger
-    # still evaluates against the real Hunter SE target of 18.8168465 deg
-    # center / 22 deg inner.
-    steering_limit_deg: 19.95
+    # Command-side steering overdrive to offset Gazebo understeer. Tuned so the
+    # steady-state center steering lands near the real Hunter SE target of
+    # 18.8168465 deg center / 22 deg inner during the validation turn test.
+    steering_limit_deg: 21.58
     steering_rate_deg_s: 315.789
     min_speed_for_steering_mps: 0.15
     speed_lag_tau_sec: 0.25

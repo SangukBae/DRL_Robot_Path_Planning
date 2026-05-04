@@ -1,14 +1,24 @@
 environment:
-  lower: -7.0
-  upper: 7.0
-  num_of_obstacles: 15
+  lower: -6.5
+  upper: 6.5
+  num_of_obstacles: 8
   environment_state_dim: 80
   agent_state_dim: 4
   action_dim: 2
-  agent_name: "scout_v2"
-  max_action: 1.0
-  actions_low: [-1.0, -1.4]
-  actions_high: [1.0, 1.4]
+  agent_name: "hunter_se"
+  max_action: 1.333
+  actions_low: [-1.333, -1.4]
+  actions_high: [1.333, 1.4]
+  spawn_z: 0.20
+
+  # Obstacle catalog (relative to the config directory)
+  obstacle_catalog: "obstacle_catalog.yaml"
+
+  # Spawn safety margins (metres)
+  obstacle_wall_margin: 1.0    # min clearance between obstacle centre and arena wall
+  obstacle_robot_margin: 1.5   # min clearance between obstacle and robot start
+  obstacle_goal_margin: 1.5    # min clearance between obstacle and goal
+  obstacle_mutual_margin: 1.2  # min clearance between two obstacle centres
 
 threshold_parameters:
   goal_threshold: 0.42

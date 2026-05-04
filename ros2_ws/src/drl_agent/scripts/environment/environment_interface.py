@@ -36,9 +36,11 @@ class EnvInterface(Node):
     def step(self, action):
         """Takes a step in the environment with the given action and the observed state"""
         request = Step.Request()
-        # Adjust the linear velocity to fall between 0 and 1
+        # Pass actions directly in [-1, 1] normalized space.
+        # environment.py._map_action_to_twist() maps [-1,1] → [actions_low, actions_high].
+        # Hunter SE supports bidirectional motion (actions_low[0] = -1.333).
         request.action = np.array(
-            [(action[0] + 1) / 2, action[1]], dtype=np.float32
+            [action[0], action[1]], dtype=np.float32
         ).tolist()
         while not self.step_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info("Service /step not available, waiting again...")

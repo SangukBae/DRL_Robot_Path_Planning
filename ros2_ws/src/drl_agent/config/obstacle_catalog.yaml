@@ -1,0 +1,41 @@
+# Obstacle catalog for DRL arena random spawning.
+#
+# Each entry describes one model type that can be spawned at runtime.
+#   key         – human-readable identifier (not used by code, for reference only)
+#   uri         – Gazebo model:// URI resolved via GZ_SIM_RESOURCE_PATH
+#   radius      – conservative bounding circle radius (m), used for collision-free
+#                 placement sampling in _sample_free_pose()
+#   yaw_random  – if true, spawn with a random yaw each episode
+
+obstacles:
+
+  # ── Warehouse objects ────────────────────────────────────────────────────
+  - key: warehouse_bucket
+    uri: "model://aws_robomaker_warehouse_Bucket_01"
+    radius: 0.35
+    yaw_random: true
+
+  - key: warehouse_cluttering_a
+    uri: "model://aws_robomaker_warehouse_ClutteringA_01"
+    radius: 0.55
+    yaw_random: true
+
+  - key: warehouse_cluttering_c
+    uri: "model://aws_robomaker_warehouse_ClutteringC_01"
+    radius: 0.45
+    yaw_random: true
+
+  - key: warehouse_cluttering_d
+    uri: "model://aws_robomaker_warehouse_ClutteringD_01"
+    radius: 0.45
+    yaw_random: true
+
+  - key: warehouse_trash_can
+    uri: "model://aws_robomaker_warehouse_TrashCanC_01"
+    radius: 0.30
+    yaw_random: false
+
+  - key: warehouse_desk
+    uri: "model://aws_robomaker_warehouse_DeskC_01"
+    radius: 0.65
+    yaw_random: true

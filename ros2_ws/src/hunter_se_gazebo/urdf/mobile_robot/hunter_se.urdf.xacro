@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!--
-  AgileX Hunter SE – main robot URDF macro (sensor-free).
+  AgileX Hunter SE – main robot URDF macro.
 
   Dimensions tuned toward the HUNTER SE V2.0.0 user manual:
     Wheelbase      : 0.5477 m
@@ -13,7 +13,7 @@
   Drive type: Ackermann steering (front-wheel steer, rear-wheel drive).
   Matches VehicleController.cs FrontWheelSteer + IRWD configuration.
 
-  Sensors: none. Add sensor xacro includes here when ready.
+  Sensors: Ouster OS1-64 + 2-D planar LiDAR.
 
   Visual meshes are stored in this package so the current simulation can stay
   self-contained.
@@ -36,8 +36,10 @@
     <xacro:property name="rear_axle_x"           value="-0.208058"/>
     <xacro:property name="wheelbase"             value="${front_axle_x - rear_axle_x}"/>
     <xacro:property name="track"                 value="0.503404"/>
-    <!-- wheel-center Z relative to base_link (negative = below body center) -->
-    <xacro:property name="wheel_vertical_offset" value="-0.16713"/>
+    <!-- wheel-center Z relative to base_link (negative = below body center).
+         Raised by 3 mm so the chassis sits 3 mm lower while wheel contact
+         with the ground stays unchanged. -->
+    <xacro:property name="wheel_vertical_offset" value="-0.16413"/>
 
     <xacro:property name="wheel_radius" value="0.136"/>
     <xacro:property name="wheel_length" value="0.100"/>
@@ -48,9 +50,9 @@
     <link name="base_footprint"/>
 
     <joint name="base_footprint_to_base_link" type="fixed">
-      <!-- z = wheel_radius - wheel_vertical_offset = 0.136 - (-0.16713)
-           = 0.30313 m. Together with the imported visual mesh offset, this
-           yields about 817.55 x 644.0 x 303.63 mm at zero steering. -->
+      <!-- z = wheel_radius - wheel_vertical_offset = 0.136 - (-0.16413)
+           = 0.30013 m. Together with the imported visual mesh offset, this
+           yields about 817.55 x 644.0 x 300.63 mm at zero steering. -->
       <origin xyz="0 0 ${wheel_radius - wheel_vertical_offset}" rpy="0 0 0"/>
       <parent link="base_footprint"/>
       <child link="base_link"/>
@@ -109,6 +111,26 @@
       <child link="inertial_link"/>
     </joint>
 
+    <!-- ==================== 3-D OUSTER LIDAR ==================== -->
+    <!-- Placement derived from hunter_se_unity/:
+         Unity sensor origin = LIDAR mount (0, 0.6398543, -0.123163)
+         + Velodyne mount (0, -0.04, 0)
+         + Ouster child offset (0, 0.001310061, 0.03654947),
+         remapped to REP-103 axes. -->
+    <xacro:include filename="$(find ouster_description)/urdf/os1_64.urdf.xacro"/>
+    <xacro:os1_64 parent="mobile_robot_base"
+                  name="ouster"
+                  hz="10"
+                  samples="1024"
+                  min_range="0.5"
+                  max_range="100.0"
+                  min_angle_v="-21.2"
+                  max_angle_v="21.2"
+                  noise="0.01"
+                  topic="/hunter_se/pointcloud/points">
+      <origin xyz="-0.020851 0 0.430210" rpy="0 0 0"/>
+    </xacro:os1_64>
+
     <!-- ==================== WHEELS ==================== -->
     <xacro:include filename="$(find hunter_se_gazebo)/urdf/mobile_robot/hunter_se_wheel.xacro"/>
 
@@ -133,6 +155,41 @@
       x="${rear_axle_x}" y="${-track/2}" z="${wheel_vertical_offset}" phi="0"
       wheel_mesh="${mesh_root}/re_right_link.STL"
       wheel_visual_rpy="-1.5708 0 0"/>
+
+    <!-- ==================== 2-D LIDAR ==================== -->
+    <!-- Mounted at robot center, 0.15 m above mobile_robot_base_link
+         (clears the 0.19 m body box whose top is at z≈0.103 m).
+         Frame: lidar_link (z-up, x-forward, matches REP 103). -->
+    <link name="lidar_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.04" length="0.04"/>
+        </geometry>
+        <material name="lidar_black">
+          <color rgba="0.1 0.1 0.1 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <cylinder radius="0.04" length="0.04"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <mass value="0.2"/>
+        <origin xyz="0 0 0"/>
+        <inertia ixx="0.0001" ixy="0" ixz="0"
+                 iyy="0.0001" iyz="0"
+                 izz="0.0001"/>
+      </inertial>
+    </link>
+
+    <joint name="lidar_joint" type="fixed">
+      <origin xyz="0 0 0.15" rpy="0 0 0"/>
+      <parent link="mobile_robot_base_link"/>
+      <child link="lidar_link"/>
+    </joint>
 
     <!-- ==================== GAZEBO PLUGINS ==================== -->
     <xacro:if value="${load_gazebo}">

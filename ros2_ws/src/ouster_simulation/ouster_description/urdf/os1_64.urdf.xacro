@@ -4,7 +4,7 @@
 <robot xmlns:xacro="http://ros.org/wiki/xacro" name="os1_64">
   <xacro:property name="PI" value="3.1415926535897931"/>
 
-  <xacro:macro name="os1_64" params="*origin parent:=base name:=os reduced:=true prefix:=/os1_cloud_node hz:=10 samples:=512 min_range:=0.8 max_range:=100 noise:=0.008 min_angle_v:=-16.6 max_angle_v:=16.6">
+  <xacro:macro name="os1_64" params="*origin parent:=base name:=os reduced:=true prefix:=/os1_cloud_node hz:=10 samples:=512 min_range:=0.8 max_range:=100 noise:=0.008 min_angle_v:=-16.6 max_angle_v:=16.6 topic:=/scout/pointcloud/points">
     <xacro:property name="file_visual" value="os1_64"/>
 
     <joint name="${name}_joint" type="fixed">
@@ -64,7 +64,7 @@
           <update_on_paused_sim>false</update_on_paused_sim>
 
           <!-- Match ros_gz_bridge mapping in your launch -->
-          <topic>/scout/pointcloud/points</topic>
+          <topic>${topic}</topic>
 
           <!-- frame_id in PointCloudPacked header -->
           <frame>${name}_lidar</frame>

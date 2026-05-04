@@ -57,6 +57,9 @@ class HunterSEValidationLogger(Node):
         self._rear_left_w = None
         self._rear_right_w = None
         self._vehicle_speed = None
+        self._body_vx = None
+        self._body_vy = None
+        self._body_yaw_rate = None
         self._cmd_speed = None
         self._cmd_yaw_rate = None
         self._phase = ""
@@ -73,6 +76,10 @@ class HunterSEValidationLogger(Node):
             "cmd_speed_mps",
             "cmd_yaw_rate_rad_s",
             "body_speed_mps",
+            "body_vx_mps",
+            "body_vy_mps",
+            "body_yaw_rate_rad_s",
+            "sideslip_deg",
             "front_left_deg",
             "front_right_deg",
             "center_deg",
@@ -117,7 +124,10 @@ class HunterSEValidationLogger(Node):
     def _odom_cb(self, msg: Odometry) -> None:
         vx = float(msg.twist.twist.linear.x)
         vy = float(msg.twist.twist.linear.y)
+        self._body_vx = vx
+        self._body_vy = vy
         self._vehicle_speed = math.hypot(vx, vy)
+        self._body_yaw_rate = float(msg.twist.twist.angular.z)
 
     def _cmd_cb(self, msg: Twist) -> None:
         self._cmd_speed = float(msg.linear.x)
@@ -181,6 +191,10 @@ class HunterSEValidationLogger(Node):
             100.0 * self._slip_ratio(rear_avg_rim, self._vehicle_speed)
             if rear_avg_rim != "" and self._vehicle_speed is not None else ""
         )
+        sideslip_deg = (
+            math.degrees(math.atan2(self._body_vy, self._body_vx))
+            if self._body_vx is not None and self._body_vy is not None else ""
+        )
 
         self._writer.writerow([
             wall_time_iso,
@@ -189,6 +203,10 @@ class HunterSEValidationLogger(Node):
             "" if self._cmd_speed is None else f"{self._cmd_speed:.6f}",
             "" if self._cmd_yaw_rate is None else f"{self._cmd_yaw_rate:.6f}",
             "" if self._vehicle_speed is None else f"{self._vehicle_speed:.6f}",
+            "" if self._body_vx is None else f"{self._body_vx:.6f}",
+            "" if self._body_vy is None else f"{self._body_vy:.6f}",
+            "" if self._body_yaw_rate is None else f"{self._body_yaw_rate:.6f}",
+            "" if sideslip_deg == "" else f"{sideslip_deg:.6f}",
             "" if self._left_angle is None else f"{math.degrees(self._left_angle):.6f}",
             "" if self._right_angle is None else f"{math.degrees(self._right_angle):.6f}",
             f"{math.degrees(center_rad):.6f}",

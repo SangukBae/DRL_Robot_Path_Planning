@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <!--
-  Top-level xacro entry point for the Hunter SE robot (sensor-free).
+  Top-level xacro entry point for the Hunter SE robot.
 
   Args:
     load_gazebo : true (default) | false
