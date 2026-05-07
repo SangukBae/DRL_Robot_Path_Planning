@@ -2,14 +2,13 @@
 Launch file for AgileX Hunter SE (sensor-free) in Gazebo Ignition Fortress.
 
 Starts:
-  1. Ignition Gazebo with the selected world (default: drl_arena)
+  1. Gazebo Sim via ros_gz_sim with the selected world (default: drl_arena)
   2. robot_state_publisher  – publishes URDF-based TF
   3. hunter_se_cmd_prefilter – Unity-like throttle / steering shaping
   4. ros_gz_bridge          – bridges filtered cmd_vel / odometry / tf / joint_states
-  5. hunter_se_steering_monitor – prints front wheel steering angles
-  6. spawn_entity           – spawns hunter_se into Gazebo (5 s after Gazebo starts)
-  7. RViz2                  – optional (rviz:=true|false)
-  8. hunter_se_teleop_key.py – focused teleop window (W/S=fwd/bck, A/D=steer)
+  5. spawn_entity           – spawns hunter_se into Gazebo (5 s after Gazebo starts)
+  6. RViz2                  – optional (rviz:=true|false)
+  7. hunter_se_teleop_key.py – optional focused teleop window
 
 Supported worlds
 ─────────────────
@@ -61,6 +60,13 @@ def generate_launch_description():
         name="rviz",
         default_value="true",
         description="Launch RViz2 with model display configuration",
+        choices=["true", "false"],
+    )
+
+    teleop_arg = DeclareLaunchArgument(
+        name="teleop",
+        default_value="false",
+        description="Launch keyboard teleop window. Keep false during DRL training.",
         choices=["true", "false"],
     )
 
@@ -200,7 +206,7 @@ def generate_launch_description():
     )
 
     # ------------------------------------------------------------------ #
-    # ROS2 ↔ Gazebo bridge
+    # ROS2 ↔ Gazebo bridge (topics)
     # ------------------------------------------------------------------ #
     bridge_node = Node(
         name="ros2_gz_bridge",
@@ -213,28 +219,87 @@ def generate_launch_description():
         output="screen",
     )
 
+    # ------------------------------------------------------------------ #
+    # ROS2 ↔ Gazebo bridge (world services)
+    # Bridges Ignition world services as ROS2 services so environment.py
+    # can call /world/default/control, /set_pose, /create, /remove.
+    # Must use CLI argument syntax; YAML service bridge is not supported
+    # in this version of ros_gz_bridge.
+    # ------------------------------------------------------------------ #
+    service_bridge_node = Node(
+        name="ros2_gz_service_bridge",
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        arguments=[
+            "/world/default/control@ros_gz_interfaces/srv/ControlWorld",
+            "/world/default/set_pose@ros_gz_interfaces/srv/SetEntityPose",
+            "/world/default/create@ros_gz_interfaces/srv/SpawnEntity",
+            "/world/default/remove@ros_gz_interfaces/srv/DeleteEntity",
+        ],
+        output="screen",
+    )
+
+    # ------------------------------------------------------------------ #
+    # pointcloud_to_laserscan
+    # Converts Ouster OS1-64 PointCloud2 (/ouster/points) to LaserScan
+    # (/scan) so the DRL environment node can use obs_source:=scan.
+    # Height filter mirrors environment.py cloud callback (z > -0.2 m in
+    # sensor frame).  Full 360° at ~0.36° resolution matches Ouster 1024
+    # samples/rotation.
+    # ------------------------------------------------------------------ #
+    pointcloud_to_laserscan_node = Node(
+        name="pointcloud_to_laserscan",
+        package="pointcloud_to_laserscan",
+        executable="pointcloud_to_laserscan_node",
+        output="screen",
+        parameters=[{
+            "use_sim_time": True,
+            # Scan is referenced to the Ouster frame itself so collision checks
+            # are centered at the LiDAR origin, not at the robot body centre.
+            "target_frame": "ouster_lidar",
+            "transform_tolerance": 0.01,
+            # Height filter in the Ouster frame.
+            # Sensor origin is about 0.60 m above ground, so this keeps points
+            # roughly 0.045–0.850 m above ground:
+            #   0.045 - 0.600 = -0.555
+            #   0.850 - 0.600 =  0.250
+            "min_height": -0.555,
+            "max_height": 0.25,
+            "angle_min": -3.14159265,  # full 360°
+            "angle_max":  3.14159265,
+            "angle_increment": 0.00306796,  # ≈ 2π/2048 ≈ 0.176°
+            "scan_time": 0.1,          # 10 Hz
+            # Match OS1-128 minimum range; farther ranges are still capped to the
+            # RL observation horizon below.
+            "range_min": 0.3,
+            "range_max": 50.0,         # RL scan horizon; sensor itself is configured to 120 m
+            "use_inf": True,
+        }],
+        remappings=[
+            ("cloud_in", "/ouster/points"),
+            ("scan",     "/scan"),
+        ],
+    )
+
     prefilter_node = Node(
         name="hunter_se_cmd_prefilter",
         package="hunter_se_gazebo",
         executable="hunter_se_cmd_prefilter.py",
         output="screen",
         parameters=[
-            {"use_sim_time": True},
+            # Wall-clock time: timer fires at real 50 Hz regardless of sim RTF.
+            # If use_sim_time=True and RTF≈0.001, the 50 Hz timer fires only
+            # once per ~100 wall-clock steps (≈20 s), so /cmd_vel_filtered is
+            # never published and the robot never moves.
+            {"use_sim_time": False},
             os.path.join(hunter_se_pkg, "config", "hunter_se_cmd_prefilter.yaml"),
         ],
     )
 
-    steering_monitor_node = Node(
-        name="hunter_se_steering_monitor",
-        package="hunter_se_gazebo",
-        executable="hunter_se_steering_monitor.py",
-        output="screen",
-        parameters=[{"use_sim_time": True}],
-    )
-
     # ------------------------------------------------------------------ #
     # Spawn hunter_se
-    # spawn z = wheel_radius - wheel_vertical_offset = 0.136 + 0.060 = 0.196 m
+    # spawn z = 0.02 m clearance (base_footprint is model root, wheel
+    # bottoms land at z=0 when base_footprint is at z=0)
     # ------------------------------------------------------------------ #
     spawn_node = Node(
         name="spawn_hunter_se",
@@ -243,22 +308,26 @@ def generate_launch_description():
         arguments=[
             "-name",  "hunter_se",
             "-topic", "/hunter_se/robot_description",
-            "-x", "4.5", "-y", "0", "-z", "0.20",
+            "-x", "4.5", "-y", "0", "-z", "0.02",
             "-R", "0",   "-P", "0", "-Y", "0",
         ],
         output="screen",
     )
 
     # ------------------------------------------------------------------ #
-    # Ignition Gazebo  (world resolved at launch time; spawn attached to
-    # the resulting process via OnProcessStart so timing is robust even
-    # for slow-loading worlds or heavy plugin initialisation)
+    # Gazebo Sim via ros_gz_sim (world resolved at launch time; spawn attached
+    # to the resulting launch process via OnProcessStart so timing stays robust
+    # even for slow-loading worlds or heavy plugin initialisation)
     # ------------------------------------------------------------------ #
     def start_gazebo(context, *args, **kwargs):
         world = LaunchConfiguration("world").perform(context)
         world_file = _known_worlds.get(world, world)  # fallback: treat as file path
         gz_process = ExecuteProcess(
-            cmd=["ign", "gazebo", "-v", "1", "-r", world_file],
+            cmd=[
+                "ros2", "launch", "ros_gz_sim", "gz_sim.launch.py",
+                f"gz_args:=-r -v 1 {world_file}",
+                "on_exit_shutdown:=true",
+            ],
             output="screen",
             additional_env=gz_env,
             shell=False,
@@ -297,16 +366,19 @@ def generate_launch_description():
         package="hunter_se_gazebo",
         executable="hunter_se_teleop_key.py",
         output="screen",
+        condition=IfCondition(LaunchConfiguration("teleop")),
     )
 
     return LaunchDescription([
         rviz_arg,
+        teleop_arg,
         world_arg,
         robot_state_publisher_node,
         gazebo_opaque,
         prefilter_node,
         bridge_node,
-        steering_monitor_node,
+        service_bridge_node,
+        pointcloud_to_laserscan_node,
         rviz2_node,
         teleop_node,
     ])

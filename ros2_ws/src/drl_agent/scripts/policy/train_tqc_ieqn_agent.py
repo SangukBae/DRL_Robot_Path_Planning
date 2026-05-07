@@ -63,10 +63,12 @@ class TrainTQC_IEQN(EnvInterface):
         # ----------------------------
         # Environment dimensions
         # ----------------------------
-        state_dim, action_dim, max_action = self.get_dimensions()
+        state_dim, action_dim, max_action, environment_dim, agent_dim = self.get_dimensions()
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.max_action = max_action
+        self.environment_dim = environment_dim
+        self.agent_dim = agent_dim
 
         # ----------------------------
         # Find and load hyperparameters
@@ -275,11 +277,11 @@ class TrainTQC_IEQN(EnvInterface):
         ep_num = 1
         ep_finished = False
 
-        ENV_DIM = int(self.state_dim - 4)  # lidar 360 + agent_state 4 라고 가정
+        ENV_DIM = self.environment_dim
         def split_obs(obs):
             obs_np = np.asarray(obs, dtype=np.float32).ravel()
             lidar = obs_np[:ENV_DIM]
-            agent = obs_np[ENV_DIM:ENV_DIM+4]
+            agent = obs_np[ENV_DIM:ENV_DIM+self.agent_dim]
             return lidar, agent
         
         self.get_logger().info("Starting TQC_IEQN training...")

@@ -1,5 +1,7 @@
 # Empty request
 ---
-int32 state_dim     # Dimension of the state space
-int32 action_dim    # Dimension of the action space
-float32 max_action  # Maximum action value
+int32 state_dim       # Total state dimension (environment_dim + agent_dim)
+int32 action_dim      # Dimension of the action space
+float32 max_action    # Maximum action value
+int32 environment_dim # LiDAR / environment observation dimension
+int32 agent_dim       # Agent state dimension (goal dist, theta, prev action, speeds)

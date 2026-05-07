@@ -65,7 +65,7 @@ class EnvInterface(Node):
         except Exception as e:
             self.get_logger().error(f"Service call /get_dimensions failed: {e}")
         response = future.result()
-        return response.state_dim, response.action_dim, response.max_action
+        return response.state_dim, response.action_dim, response.max_action, response.environment_dim, response.agent_dim
 
     def sample_action_space(self):
         """Sample an action from the action space"""

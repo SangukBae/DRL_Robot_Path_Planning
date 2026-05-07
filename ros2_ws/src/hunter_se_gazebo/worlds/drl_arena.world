@@ -1,13 +1,15 @@
 <?xml version="1.0" ?>
 <!--
-  DRL Training Arena — 15 × 15 m enclosed flat floor for Hunter SE.
+  DRL Training Arena — 19 × 19 m enclosed flat floor for Hunter SE.
 
   Design constraints
   ──────────────────
   • world name="default" is REQUIRED: ros_gz_bridge binds services such as
     /world/default/create and /world/default/set_pose to this exact name.
-  • Boundary walls at ±7.5 m give a 0.5 m hard margin outside the agent's
-    usable spawn region [−7.0, 7.0] (environment.yaml lower/upper).
+  • Boundary walls at ±9.5 m define a 19 × 19 m arena.
+  • Robot training-start sampling stays in [−6.5, 6.5] (environment.yaml
+    lower/upper), while goal/obstacle sampling can use the wider
+    [−8.5, 8.5] region.
   • No fixed internal obstacles — environment.py spawns them at runtime via
     /world/default/create so they can be randomized each episode.
   • UserCommands plugin is mandatory for the /world/default/create and
@@ -21,6 +23,11 @@
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
     </physics>
+
+    <!-- ── RGL GPU LiDAR scene manager (required for Ouster RGL sensor) ── -->
+    <plugin name='rgl::RGLServerPluginManager' filename='RGLServerPluginManager'>
+      <do_ignore_entities_in_lidar_link>true</do_ignore_entities_in_lidar_link>
+    </plugin>
 
     <!-- ── Required Ignition Fortress system plugins ── -->
     <plugin filename="ignition-gazebo-physics-system"
@@ -46,7 +53,7 @@
       <direction>-0.5 0.1 -0.9</direction>
     </light>
 
-    <!-- ── Ground plane (30 × 30 m, centred) ── -->
+    <!-- ── Ground plane (38 × 38 m, centred) ── -->
     <model name="ground_plane">
       <static>true</static>
       <link name="link">
@@ -54,7 +61,7 @@
           <geometry>
             <plane>
               <normal>0 0 1</normal>
-              <size>30 30</size>
+              <size>38 38</size>
             </plane>
           </geometry>
           <surface>
@@ -67,7 +74,7 @@
           <geometry>
             <plane>
               <normal>0 0 1</normal>
-              <size>30 30</size>
+              <size>38 38</size>
             </plane>
           </geometry>
           <material>
@@ -80,20 +87,20 @@
     </model>
 
     <!--
-      ── Boundary walls — each is 15 m long, 0.3 m thick, 1.5 m tall ──
-      Centred on the arena (wall mid-plane at ±7.5 m).
+      ── Boundary walls — each is 19 m long, 0.3 m thick, 1.5 m tall ──
+      Centred on the arena (wall mid-plane at ±9.5 m).
     -->
 
-    <!-- North wall  (y = +7.5) -->
+    <!-- North wall  (y = +9.5) -->
     <model name="wall_north">
       <static>true</static>
-      <pose>0 7.5 0.75 0 0 0</pose>
+      <pose>0 9.5 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>15.0 0.3 1.5</size></box></geometry>
+          <geometry><box><size>19.0 0.3 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>15.0 0.3 1.5</size></box></geometry>
+          <geometry><box><size>19.0 0.3 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.6 0.6 0.6 1</diffuse>
@@ -102,16 +109,16 @@
       </link>
     </model>
 
-    <!-- South wall  (y = −7.5) -->
+    <!-- South wall  (y = −9.5) -->
     <model name="wall_south">
       <static>true</static>
-      <pose>0 -7.5 0.75 0 0 0</pose>
+      <pose>0 -9.5 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>15.0 0.3 1.5</size></box></geometry>
+          <geometry><box><size>19.0 0.3 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>15.0 0.3 1.5</size></box></geometry>
+          <geometry><box><size>19.0 0.3 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.6 0.6 0.6 1</diffuse>
@@ -120,16 +127,16 @@
       </link>
     </model>
 
-    <!-- East wall  (x = +7.5) -->
+    <!-- East wall  (x = +9.5) -->
     <model name="wall_east">
       <static>true</static>
-      <pose>7.5 0 0.75 0 0 0</pose>
+      <pose>9.5 0 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.3 15.0 1.5</size></box></geometry>
+          <geometry><box><size>0.3 19.0 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.3 15.0 1.5</size></box></geometry>
+          <geometry><box><size>0.3 19.0 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.6 0.6 0.6 1</diffuse>
@@ -138,16 +145,16 @@
       </link>
     </model>
 
-    <!-- West wall  (x = −7.5) -->
+    <!-- West wall  (x = −9.5) -->
     <model name="wall_west">
       <static>true</static>
-      <pose>-7.5 0 0.75 0 0 0</pose>
+      <pose>-9.5 0 0.75 0 0 0</pose>
       <link name="link">
         <collision name="collision">
-          <geometry><box><size>0.3 15.0 1.5</size></box></geometry>
+          <geometry><box><size>0.3 19.0 1.5</size></box></geometry>
         </collision>
         <visual name="visual">
-          <geometry><box><size>0.3 15.0 1.5</size></box></geometry>
+          <geometry><box><size>0.3 19.0 1.5</size></box></geometry>
           <material>
             <ambient>0.5 0.5 0.5 1</ambient>
             <diffuse>0.6 0.6 0.6 1</diffuse>

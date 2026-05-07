@@ -2,7 +2,7 @@
 DRL environment node launch file for AgileX Hunter SE.
 
 Run Gazebo separately first:
-  ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
+  ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py
 
 Then launch the environment node:
   ros2 launch drl_agent drl_hunter_se.launch.py                  # train
@@ -10,6 +10,9 @@ Then launch the environment node:
 
 Then start the agent in another terminal:
   ros2 run drl_agent train_tqc_agent.py
+
+This launch file does not start RViz. If RViz is enabled in the Hunter SE
+simulation launch, the DRL marker topics will appear in that existing window.
 """
 
 from launch import LaunchDescription

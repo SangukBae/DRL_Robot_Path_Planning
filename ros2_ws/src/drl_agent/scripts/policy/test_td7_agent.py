@@ -80,7 +80,7 @@ class TestTD7(EnvInterface):
         self.set_env_seed(self.seed)
 
         # Initialize the agent
-        state_dim, action_dim, max_action = self.get_dimensions()
+        state_dim, action_dim, max_action, _, _ = self.get_dimensions()
         try:
             hp = load_yaml(self.hyperparameters_path)["hyperparameters"]
         except Exception as e:

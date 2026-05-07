@@ -1,18 +1,21 @@
 hunter_se_cmd_prefilter:
   ros__parameters:
     publish_rate_hz: 50.0
-    command_timeout_sec: 0.5
-    input_delay_sec: 0.05
+    # use_sim_time=False (wall clock). One RL step = time_delta(0.2 s) wall time
+    # + step service overhead (~0.2–0.5 s). 2.0 s covers any transient stall.
+    command_timeout_sec: 2.0
+    input_delay_sec: 0.0
     wheelbase_m: 0.547696
-    # Command-side steering overdrive to offset Gazebo understeer. Tuned so the
-    # steady-state center steering lands near the real Hunter SE target of
-    # 18.8168465 deg center / 22 deg inner during the validation turn test.
+    # Max center steering angle the prefilter will track [deg].
+    # Matches vehicle_steering_limit_deg in environment.yaml (21.58°).
     steering_limit_deg: 21.58
+    # Rate limit for steering angle tracking [deg/s].
+    # 315.789 deg/s → full stroke (21.58°) in ~68 ms.
     steering_rate_deg_s: 315.789
     min_speed_for_steering_mps: 0.15
-    speed_lag_tau_sec: 0.25
-    accel_limit_mps2: 2.0
-    brake_decel_mps2: 3.0
+    speed_lag_tau_sec: 0.05
+    accel_limit_mps2: 6.0
+    brake_decel_mps2: 6.0
     deadband_speed_mps: 0.02
     max_speed_mps: 1.333
     odom_topic: /odometry

@@ -5,6 +5,8 @@ import sys
 import time
 from datetime import datetime
 
+import csv
+
 import rclpy
 import torch
 import numpy as np
@@ -52,6 +54,7 @@ class TrainTQC(EnvInterface):
         # Setup output directories
         # ----------------------------
         self._setup_directories()
+        self._init_csv_loggers()
 
         # ----------------------------
         # Seeds
@@ -63,10 +66,12 @@ class TrainTQC(EnvInterface):
         # ----------------------------
         # Environment dimensions
         # ----------------------------
-        state_dim, action_dim, max_action = self.get_dimensions()
+        state_dim, action_dim, max_action, environment_dim, agent_dim = self.get_dimensions()
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.max_action = max_action
+        self.environment_dim = environment_dim
+        self.agent_dim = agent_dim
 
         # ----------------------------
         # Find and load hyperparameters
@@ -218,7 +223,8 @@ class TrainTQC(EnvInterface):
         elif os.environ.get("DRL_AGENT_RUN_DIR", "").strip():
             base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
         else:
-            base_run_dir = os.path.join(os.path.expanduser("~"), ".ros", "drl_agent", "tqc_state_80_nstactics_5_obstacle_11")
+            package_root = self._resolve_drl_agent_source_root()
+            base_run_dir = os.path.join(package_root, "runtime", "tqc_state_80_nstactics_5_obstacle_11")
 
         self.run_dir = base_run_dir
 
@@ -231,11 +237,76 @@ class TrainTQC(EnvInterface):
         # Create directories
         self.create_directories()
 
+    def _resolve_drl_agent_source_root(self) -> str:
+        """Resolve the source-package root even when this script is run from install/."""
+        here = os.path.abspath(__file__)
+        candidates = []
+
+        src_env = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
+        if src_env:
+            src_env = os.path.expanduser(src_env)
+            candidates.extend([
+                os.path.join(src_env, "drl_agent"),
+                os.path.join(src_env, "src", "drl_agent"),
+                src_env,
+            ])
+
+        if "/install/" in here:
+            ws_root = here.split("/install/")[0]
+            candidates.append(os.path.join(ws_root, "src", "drl_agent"))
+
+        cwd = os.path.abspath(os.getcwd())
+        candidates.extend([
+            os.path.join(cwd, "src", "drl_agent"),
+            os.path.normpath(os.path.join(os.path.dirname(here), "..", "..")),
+        ])
+
+        for cand in candidates:
+            if os.path.isdir(cand) and os.path.basename(cand) == "drl_agent":
+                return os.path.normpath(cand)
+
+        # Last resort: keep previous behavior.
+        return os.path.normpath(os.path.join(os.path.dirname(here), "..", ".."))
+
     def create_directories(self):
         """Create necessary directories safely"""
         for d in (self.run_dir, self.pytorch_models_dir, self.final_models_dir, self.results_dir, self.log_dir):
             os.makedirs(d, exist_ok=True)
     
+    def _init_csv_loggers(self):
+        """Create a fresh set of per-run CSV log files."""
+        self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._reward_csv  = os.path.join(
+            self.log_dir, f"episode_rewards_{self._csv_run_tag}.csv"
+        )
+        self._driving_csv = os.path.join(
+            self.log_dir, f"episode_driving_{self._csv_run_tag}.csv"
+        )
+        self._step_csv    = os.path.join(
+            self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv"
+        )
+        reward_header  = ["episode", "global_t", "steps", "total_reward", "mean_reward",
+                          "goal_reached", "collision", "timeout", "final_goal_dist_m"]
+        driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
+                          "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached"]
+        step_header = ["episode", "global_t", "episode_step", "action_source",
+                       "action_0_norm", "action_1_norm",
+                       "goal_dist_before_m", "goal_dist_after_m",
+                       "theta_before_rad", "theta_after_rad",
+                       "lidar_min_before_m", "lidar_min_after_m",
+                       "lidar_mean_before_m", "lidar_mean_after_m",
+                       "reward", "ep_finished", "target_flag"]
+        for path, header in [(self._reward_csv, reward_header),
+                             (self._driving_csv, driving_header),
+                             (self._step_csv, step_header)]:
+            with open(path, "w", newline="") as f:
+                csv.writer(f).writerow(header)
+
+        self.get_logger().info(f"Episode rewards CSV: {self._reward_csv}")
+        self.get_logger().info(f"Episode driving CSV: {self._driving_csv}")
+        self.get_logger().info(f"Policy step CSV: {self._step_csv}")
+
     def log_training_setting_data(self):
         """Log training configuration"""
         self.get_logger().info("=" * 50)
@@ -268,6 +339,8 @@ class TrainTQC(EnvInterface):
         timesteps_since_eval = 0
         allow_train = False
         
+        ENV_DIM = self.environment_dim
+
         # Initialize episode
         state = self.reset()
         ep_total_reward = 0
@@ -275,18 +348,21 @@ class TrainTQC(EnvInterface):
         ep_num = 1
         ep_finished = False
 
-        ENV_DIM = int(self.state_dim - 4)  # lidar 360 + agent_state 4 라고 가정
-        def split_obs(obs):
-            obs_np = np.asarray(obs, dtype=np.float32).ravel()
-            lidar = obs_np[:ENV_DIM]
-            agent = obs_np[ENV_DIM:ENV_DIM+4]
-            return lidar, agent
-        
+        _state0 = np.asarray(state, dtype=np.float32).ravel()
+        _ep_v_buf: list          = []
+        _ep_w_buf: list          = []
+        _ep_min_lidar_buf: list  = []
+        _ep_initial_goal_dist    = float(_state0[ENV_DIM])
+
         self.get_logger().info("Starting TQC training...")
         
         # Main training loop
         for t in range(1, self.max_timesteps + 1):
-                # (추가) 200스텝마다 입력 점검
+            _state_before = np.asarray(state, dtype=np.float32).ravel()
+            _lidar_before = _state_before[:ENV_DIM]
+            _goal_before = float(_state_before[ENV_DIM])
+            _theta_before = float(_state_before[ENV_DIM + 1])
+            # (추가) 200스텝마다 입력 점검
             # if t % 200 == 0:
             #     lidar, agent = split_obs(state)
             #     self.get_logger().info(
@@ -300,9 +376,11 @@ class TrainTQC(EnvInterface):
 
             # Select action
             if allow_train:
+                action_source = "policy"
                 action = self.rl_agent.select_action(state)
             else:
                 # Warmup phase - random actions
+                action_source = "warmup"
                 action = self.sample_action_space()
             
             # Environment step
@@ -316,39 +394,90 @@ class TrainTQC(EnvInterface):
             state = next_state
             ep_total_reward += reward
             ep_timesteps += 1
-            
+
+            # Accumulate per-step driving data
+            _s_np = np.asarray(state, dtype=np.float32).ravel()
+            _lidar_after = _s_np[:ENV_DIM]
+            _ep_v_buf.append(float(action[0]))
+            _ep_w_buf.append(float(action[1]))
+            _ep_min_lidar_buf.append(float(np.min(_lidar_after)))
+
+            with open(self._step_csv, "a", newline="") as _f:
+                csv.writer(_f).writerow([
+                    ep_num, t, ep_timesteps, action_source,
+                    round(float(action[0]), 6), round(float(action[1]), 6),
+                    round(_goal_before, 6), round(float(_s_np[ENV_DIM]), 6),
+                    round(_theta_before, 6), round(float(_s_np[ENV_DIM + 1]), 6),
+                    round(float(np.min(_lidar_before)), 6), round(float(np.min(_lidar_after)), 6),
+                    round(float(np.mean(_lidar_before)), 6), round(float(np.mean(_lidar_after)), 6),
+                    round(float(reward), 6), int(bool(ep_finished)), int(bool(info)),
+                ])
+
             # Train agent (if not using checkpoints)
             if allow_train and not self.use_checkpoints:
                 self.rl_agent.train()
-            
+
             # Episode finished
             if ep_finished or ep_timesteps >= self.max_episode_steps:
                 self.get_logger().info(
                     f"Total T: {t} | Episode: {ep_num} | "
                     f"Episode T: {ep_timesteps} | Reward: {ep_total_reward:.3f}"
                 )
-                
+
+                # CSV logging
+                _goal_reached = bool(info) and bool(ep_finished)
+                _collision    = bool(ep_finished) and not _goal_reached
+                _timeout      = not bool(ep_finished)
+                _final_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
+                with open(self._reward_csv, "a", newline="") as _f:
+                    csv.writer(_f).writerow([
+                        ep_num, t, ep_timesteps,
+                        round(ep_total_reward, 4),
+                        round(ep_total_reward / max(ep_timesteps, 1), 4),
+                        int(_goal_reached), int(_collision), int(_timeout),
+                        round(_final_goal_dist, 4),
+                    ])
+                if _ep_v_buf:
+                    with open(self._driving_csv, "a", newline="") as _f:
+                        csv.writer(_f).writerow([
+                            ep_num, t, ep_timesteps,
+                            round(float(np.mean(_ep_v_buf)), 4),
+                            round(float(np.mean(np.abs(_ep_w_buf))), 4),
+                            round(_ep_initial_goal_dist, 4),
+                            round(_final_goal_dist, 4),
+                            round(_ep_initial_goal_dist - _final_goal_dist, 4),
+                            round(float(np.min(_ep_min_lidar_buf)), 4),
+                            round(float(np.mean(_ep_min_lidar_buf)), 4),
+                            int(_goal_reached),
+                        ])
+
                 # Checkpoint training if enabled
                 if self.use_checkpoints and allow_train:
                     self.rl_agent.train_and_checkpoint(ep_timesteps, ep_total_reward)
-                
+
                 # Evaluation
                 if allow_train and timesteps_since_eval >= self.eval_freq:
                     timesteps_since_eval %= self.eval_freq
                     self.save_models(self.pytorch_models_dir, self.file_name)
                     self.evaluate_and_print(evals, epoch, start_time)
                     epoch += 1
-                
+
                 # Enable training after warmup
                 if t >= self.timesteps_before_training:
                     allow_train = True
-                
+
                 # Reset episode
                 state = self.reset()
                 ep_total_reward = 0
                 ep_timesteps = 0
                 ep_num += 1
                 ep_finished = False
+
+                # Reset per-episode buffers
+                _ep_v_buf.clear()
+                _ep_w_buf.clear()
+                _ep_min_lidar_buf.clear()
+                _ep_initial_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
             
             timesteps_since_eval += 1
         

@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 """
-Unity-like command prefilter for Hunter SE.
+Command prefilter for Hunter SE Ackermann-steering robot.
 
-This node sits between ROS publishers on /cmd_vel and Gazebo's Ackermann plugin.
-It preserves the public Twist interface while adding three behaviors that are
-closer to the Unity controller:
-
-  1. Command delay + first-order longitudinal lag
+Sits between /cmd_vel and Gazebo's Ackermann plugin, adding:
+  1. Command delay + first-order longitudinal speed lag
   2. Brake-first handling before reversing direction
   3. Steering angle rate limiting in front-wheel Ackermann space
 
-Input:
-  /cmd_vel           geometry_msgs/msg/Twist
+Input /cmd_vel (geometry_msgs/Twist):
+  linear.x  – target speed [m/s]
+  angular.z – target CENTER steering angle [rad]  ← NOT yaw rate
 
-Output:
-  /cmd_vel_filtered  geometry_msgs/msg/Twist
+Output /cmd_vel_filtered (geometry_msgs/Twist):
+  linear.x  – filtered speed [m/s]
+  angular.z – yaw rate [rad/s] = filtered_speed * tan(filtered_steering) / L
 """
 
 from __future__ import annotations
@@ -113,7 +112,9 @@ class HunterSECmdPrefilter(Node):
         self._timer = self.create_timer(1.0 / self.publish_rate_hz, self._tick)
 
         self.get_logger().info(
-            "hunter_se_cmd_prefilter enabled: RWD-targeted Unity-like speed/steering shaping"
+            "hunter_se_cmd_prefilter enabled: "
+            "input angular.z = target steering angle [rad]; "
+            "output angular.z = yaw rate [rad/s]"
         )
 
     def _now_sec(self) -> float:
@@ -140,15 +141,6 @@ class HunterSECmdPrefilter(Node):
             cmd = self._pending.popleft()
             self._active_linear = cmd.linear_x
             self._active_angular = cmd.angular_z
-
-    def _target_steering_from_twist(self, speed: float, yaw_rate: float) -> float:
-        if abs(yaw_rate) < 1e-6:
-            return 0.0
-
-        direction = -1.0 if speed < 0.0 else 1.0
-        speed_for_steering = max(abs(speed), self.min_speed_for_steering_mps)
-        steering = math.atan((self.wheelbase_m * yaw_rate) / (direction * speed_for_steering))
-        return clamp(steering, -self.steering_limit_rad, self.steering_limit_rad)
 
     def _filter_speed(self, dt: float, target_speed: float) -> float:
         if abs(target_speed) < self.deadband_speed_mps:
@@ -202,13 +194,13 @@ class HunterSECmdPrefilter(Node):
         self._apply_pending_commands(now)
 
         if now - self._last_input_time > self.command_timeout_sec:
-            target_speed = 0.0
-            target_yaw_rate = 0.0
+            target_speed   = 0.0
+            target_steering_cmd = 0.0
         else:
-            target_speed = self._active_linear
-            target_yaw_rate = self._active_angular
+            target_speed   = self._active_linear
+            target_steering_cmd = self._active_angular  # angular.z = target center steering angle [rad]
 
-        target_steering = self._target_steering_from_twist(target_speed, target_yaw_rate)
+        target_steering = clamp(target_steering_cmd, -self.steering_limit_rad, self.steering_limit_rad)
         governed_target_speed = self._govern_target_speed(target_speed)
         self._filtered_steering = move_towards(
             self._filtered_steering,

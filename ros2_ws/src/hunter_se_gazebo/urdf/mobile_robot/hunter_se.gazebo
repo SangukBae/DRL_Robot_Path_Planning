@@ -85,44 +85,4 @@
   </gazebo>
 
 
-  <!-- ===================== 2-D GPU LIDAR =====================
-       360° scan at 10 Hz, range 0.12–20 m, 360 samples.
-       Publishes ignition.msgs.LaserScan on /hunter_se/scan,
-       bridged to ROS sensor_msgs/LaserScan on /scan.
-  ==================================================================== -->
-  <gazebo reference="lidar_link">
-    <sensor name="lidar" type="gpu_lidar">
-      <topic>/hunter_se/scan</topic>
-      <update_rate>10</update_rate>
-      <lidar>
-        <scan>
-          <horizontal>
-            <samples>360</samples>
-            <resolution>1</resolution>
-            <min_angle>-3.14159265</min_angle>
-            <max_angle>3.14159265</max_angle>
-          </horizontal>
-          <vertical>
-            <samples>1</samples>
-            <resolution>1</resolution>
-            <min_angle>0</min_angle>
-            <max_angle>0</max_angle>
-          </vertical>
-        </scan>
-        <range>
-          <min>0.12</min>
-          <max>20.0</max>
-          <resolution>0.01</resolution>
-        </range>
-        <noise>
-          <type>gaussian</type>
-          <mean>0.0</mean>
-          <stddev>0.01</stddev>
-        </noise>
-      </lidar>
-      <always_on>1</always_on>
-      <visualize>false</visualize>
-    </sensor>
-  </gazebo>
-
 </robot>

@@ -1,10 +1,11 @@
 <?xml version="1.0"?>
 <!-- Modified from the work of Wil Selby (https://github.com/wilselby/ouster_example/blob/master/ouster_description/urdf/OS1-64.urdf.xacro) -->
 <!-- Updated for Gazebo Ignition (Gazebo Sim) compatibility -->
+<!-- Configurable OS1 family macro; Hunter SE overrides this to OS1-128 settings. -->
 <robot xmlns:xacro="http://ros.org/wiki/xacro" name="os1_64">
   <xacro:property name="PI" value="3.1415926535897931"/>
 
-  <xacro:macro name="os1_64" params="*origin parent:=base name:=os reduced:=true prefix:=/os1_cloud_node hz:=10 samples:=512 min_range:=0.8 max_range:=100 noise:=0.008 min_angle_v:=-16.6 max_angle_v:=16.6 topic:=/scout/pointcloud/points">
+  <xacro:macro name="os1_64" params="*origin parent:=base name:=os reduced:=true prefix:=/os1_cloud_node hz:=10 channels:=64 samples:=1024 min_range:=0.5 max_range:=100 noise:=0.008 min_angle_v:=-21.2 max_angle_v:=21.2 topic:=/scout/pointcloud/points">
     <xacro:property name="file_visual" value="os1_64"/>
 
     <joint name="${name}_joint" type="fixed">
@@ -71,24 +72,23 @@
 
           <!-- Use uniform pattern with explicit vertical FOV -->
           <!-- NOTE: pattern_preset "OS1 64" has 0° vertical FOV (bug), using pattern_uniform instead -->
-          <!-- Ouster OS1-64: 64 channels, 1024 horizontal samples, ±16.6° vertical FOV -->
-          <!-- Angles in radians: 16.6° = 0.2897 rad, 180° = 3.14159 rad -->
+          <!-- All angle parameters here are passed in degrees and converted to radians. -->
           <pattern_uniform>
             <horizontal>
-              <samples>1024</samples>
+              <samples>${samples}</samples>
               <min_angle>-3.14159</min_angle>
               <max_angle>3.14159</max_angle>
             </horizontal>
             <vertical>
-              <samples>64</samples>
-              <min_angle>-0.2897</min_angle>
-              <max_angle>0.2897</max_angle>
+              <samples>${channels}</samples>
+              <min_angle>${min_angle_v*PI/180.0}</min_angle>
+              <max_angle>${max_angle_v*PI/180.0}</max_angle>
             </vertical>
           </pattern_uniform>
 
           <!-- Channel configuration for ring ID and timestamp support -->
-          <channels>64</channels>
-          <horizontal_samples>1024</horizontal_samples>
+          <channels>${channels}</channels>
+          <horizontal_samples>${samples}</horizontal_samples>
 
           <noise>
             <mean>0.0</mean>

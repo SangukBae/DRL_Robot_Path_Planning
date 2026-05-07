@@ -1,18 +1,36 @@
 environment:
+  # Robot training-start sampling region. Keep unchanged.
   lower: -6.5
   upper: 6.5
-  num_of_obstacles: 8
+  # Goal / obstacle sampling region for the enlarged 19 x 19 m arena.
+  # Walls are centered at +/-9.5 m; this keeps a 0.85 m margin to the inside face.
+  goal_obstacle_lower: -8.5
+  goal_obstacle_upper: 8.5
+  num_of_dynamic_obstacles: 7
+  num_of_static_obstacles: 1
+  num_of_humans: 1
   environment_state_dim: 80
-  agent_state_dim: 4
+  agent_state_dim: 7
   action_dim: 2
   agent_name: "hunter_se"
-  max_action: 1.333
-  actions_low: [-1.333, -1.4]
-  actions_high: [1.333, 1.4]
-  spawn_z: 0.20
+  max_action: 1.0
+  # action[0]: waypoint distance r [m]  (robot frame, forward)
+  # action[1]: waypoint angle theta [rad]  (robot frame, positive = left/CCW)
+  actions_low:  [0.8, -1.047]   # r_min=0.8m, theta_min=-60° (-1.047 rad)
+  actions_high: [2.0,  1.047]   # r_max=2.0m, theta_max=+60° (+1.047 rad)
+  vehicle_wheelbase_m: 0.547696
+  vehicle_steering_limit_deg: 21.58
+  vehicle_min_speed_for_steering_mps: 0.15
+  # Pure Pursuit local controller
+  controller_cruise_speed_mps: 1.0   # nominal forward speed
+  controller_min_speed_mps: 0.3      # speed floor at full steering
+  controller_speed_steer_factor: 0.6 # speed reduction fraction at max steering
+  spawn_z: 0.02
+  obs_z_min_sensor_m: -0.555   # LiDAR frame: 0.045 m above ground (0.045-0.600)
+  obs_z_max_sensor_m:  0.250   # LiDAR frame: 0.850 m above ground (0.850-0.600)
 
   # Obstacle catalog (relative to the config directory)
-  obstacle_catalog: "obstacle_catalog.yaml"
+  obstacle_catalog: "drl_obstacle_assets"
 
   # Spawn safety margins (metres)
   obstacle_wall_margin: 1.0    # min clearance between obstacle centre and arena wall
@@ -20,13 +38,61 @@ environment:
   obstacle_goal_margin: 1.5    # min clearance between obstacle and goal
   obstacle_mutual_margin: 1.2  # min clearance between two obstacle centres
 
+  # Obstacle pool — pre-spawn once, teleport per episode (no delete/create per reset)
+  use_obstacle_pool: true
+  obstacle_pool_dynamic_size: 15   # total dynamic slots; >= num_of_dynamic_obstacles
+  obstacle_pool_static_size: 3     # total static slots;  >= num_of_static_obstacles
+  obstacle_pool_human_size: 2      # total human slots;   >= num_of_humans
+  # Parking slots: outside the 19 x 19 m walls but still on the floor plane.
+  # Pool obstacles are always spawned on the ground, then either activated in
+  # the arena or assigned to one of these parking slots via set_pose().
+  parking_slot_xs: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
+  parking_slot_ys: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
+  parking_z: 0.0
+
 threshold_parameters:
   goal_threshold: 0.42
   collision_threshold: 0.7
-  time_delta: 0.1
+  time_delta: 0.2
   inter_entity_distance: 2.5
   lidar_max_range: 50
 
-use_zone_collision: true
+use_zone_collision: false  # zones kept for monitoring; collision+reward both use rectangular region
 zone_angles_deg: [-30, 30,   -50, -30,   30, 50,   -130, -50,  50, 130,  -150, -130, 130, 150,  150, -150]
-zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68] # Z5..Z1 임계치(m)
+zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68] # monitoring only
+
+# Rectangular Safety Region — Algorithm 1, "Unguided Self-exploration in Narrow Spaces
+# with Safety Region Enhanced Reinforcement Learning for Ackermann-steering Robots"
+# Hunter SE footprint for collision: use the LiDAR origin as the reference frame.
+# Ouster is mounted at the robot longitudinal centre (x=0) and 0.60 m AGL.
+# Front hard boundary includes the protruding front wheel envelope, not only
+# the body box, so head-on wall contact is detected before the wheel clips.
+#   front wheel edge from lidar = 0.339638 + 0.136 = 0.475638 m
+#   rear body edge from lidar   = 0.410000 m
+# Hard collision box is kept close to the physical footprint while staying above
+# the hardware blind zone. Early warning begins at 1.2× the hard boundary.
+# Hard collision box = 1.155638 m × 0.704 m
+# Early warning box  = 1.386766 m × 0.8448 m
+#
+#  Direction │ blind-zone edge │ d_body │ margin │ threshold
+#  ──────────┼─────────────────┼────────┼────────┼──────────
+#  front     │ 0.300 m         │ 0.475638 │ 0.030 │ 0.505638 m
+#  rear      │ 0.300 m         │ 0.410000 │ 0.030 │ 0.440000 m
+#  left/right│ 0.300 m         │ 0.322  │ 0.030  │ 0.352 m
+safety_region:
+  d_front: 0.475638
+  d_rear:  0.410000  # intentionally conservative; exceeds URDF collision rear extent
+  d_left:  0.322
+  d_right: 0.322
+  margin_front: 0.03
+  margin_rear:  0.03
+  margin_left:  0.03
+  margin_right: 0.03
+  # Soft-boundary multipliers for reward proximity penalty.
+  # Use a narrow band outside the hard boundary, following the paper's intent
+  # to reduce over-coverage in narrow spaces.
+  reward_warning_scale_front: 1.2
+  reward_warning_scale_rear:  1.2
+  reward_warning_scale_left:  1.2
+  reward_warning_scale_right: 1.2
+  scan_resolution: 0.05

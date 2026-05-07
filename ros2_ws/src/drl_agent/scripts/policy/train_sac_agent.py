@@ -154,7 +154,7 @@ class TrainSAC(EnvInterface):  # クラス名をTrainSACに変更
             self.get_logger().error(f"Unable to load hyperparameters file: {e}")
             sys.exit(-1)
             
-        self.state_dim, self.action_dim, self.max_action = self.get_dimensions()
+        self.state_dim, self.action_dim, self.max_action, _, _ = self.get_dimensions()
         self.rl_agent = Agent(
             self.state_dim,
             self.action_dim,

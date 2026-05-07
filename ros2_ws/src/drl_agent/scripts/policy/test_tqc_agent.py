@@ -185,7 +185,7 @@ class TestTQC(EnvInterface):
         # ----------------------------
         # Env dims & Agent
         # ----------------------------
-        state_dim, action_dim, max_action = self.get_dimensions()
+        state_dim, action_dim, max_action, _, _ = self.get_dimensions()
         self.rl_agent = Agent(
             state_dim=state_dim,
             action_dim=action_dim,

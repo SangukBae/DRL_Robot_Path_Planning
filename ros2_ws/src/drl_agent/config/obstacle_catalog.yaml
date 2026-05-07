@@ -39,3 +39,9 @@ obstacles:
     uri: "model://aws_robomaker_warehouse_DeskC_01"
     radius: 0.65
     yaw_random: true
+
+humans:
+  - key: hospital_scrubs
+    uri: "model://Scrubs"
+    radius: 0.40
+    yaw_random: true

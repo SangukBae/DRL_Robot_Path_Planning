@@ -41,14 +41,8 @@ STEERING_GRAVITY: float = 12.0
 DEAD_ZONE: float = 0.01
 PUBLISH_HZ: float = 20.0
 HUNTER_SE_MAX_SPEED_MPS: float = 1.333
-HUNTER_SE_WHEELBASE_M: float = 0.547696
-HUNTER_SE_CENTER_STEER_LIMIT_DEG: float = 18.81684653381576
-STEERING_COMPENSATION_GAIN: float = 1.076
-HUNTER_SE_MAX_YAW_RATE_RAD_S: float = (
-    HUNTER_SE_MAX_SPEED_MPS
-    * math.tan(math.radians(HUNTER_SE_CENTER_STEER_LIMIT_DEG))
-    / HUNTER_SE_WHEELBASE_M
-)
+HUNTER_SE_CENTER_STEER_LIMIT_DEG: float = 21.58
+HUNTER_SE_MAX_STEERING_RAD: float = math.radians(HUNTER_SE_CENTER_STEER_LIMIT_DEG)
 
 _UP = "UP"
 _DOWN = "DOWN"
@@ -76,7 +70,7 @@ Focus this window, then use:
   D / Right   steer right
 
   Q / Z       linear speed +/-10%
-  E / C       angular speed +/-10%
+  E / C       steering range +/-10%
   Space / K   immediate stop
   Esc         quit
 
@@ -239,7 +233,7 @@ class TeleopNode(Node):
         self._vertical = 0.0
         self._horizontal = 0.0
         self.lin_spd = HUNTER_SE_MAX_SPEED_MPS
-        self.ang_spd = HUNTER_SE_MAX_YAW_RATE_RAD_S
+        self.ang_spd = HUNTER_SE_MAX_STEERING_RAD
         self._dt = 1.0 / PUBLISH_HZ
         self._kb: KeyboardState | None = None
         self.create_timer(self._dt, self._tick)
@@ -266,7 +260,7 @@ class TeleopNode(Node):
             elif ev == "z":
                 self.lin_spd = round(max(self.lin_spd * 0.9, 0.1), 3)
             elif ev == "e":
-                self.ang_spd = round(min(self.ang_spd * 1.1, HUNTER_SE_MAX_YAW_RATE_RAD_S), 3)
+                self.ang_spd = round(min(self.ang_spd * 1.1, HUNTER_SE_MAX_STEERING_RAD), 3)
             elif ev == "c":
                 self.ang_spd = round(max(self.ang_spd * 0.9, 0.1), 3)
             elif ev == _STOP:
@@ -302,22 +296,15 @@ class TeleopNode(Node):
         msg = Twist()
         msg.linear.x = self._vertical * self.lin_spd
 
-        # AckermannSteering interprets angular.z as target yaw rate, not direct
-        # steering angle. When reversing, the same yaw-rate sign produces the
-        # opposite physical wheel steer direction, so flip the sign to keep the
-        # wheel orientation aligned with the pressed left/right key.
-        angular_sign = -1.0 if msg.linear.x < 0.0 else 1.0
-        msg.angular.z = (
-            self._horizontal
-            * self.ang_spd
-            * STEERING_COMPENSATION_GAIN
-            * angular_sign
-        )
+        # hunter_se_cmd_prefilter expects angular.z as target center steering
+        # angle [rad]. Steering orientation should stay aligned with the
+        # pressed left/right key in both forward and reverse.
+        msg.angular.z = self._horizontal * self.ang_spd
         self._pub.publish(msg)
 
         kb.set_status(
-            f"linear={msg.linear.x:+.3f} m/s   angular={msg.angular.z:+.3f} rad/s   "
-            f"speed={self.lin_spd:.2f} / turn={self.ang_spd:.2f}"
+            f"linear={msg.linear.x:+.3f} m/s   steering={msg.angular.z:+.3f} rad   "
+            f"speed={self.lin_spd:.2f} / steer={self.ang_spd:.2f}"
         )
 
 

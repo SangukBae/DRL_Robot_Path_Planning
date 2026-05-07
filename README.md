@@ -92,8 +92,8 @@ ros2 launch aws_robomaker_small_warehouse_world small_warehouse_ignition.launch.
 터미널을 3개 사용한다.
 
 ```bash
-# [터미널 1] Gazebo 시뮬레이션 실행 (rviz:=false 권장)
-ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
+# [터미널 1] Gazebo 시뮬레이션 실행
+ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py
 
 # [터미널 2] DRL 환경 노드 실행
 ros2 launch drl_agent drl_hunter_se.launch.py            # 학습
