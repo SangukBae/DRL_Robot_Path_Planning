@@ -6,9 +6,9 @@ environment:
   # Walls are centered at +/-9.5 m; this keeps a 0.85 m margin to the inside face.
   goal_obstacle_lower: -8.5
   goal_obstacle_upper: 8.5
-  num_of_dynamic_obstacles: 7
+  num_of_dynamic_obstacles: 8
   num_of_static_obstacles: 1
-  num_of_humans: 1
+  num_of_humans: 0
   environment_state_dim: 80
   agent_state_dim: 7
   action_dim: 2
@@ -16,8 +16,10 @@ environment:
   max_action: 1.0
   # action[0]: waypoint distance r [m]  (robot frame, forward)
   # action[1]: waypoint angle theta [rad]  (robot frame, positive = left/CCW)
-  actions_low:  [0.8, -1.047]   # r_min=0.8m, theta_min=-60° (-1.047 rad)
-  actions_high: [2.0,  1.047]   # r_max=2.0m, theta_max=+60° (+1.047 rad)
+  actions_low:  [0.8, -0.524]   # r_min=0.8m, theta_min=-30° (-0.524 rad)
+  actions_high: [2.0,  0.524]   # r_max=2.0m, theta_max=+30° (+0.524 rad)
+  # theta 범위를 ±60° → ±30° 로 축소: Pure Pursuit 조향 포화 비율을 줄임
+  # (r=1.2m 기준 포화 57% → 14%, r=1.6m 이상에서는 포화 없음)
   vehicle_wheelbase_m: 0.547696
   vehicle_steering_limit_deg: 21.58
   vehicle_min_speed_for_steering_mps: 0.15
@@ -53,7 +55,7 @@ environment:
 threshold_parameters:
   goal_threshold: 0.42
   collision_threshold: 0.7
-  time_delta: 0.2
+  time_delta: 0.3
   inter_entity_distance: 2.5
   lidar_max_range: 50
 
@@ -76,7 +78,7 @@ zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68] # monitoring 
 #
 #  Direction │ blind-zone edge │ d_body │ margin │ threshold
 #  ──────────┼─────────────────┼────────┼────────┼──────────
-#  front     │ 0.300 m         │ 0.475638 │ 0.030 │ 0.505638 m
+#  front     │ 0.300 m         │ 0.475638 │ 0.100 │ 0.575638 m
 #  rear      │ 0.300 m         │ 0.410000 │ 0.030 │ 0.440000 m
 #  left/right│ 0.300 m         │ 0.322  │ 0.030  │ 0.352 m
 safety_region:
@@ -84,7 +86,7 @@ safety_region:
   d_rear:  0.410000  # intentionally conservative; exceeds URDF collision rear extent
   d_left:  0.322
   d_right: 0.322
-  margin_front: 0.03
+  margin_front: 0.10
   margin_rear:  0.03
   margin_left:  0.03
   margin_right: 0.03

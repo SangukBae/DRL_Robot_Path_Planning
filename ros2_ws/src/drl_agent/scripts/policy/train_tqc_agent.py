@@ -385,7 +385,13 @@ class TrainTQC(EnvInterface):
             
             # Environment step
             next_state, reward, ep_finished, info = self.step(action)
-            
+
+            # Timeout penalty: 마지막 step인데 collision/goal 없이 끝나면 패널티 부여.
+            # 이 항목을 replay buffer에 넣기 전에 적용해야 학습에 반영됨.
+            # 단순 progress 누적으로 timeout 흑자가 나는 현상을 더 강하게 억제한다.
+            if ep_timesteps == self.max_episode_steps - 1 and not ep_finished:
+                reward -= 20.0
+
             # Store transition in replay buffer
             done = float(ep_finished) if ep_timesteps < self.max_episode_steps else 0.0
             self.rl_agent.replay_buffer.add(state, action, next_state, reward, done)
@@ -419,15 +425,23 @@ class TrainTQC(EnvInterface):
 
             # Episode finished
             if ep_finished or ep_timesteps >= self.max_episode_steps:
-                self.get_logger().info(
-                    f"Total T: {t} | Episode: {ep_num} | "
-                    f"Episode T: {ep_timesteps} | Reward: {ep_total_reward:.3f}"
-                )
-
-                # CSV logging
                 _goal_reached = bool(info) and bool(ep_finished)
                 _collision    = bool(ep_finished) and not _goal_reached
                 _timeout      = not bool(ep_finished)
+                if _goal_reached:
+                    _result = "GOAL"
+                elif _collision:
+                    _result = "COLLISION"
+                else:
+                    _result = "TIMEOUT"
+
+                self.get_logger().info(
+                    f"Total T: {t} | Episode: {ep_num} | "
+                    f"Episode T: {ep_timesteps} | Reward: {ep_total_reward:.3f} | "
+                    f"Result: {_result}"
+                )
+
+                # CSV logging
                 _final_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
                 with open(self._reward_csv, "a", newline="") as _f:
                     csv.writer(_f).writerow([

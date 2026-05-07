@@ -3,7 +3,7 @@ train_settings:
   seed: 0
 
   # 환경/롤아웃
-  max_episode_steps: 500          # 에피소드 최대 스텝(환경에 맞게 조정)
+  max_episode_steps: 250          # 에피소드 최대 스텝(waypoint RL 기준으로 축소)
   max_timesteps: 1000000           # 전체 학습 스텝 수
 
   # 모델 로드/체크포인트/평가

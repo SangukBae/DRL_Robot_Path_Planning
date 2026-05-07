@@ -303,6 +303,7 @@ class Environment(Node):
 
         # Callback groups for handling sensors and services in parallel
         self.odom_callback_group = MutuallyExclusiveCallbackGroup()
+        self.filtered_cmd_callback_group = MutuallyExclusiveCallbackGroup()
         self.velodyne_callback_group = MutuallyExclusiveCallbackGroup()
         self.clients_callback_group = MutuallyExclusiveCallbackGroup()
         self.laser_callback_group = MutuallyExclusiveCallbackGroup()
@@ -407,6 +408,7 @@ class Environment(Node):
             cmd_vel_filtered_topic,
             self._update_filtered_cmd,
             qos_profile,
+            callback_group=self.filtered_cmd_callback_group,
         )
         self.joint_states_sub = self.create_subscription(
             JointState,
@@ -1093,7 +1095,17 @@ class Environment(Node):
             "odom_x", "odom_y",
             "goal_dist_m", "theta_err_rad",
             "lidar_min_m", "lidar_mean_m",
-            "rect_proximity", "reward",
+            "rect_proximity",
+            "reward_delta_goal_m",
+            "reward_progress",
+            "reward_heading",
+            "penalty_curv",
+            "penalty_obstacle",
+            "penalty_step",
+            "penalty_smooth",
+            "penalty_wp_smooth",
+            "reward_terminal",
+            "reward",
             "collision", "target", "done",
         ]
         with open(self._env_step_csv, "w", newline="") as f:
@@ -1299,7 +1311,7 @@ class Environment(Node):
         w_max = v_max * math.tan(self.vehicle_steering_limit_rad) / max(self.vehicle_wheelbase_m, 1e-6)
         prev_waypoint_theta = float(getattr(self, "_prev_waypoint_theta", 0.0))
 
-        reward = self.get_reward(
+        reward, reward_terms = self.get_reward(
             target, collision,
             v, w_reward,
             prev_goal_dist, curr_goal_dist,
@@ -1309,6 +1321,7 @@ class Environment(Node):
             v_max=v_max, w_max=w_max,
             waypoint_theta=theta,
             prev_waypoint_theta=prev_waypoint_theta,
+            return_terms=True,
         )
         self._prev_waypoint_theta = theta
     
@@ -1333,7 +1346,17 @@ class Environment(Node):
                 round(float(curr_goal_dist), 6),
                 round(float(theta_err) if theta_err is not None else 0.0, 6),
                 round(lidar_min, 6), round(lidar_mean, 6),
-                round(float(rect_proximity), 6), round(float(reward), 6),
+                round(float(rect_proximity), 6),
+                round(float(reward_terms["delta_d"]), 6),
+                round(float(reward_terms["progress"]), 6),
+                round(float(reward_terms["heading"]), 6),
+                round(float(reward_terms["curv_pen"]), 6),
+                round(float(reward_terms["obstacle"]), 6),
+                round(float(reward_terms["step_pen"]), 6),
+                round(float(reward_terms["smooth"]), 6),
+                round(float(reward_terms["wp_smooth"]), 6),
+                round(float(reward_terms["terminal"]), 6),
+                round(float(reward), 6),
                 int(bool(collision)), int(bool(target)), int(bool(done)),
             ])
 
@@ -2057,7 +2080,7 @@ class Environment(Node):
         v_max=1.5, w_max=6.0,
 
         # ---- 튜닝 파라미터 ----
-        k_p=2.0,                 # 진행 보상 게인
+        k_p=0.5,                 # 진행 보상 게인 (누적 양수 보상 과대 억제)
         progress_clip=0.25,
 
         # 곡률 페널티 (waypoint RL에서 Pure Pursuit가 처리하므로 기본 0)
@@ -2066,15 +2089,15 @@ class Environment(Node):
         # 장애물 근접 (존 기반)
         z_weights=(0.6, 0.85, 1.0, 0.85, 0.6),
         safety_margin=1.5,
-        w_obs=0.8,
+        w_obs=1.2,
 
         # 장애물 근접 (폴백)
         d_safe_base=0.55,
         d_safe_speed=0.30,
 
         # 헤딩/시간/스무딩
-        k_h=0.3,
-        step_pen=0.01,
+        k_h=0.1,
+        step_pen=0.02,
         k_smooth=0.0,
         prev_v=None, prev_w=None,
 
@@ -2082,10 +2105,26 @@ class Environment(Node):
         waypoint_theta=0.0,
         prev_waypoint_theta=0.0,
         k_smooth_wp=0.1,
+        return_terms=False,
     ):
+        terms = {
+            "delta_d": 0.0,
+            "progress": 0.0,
+            "heading": 0.0,
+            "curv_pen": 0.0,
+            "obstacle": 0.0,
+            "step_pen": 0.0,
+            "smooth": 0.0,
+            "wp_smooth": 0.0,
+            "terminal": 0.0,
+        }
         # 터미널
-        if target:    return 10.0
-        if collision: return -10.0
+        if target:
+            terms["terminal"] = 10.0
+            return (10.0, terms) if return_terms else 10.0
+        if collision:
+            terms["terminal"] = -30.0
+            return (-30.0, terms) if return_terms else -30.0
 
         # 정규화
         v_n = v / max(v_max, 1e-6)
@@ -2094,16 +2133,20 @@ class Environment(Node):
         # 1) 진행 보상
         delta_d  = np.clip(prev_goal_dist - curr_goal_dist, -progress_clip, progress_clip)
         progress = k_p * delta_d
+        terms["delta_d"] = float(delta_d)
+        terms["progress"] = float(progress)
 
         # 2) 곡률 페널티 (lambda_k=0 → disabled for waypoint RL)
         kappa    = abs(w_n) / (abs(v_n) + 1e-3)
         curv_pen = lambda_k * kappa
+        terms["curv_pen"] = float(curv_pen)
 
         # 2b) 웨이포인트 스무딩 (연속 step 간 waypoint 각도 변화 억제)
         dtheta = abs(waypoint_theta - prev_waypoint_theta)
         if dtheta > math.pi:
             dtheta = 2.0 * math.pi - dtheta
         wp_smooth = k_smooth_wp * dtheta / math.pi
+        terms["wp_smooth"] = float(wp_smooth)
 
         # 3) 장애물 근접 페널티 (직사각형 우선 → 레거시 zone → 글로벌 min 폴백)
         obstacle = 0.0
@@ -2127,9 +2170,13 @@ class Environment(Node):
                 d_safe = d_safe_base + d_safe_speed * abs(v)
                 if min_laser < d_safe:
                     obstacle = w_obs * (1.0 - min_laser / max(d_safe, 1e-6))
+        terms["obstacle"] = float(obstacle)
 
-        # 4) 헤딩 보너스(선택)
-        heading = k_h * math.cos(theta_err) if theta_err is not None else 0.0
+        # 4) 헤딩 보너스 — goal에 가까워지는 step에서만 부여 (reward hacking 방지)
+        heading = (k_h * max(0.0, math.cos(theta_err))
+                   if (theta_err is not None and delta_d > 0.0)
+                   else 0.0)
+        terms["heading"] = float(heading)
 
         # 5) 스무딩(선택)
         smooth = 0.0
@@ -2137,12 +2184,13 @@ class Environment(Node):
             dv = abs(v - prev_v) / max(v_max, 1e-6)
             dw = abs(w - prev_w) / max(w_max, 1e-6)
             smooth = k_smooth * 0.5 * (dv + dw)
+        terms["smooth"] = float(smooth)
+        terms["step_pen"] = float(step_pen)
 
         # 6) 시간 페널티 및 합산
         reward = progress + heading - curv_pen - obstacle - step_pen - smooth - wp_smooth
 
-        # 스케일 안정화
-        return float(np.clip(reward, -1.0, 1.0))
+        return (float(reward), terms) if return_terms else float(reward)
 
 def main(args=None):
     # Initialize the ROS2 communication
