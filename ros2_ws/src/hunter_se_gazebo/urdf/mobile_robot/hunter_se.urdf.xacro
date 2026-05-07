@@ -139,7 +139,7 @@
                   max_angle_v="22.5"
                   noise="0.01"
                   topic="/hunter_se/pointcloud/points">
-      <origin xyz="0 0 0.304870" rpy="0 0 0"/>
+      <origin xyz="0 0 0.204870" rpy="0 0 0"/>
     </xacro:os1_64>
 
     <!-- ==================== WHEELS ==================== -->

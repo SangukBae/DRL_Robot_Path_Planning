@@ -26,8 +26,8 @@ environment:
   controller_min_speed_mps: 0.3      # speed floor at full steering
   controller_speed_steer_factor: 0.6 # speed reduction fraction at max steering
   spawn_z: 0.02
-  obs_z_min_sensor_m: -0.555   # LiDAR frame: 0.045 m above ground (0.045-0.600)
-  obs_z_max_sensor_m:  0.250   # LiDAR frame: 0.850 m above ground (0.850-0.600)
+  obs_z_min_sensor_m: -0.455   # LiDAR frame: 0.045 m above ground (0.045-0.500)
+  obs_z_max_sensor_m:  0.250   # LiDAR frame: 0.750 m above ground (0.750-0.500)
 
   # Obstacle catalog (relative to the config directory)
   obstacle_catalog: "drl_obstacle_assets"
@@ -64,7 +64,7 @@ zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68] # monitoring 
 # Rectangular Safety Region — Algorithm 1, "Unguided Self-exploration in Narrow Spaces
 # with Safety Region Enhanced Reinforcement Learning for Ackermann-steering Robots"
 # Hunter SE footprint for collision: use the LiDAR origin as the reference frame.
-# Ouster is mounted at the robot longitudinal centre (x=0) and 0.60 m AGL.
+# Ouster is mounted at the robot longitudinal centre (x=0) and 0.50 m AGL.
 # Front hard boundary includes the protruding front wheel envelope, not only
 # the body box, so head-on wall contact is detected before the wheel clips.
 #   front wheel edge from lidar = 0.339638 + 0.136 = 0.475638 m

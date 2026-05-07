@@ -259,11 +259,11 @@ def generate_launch_description():
             "target_frame": "ouster_lidar",
             "transform_tolerance": 0.01,
             # Height filter in the Ouster frame.
-            # Sensor origin is about 0.60 m above ground, so this keeps points
-            # roughly 0.045–0.850 m above ground:
-            #   0.045 - 0.600 = -0.555
-            #   0.850 - 0.600 =  0.250
-            "min_height": -0.555,
+            # Sensor origin is about 0.50 m above ground, so this keeps points
+            # roughly 0.045–0.750 m above ground:
+            #   0.045 - 0.500 = -0.455
+            #   0.750 - 0.500 =  0.250
+            "min_height": -0.455,
             "max_height": 0.25,
             "angle_min": -3.14159265,  # full 360°
             "angle_max":  3.14159265,
