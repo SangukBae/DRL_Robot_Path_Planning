@@ -1,263 +1,345 @@
 #!/usr/bin/env python3
 
 import os
-import sys
-import rclpy
+import csv
 import time
-from datetime import date
+from datetime import datetime
 
+import rclpy
 import torch
 import numpy as np
-from sac_agent import Agent  # TD7からSACに変更
+
+from sac_agent import Agent
 from environment_interface import EnvInterface
-from file_manager import DirectoryManager, load_yaml
+from file_manager import load_yaml
 
 
-class TrainSAC(EnvInterface):  # クラス名をTrainSACに変更
+class TrainSAC(EnvInterface):
     def __init__(self):
-        super().__init__("train_sac_node")  # ノード名をSAC用に変更
+        super().__init__("train_sac_node")
 
-        # ----------------------------
-        # Load training config (robust)
-        # ----------------------------
         self.declare_parameter("train_config_file", "")
-        cfg_param = self.get_parameter("train_config_file").get_parameter_value().string_value.strip()
+        user_param_path = self.get_parameter("train_config_file").get_parameter_value().string_value.strip()
 
-        train_cfg_name = "train_sac_config.yaml"
-        hparams_name  = "hyperparameters_sac.yaml"  # SAC用のハイパーパラメータファイル
+        train_cfg_path = self._find_config_file("train_sac_config.yaml", user_param_path)
+        if not train_cfg_path:
+            self.get_logger().error("Could not find 'train_sac_config.yaml'")
+            raise FileNotFoundError("train_sac_config.yaml not found")
 
-        cfg_dir = None
-        candidates = []
-        tried = []
+        train_settings = load_yaml(train_cfg_path)["train_settings"]
+        self.seed = train_settings["seed"]
+        self.max_episode_steps = train_settings["max_episode_steps"]
+        self.load_model = train_settings["load_model"]
+        self.max_timesteps = train_settings["max_timesteps"]
+        self.use_checkpoints = train_settings["use_checkpoints"]
+        self.eval_freq = train_settings["eval_freq"]
+        self.timesteps_before_training = train_settings["timesteps_before_training"]
+        self.eval_eps = train_settings["eval_eps"]
+        base_file_name = train_settings["base_file_name"]
 
-        # 1) 사용자 파라미터(전체 파일 경로)
-        if cfg_param:
-            p = os.path.expanduser(cfg_param)
-            if os.path.isfile(p):
-                cfg_dir = os.path.dirname(p)
-            else:
-                tried.append(p)
+        current_date = datetime.now().strftime("%Y%m%d")
+        self.file_name = f"{base_file_name}_seed_{self.seed}_{current_date}"
 
-        # 2) 설치된 share 경로
-        if cfg_dir is None:
-            try:
-                from ament_index_python.packages import get_package_share_directory
-                candidates.append(os.path.join(get_package_share_directory("drl_agent"), "config"))
-            except Exception:
-                pass
+        self._setup_directories()
+        self._init_csv_loggers()
 
-        # 3) 환경변수: DRL_AGENT_TRAIN_CONFIG (전체 파일 경로)
-        if cfg_dir is None:
-            env_full = os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip()
-            if env_full:
-                env_full = os.path.expanduser(env_full)
-                if os.path.isfile(env_full):
-                    cfg_dir = os.path.dirname(env_full)
-                else:
-                    tried.append(env_full)
-
-        # 4) 환경변수: DRL_AGENT_SRC_PATH 기반 후보들
-        if cfg_dir is None:
-            src = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
-            if src:
-                candidates += [
-                    os.path.join(src, "drl_agent", "config"),
-                    os.path.join(src, "src", "drl_agent", "config"),
-                    os.path.join(src, "src", "drl_agent", "src", "drl_agent", "config"),
-                    os.path.join(src, "config"),
-                ]
-
-        # 5) 소스 트리 상대 경로(개발 중 편의)
-        if cfg_dir is None:
-            here = os.path.dirname(os.path.abspath(__file__))
-            candidates += [
-                os.path.normpath(os.path.join(here, "..", "config")),       # .../scripts/config (혹시)
-                os.path.normpath(os.path.join(here, "..", "..", "config")), # .../drl_agent/config
-            ]
-
-        # 후보들에서 train_config.yaml 탐색
-        for d in candidates:
-            p = os.path.join(d, train_cfg_name)
-            if os.path.isfile(p):
-                cfg_dir = d
-                break
-            tried.append(p)
-
-        if cfg_dir is None:
-            self.get_logger().error(
-                "Could not find '{}'. Tried:\n  {}".format(train_cfg_name, "\n  ".join(tried))
-            )
-            sys.exit(-1)
-
-        self.train_config_file_path = os.path.join(cfg_dir, train_cfg_name)
-        self.hyperparameters_path   = os.path.join(cfg_dir, hparams_name)
-        self.get_logger().info(f"Using train config: {self.train_config_file_path}")
-        self.get_logger().info(f"Using hyperparameters: {self.hyperparameters_path}")
-
-        # Load config file
-        try:
-            training_settings = load_yaml(self.train_config_file_path)["train_settings"]
-        except Exception as e:
-            self.get_logger().error(f"Unable to load config file: {e}")
-            sys.exit(-1)
-
-        # Extract training settings
-        self.seed = training_settings["seed"]
-        self.max_episode_steps = training_settings["max_episode_steps"]
-        self.load_model = training_settings["load_model"]
-        self.max_timesteps = training_settings["max_timesteps"]
-        self.use_checkpoints = training_settings["use_checkpoints"]
-        self.eval_freq = training_settings["eval_freq"]
-        self.timesteps_before_training = training_settings["timesteps_before_training"]
-        self.eval_eps = training_settings["eval_eps"]
-        self.base_file_name = training_settings.get("base_file_name_sac", "sac_agent")  # SAC用のベース名
-        self.file_name = (
-            f"{self.base_file_name}_seed_{self.seed}_{date.today().strftime('%Y%m%d')}"
-        )
-
-        # -------------------------------------------------------
-        # (수정) 출력/임시 디렉토리 설정: drl_agent_src_path 의존 제거
-        # 우선순위: ROS 파라미터 run_dir → 환경변수 DRL_AGENT_RUN_DIR → 기본(~/.ros/drl_agent)
-        # -------------------------------------------------------
-        self.declare_parameter("run_dir", "")
-        _run_param = self.get_parameter("run_dir").get_parameter_value().string_value.strip()
-
-        if _run_param:
-            base_run_dir = os.path.expanduser(_run_param)
-        elif os.environ.get("DRL_AGENT_RUN_DIR"):
-            base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
-        else:
-            base_run_dir = os.path.join(os.path.expanduser("~"), ".ros", "drl_agent")
-
-        os.makedirs(base_run_dir, exist_ok=True)
-
-        # 기존 구조를 유지: base_run_dir/temp 아래에 모델/결과/로그 폴더 구성
-        # SAC용 디렉토리를 분리하여 TD7와 구분
-        temp_dir_path = os.path.join(base_run_dir, "temp_sac")
-        self.pytorch_models_dir = os.path.join(temp_dir_path, "pytorch_models")
-        self.final_models_dir   = os.path.join(temp_dir_path, "final_models")
-        self.results_dir        = os.path.join(temp_dir_path, "results")
-        self.log_dir            = os.path.join(temp_dir_path, "logs")
-
-        for d in (temp_dir_path, self.pytorch_models_dir, self.final_models_dir, self.results_dir, self.log_dir):
-            os.makedirs(d, exist_ok=True)
-            
-        # Set seed
         self.set_env_seed(self.seed)
         torch.manual_seed(self.seed)
         np.random.seed(self.seed)
 
-        # Initialize the SAC agent
-        try:
-            hyperparameters = load_yaml(self.hyperparameters_path)["hyperparameters"]
-        except Exception as e:
-            self.get_logger().error(f"Unable to load hyperparameters file: {e}")
-            sys.exit(-1)
-            
-        self.state_dim, self.action_dim, self.max_action, _, _ = self.get_dimensions()
+        state_dim, action_dim, max_action, environment_dim, agent_dim = self.get_dimensions()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.max_action = max_action
+        self.environment_dim = environment_dim
+        self.agent_dim = agent_dim
+
+        hparams_path = self._find_config_file("hyperparameters_sac.yaml", user_param_path)
+        if not hparams_path:
+            self.get_logger().error("Could not find 'hyperparameters_sac.yaml'")
+            raise FileNotFoundError("hyperparameters_sac.yaml not found")
+
+        hyperparameters = load_yaml(hparams_path)["hyperparameters"]
+
         self.rl_agent = Agent(
-            self.state_dim,
-            self.action_dim,
-            self.max_action,
+            state_dim,
+            action_dim,
+            max_action,
             hyperparameters,
-            self.log_dir,
+            log_dir=self.log_dir,
         )
 
-        # Try to load the model
+        def _find_latest_prefix(models_dir, base, seed):
+            import glob
+            pat = os.path.join(models_dir, f"{base}_seed_{seed}_*_actor.pth")
+            cands = glob.glob(pat)
+            if not cands:
+                return None
+            cands.sort(key=lambda p: os.stat(p).st_mtime, reverse=True)
+            return os.path.basename(cands[0]).replace("_actor.pth", "")
+
+        if self.load_model:
+            latest = _find_latest_prefix(self.pytorch_models_dir, base_file_name, self.seed)
+            if latest:
+                self.file_name = latest
+                self.get_logger().info(f"Resuming from checkpoint prefix: {self.file_name}")
+
         if self.load_model:
             try:
                 self.rl_agent.load(self.pytorch_models_dir, self.file_name)
-                self.get_logger().info("SAC Model loaded")
+                self.get_logger().info(f"Loaded model from {self.pytorch_models_dir}/{self.file_name}")
             except Exception as e:
-                self.get_logger().warning(f"Failed to load the SAC model: {e}")
+                self.get_logger().warning(f"Could not load model: {e}")
 
-        # Flag to indicate that the training is done
         self.done_training = False
-
         self.log_training_setting_data()
 
-    def log_training_setting_data(self):
-        """Log general info at the start of training"""
-        self.border = "+" + "-" * 80 + "+"
-        self.get_logger().info(self.border)
-        self.get_logger().info(f"| SAC Agent Training")
-        self.get_logger().info(f"| File name: {self.file_name}: Seed: {self.seed}")
-        self.get_logger().info(self.border)
-        self.get_logger().info("| Results will be saved in:")
-        self.get_logger().info(f"|  {self.pytorch_models_dir}")
-        self.get_logger().info(f"|  {self.final_models_dir}")
-        self.get_logger().info(f"|  {self.results_dir}")
-        self.get_logger().info(f"|  {self.log_dir}")
-        self.get_logger().info(self.border)
-        self.get_logger().info("| Environment")
-        self.get_logger().info(self.border)
-        self.get_logger().info(f"| State Dim: {self.state_dim}")
-        self.get_logger().info(f"| Action Dim: {self.action_dim}")
-        self.get_logger().info(f"| Max Action: {self.max_action}")
-        self.get_logger().info(self.border)
+    def _find_config_file(self, filename, user_param_path=None):
+        tried = []
 
-    def create_directories(self):
-        """Create directories for saving models"""
-        directories = [
-            self.pytorch_models_dir,
-            self.final_models_dir,
-            self.results_dir,
-            self.log_dir,
-        ]
-        for dir in directories:
-            dir_manager = DirectoryManager(dir)
-            dir_manager.remove_if_present()
-            dir_manager.create()
+        if user_param_path:
+            p = os.path.expanduser(user_param_path)
+            if os.path.isfile(p):
+                cand = os.path.join(os.path.dirname(p), filename)
+                if os.path.isfile(cand):
+                    return cand
+                tried.append(cand)
+            elif os.path.isdir(p):
+                cand = os.path.join(p, filename)
+                if os.path.isfile(cand):
+                    return cand
+                tried.append(cand)
+
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            cand = os.path.join(get_package_share_directory("drl_agent"), "config", filename)
+            if os.path.isfile(cand):
+                return cand
+            tried.append(cand)
+        except Exception:
+            pass
+
+        env_full = os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip()
+        if env_full:
+            env_full = os.path.expanduser(env_full)
+            base = os.path.dirname(env_full) if os.path.isfile(env_full) else (env_full if os.path.isdir(env_full) else None)
+            if base:
+                cand = os.path.join(base, filename)
+                if os.path.isfile(cand):
+                    return cand
+                tried.append(cand)
+
+        src = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
+        if src:
+            src = os.path.expanduser(src)
+            for d in [os.path.join(src, "drl_agent", "config"), os.path.join(src, "src", "drl_agent", "config"), os.path.join(src, "config")]:
+                cand = os.path.join(d, filename)
+                if os.path.isfile(cand):
+                    return cand
+                tried.append(cand)
+
+        here = os.path.dirname(os.path.abspath(__file__))
+        for d in [os.path.normpath(os.path.join(here, "..", "config")), os.path.normpath(os.path.join(here, "..", "..", "config"))]:
+            cand = os.path.join(d, filename)
+            if os.path.isfile(cand):
+                return cand
+            tried.append(cand)
+
+        self.get_logger().error("Could not find config '{}'. Tried:\n  {}".format(filename, "\n  ".join(tried)))
+        return None
+
+    def _setup_directories(self):
+        self.declare_parameter("run_dir", "")
+        run_dir_param = self.get_parameter("run_dir").get_parameter_value().string_value.strip()
+
+        if run_dir_param:
+            base_run_dir = os.path.expanduser(run_dir_param)
+        elif os.environ.get("DRL_AGENT_RUN_DIR", "").strip():
+            base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
+        else:
+            package_root = self._resolve_drl_agent_source_root()
+            base_run_dir = os.path.join(package_root, "runtime", "sac_state_80_nstactics_5_obstacle_11")
+
+        self.run_dir = base_run_dir
+        self.pytorch_models_dir = os.path.join(self.run_dir, "pytorch_models")
+        self.final_models_dir   = os.path.join(self.run_dir, "final_models")
+        self.results_dir        = os.path.join(self.run_dir, "results")
+        self.log_dir            = os.path.join(self.run_dir, "logs")
+
+        for d in (self.run_dir, self.pytorch_models_dir, self.final_models_dir, self.results_dir, self.log_dir):
+            os.makedirs(d, exist_ok=True)
+
+    def _resolve_drl_agent_source_root(self):
+        here = os.path.abspath(__file__)
+        candidates = []
+
+        src_env = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
+        if src_env:
+            src_env = os.path.expanduser(src_env)
+            candidates.extend([os.path.join(src_env, "drl_agent"), os.path.join(src_env, "src", "drl_agent"), src_env])
+
+        if "/install/" in here:
+            candidates.append(os.path.join(here.split("/install/")[0], "src", "drl_agent"))
+
+        cwd = os.path.abspath(os.getcwd())
+        candidates.extend([os.path.join(cwd, "src", "drl_agent"), os.path.normpath(os.path.join(os.path.dirname(here), "..", ".."))])
+
+        for cand in candidates:
+            if os.path.isdir(cand) and os.path.basename(cand) == "drl_agent":
+                return os.path.normpath(cand)
+
+        return os.path.normpath(os.path.join(os.path.dirname(here), "..", ".."))
+
+    def _init_csv_loggers(self):
+        self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._reward_csv  = os.path.join(self.log_dir, f"episode_rewards_{self._csv_run_tag}.csv")
+        self._driving_csv = os.path.join(self.log_dir, f"episode_driving_{self._csv_run_tag}.csv")
+        self._step_csv    = os.path.join(self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv")
+
+        reward_header  = ["episode", "global_t", "steps", "total_reward", "mean_reward",
+                          "goal_reached", "collision", "timeout", "final_goal_dist_m"]
+        driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
+                          "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached"]
+        step_header    = ["episode", "global_t", "episode_step", "action_source",
+                          "action_0_norm", "action_1_norm",
+                          "goal_dist_before_m", "goal_dist_after_m",
+                          "theta_before_rad", "theta_after_rad",
+                          "lidar_min_before_m", "lidar_min_after_m",
+                          "lidar_mean_before_m", "lidar_mean_after_m",
+                          "reward", "ep_finished", "target_flag"]
+
+        for path, header in [(self._reward_csv, reward_header), (self._driving_csv, driving_header), (self._step_csv, step_header)]:
+            with open(path, "w", newline="") as f:
+                csv.writer(f).writerow(header)
+
+        self.get_logger().info(f"Episode rewards CSV : {self._reward_csv}")
+        self.get_logger().info(f"Episode driving CSV : {self._driving_csv}")
+        self.get_logger().info(f"Policy step CSV     : {self._step_csv}")
+
+    def log_training_setting_data(self):
+        self.get_logger().info("=" * 50)
+        self.get_logger().info("SAC Training Configuration")
+        self.get_logger().info("=" * 50)
+        self.get_logger().info(f"File name     : {self.file_name}")
+        self.get_logger().info(f"Seed          : {self.seed}")
+        self.get_logger().info(f"Run directory : {self.run_dir}")
+        self.get_logger().info(f"State dim     : {self.state_dim}")
+        self.get_logger().info(f"Action dim    : {self.action_dim}")
+        self.get_logger().info(f"Max timesteps : {self.max_timesteps}")
+        self.get_logger().info("=" * 50)
 
     def save_models(self, directory, file_name):
-        """Save the models at the given step"""
         self.rl_agent.save(directory, file_name)
-        self.get_logger().info("SAC Models updated")
+        self.get_logger().info(f"Models updated in {directory}")
 
     def train_online(self):
-        """Train the SAC agent online"""
-        # Initialize the variables
         start_time = time.time()
         evals = []
         epoch = 1
         timesteps_since_eval = 0
         allow_train = False
 
-        state, ep_finished = self.reset(), False
-        ep_total_reward, ep_timesteps, ep_num = 0, 0, 1
+        ENV_DIM = self.environment_dim
+
+        state = self.reset()
+        ep_total_reward = 0
+        ep_timesteps = 0
+        ep_num = 1
+        ep_finished = False
+
+        _state0 = np.asarray(state, dtype=np.float32).ravel()
+        _ep_v_buf: list         = []
+        _ep_w_buf: list         = []
+        _ep_min_lidar_buf: list = []
+        _ep_initial_goal_dist   = float(_state0[ENV_DIM])
+
+        self.get_logger().info("Starting SAC training...")
 
         for t in range(1, self.max_timesteps + 1):
+            _state_before = np.asarray(state, dtype=np.float32).ravel()
+            _lidar_before = _state_before[:ENV_DIM]
+            _goal_before  = float(_state_before[ENV_DIM])
+            _theta_before = float(_state_before[ENV_DIM + 1])
 
             if allow_train:
-                # SACは探索的な行動選択をデフォルトで行う
+                action_source = "policy"
                 action = self.rl_agent.select_action(np.array(state), use_exploration=True)
             else:
+                action_source = "warmup"
                 action = self.sample_action_space()
 
-            # Act
-            next_state, reward, ep_finished, _ = self.step(action)
+            next_state, reward, ep_finished, info = self.step(action)
 
-            ep_total_reward += reward
-            ep_timesteps += 1
+            if ep_timesteps == self.max_episode_steps - 1 and not ep_finished:
+                reward -= 20.0
 
-            done = float(ep_finished) if ep_timesteps < self.max_episode_steps else 0
+            done = float(ep_finished) if ep_timesteps < self.max_episode_steps else 0.0
             self.rl_agent.replay_buffer.add(state, action, next_state, reward, done)
 
             state = next_state
+            ep_total_reward += reward
+            ep_timesteps += 1
+
+            _s_np = np.asarray(state, dtype=np.float32).ravel()
+            _lidar_after = _s_np[:ENV_DIM]
+            _ep_v_buf.append(float(action[0]))
+            _ep_w_buf.append(float(action[1]))
+            _ep_min_lidar_buf.append(float(np.min(_lidar_after)))
+
+            with open(self._step_csv, "a", newline="") as _f:
+                csv.writer(_f).writerow([
+                    ep_num, t, ep_timesteps, action_source,
+                    round(float(action[0]), 6), round(float(action[1]), 6),
+                    round(_goal_before, 6), round(float(_s_np[ENV_DIM]), 6),
+                    round(_theta_before, 6), round(float(_s_np[ENV_DIM + 1]), 6),
+                    round(float(np.min(_lidar_before)), 6), round(float(np.min(_lidar_after)), 6),
+                    round(float(np.mean(_lidar_before)), 6), round(float(np.mean(_lidar_after)), 6),
+                    round(float(reward), 6), int(bool(ep_finished)), int(bool(info)),
+                ])
 
             if allow_train and not self.use_checkpoints:
                 self.rl_agent.train()
 
-            if ep_finished or ep_timesteps == self.max_episode_steps:
+            if ep_finished or ep_timesteps >= self.max_episode_steps:
+                _goal_reached = bool(info) and bool(ep_finished)
+                _collision    = bool(ep_finished) and not _goal_reached
+                _timeout      = not bool(ep_finished)
+                _result = "GOAL" if _goal_reached else ("COLLISION" if _collision else "TIMEOUT")
+
                 self.get_logger().info(
-                    f"Total T: {t+1} Episode Num: {ep_num} Episode T: {ep_timesteps} Reward: {ep_total_reward:.3f}"
+                    f"Total T: {t} | Episode: {ep_num} | "
+                    f"Episode T: {ep_timesteps} | Reward: {ep_total_reward:.3f} | Result: {_result}"
                 )
-                if allow_train and self.use_checkpoints:
+
+                _final_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
+                with open(self._reward_csv, "a", newline="") as _f:
+                    csv.writer(_f).writerow([
+                        ep_num, t, ep_timesteps,
+                        round(ep_total_reward, 4),
+                        round(ep_total_reward / max(ep_timesteps, 1), 4),
+                        int(_goal_reached), int(_collision), int(_timeout),
+                        round(_final_goal_dist, 4),
+                    ])
+                if _ep_v_buf:
+                    with open(self._driving_csv, "a", newline="") as _f:
+                        csv.writer(_f).writerow([
+                            ep_num, t, ep_timesteps,
+                            round(float(np.mean(_ep_v_buf)), 4),
+                            round(float(np.mean(np.abs(_ep_w_buf))), 4),
+                            round(_ep_initial_goal_dist, 4),
+                            round(_final_goal_dist, 4),
+                            round(_ep_initial_goal_dist - _final_goal_dist, 4),
+                            round(float(np.min(_ep_min_lidar_buf)), 4),
+                            round(float(np.mean(_ep_min_lidar_buf)), 4),
+                            int(_goal_reached),
+                        ])
+
+                if self.use_checkpoints and allow_train:
                     self.rl_agent.train_and_checkpoint(ep_timesteps, ep_total_reward)
 
                 if allow_train and timesteps_since_eval >= self.eval_freq:
                     timesteps_since_eval %= self.eval_freq
-                    # Save the models
                     self.save_models(self.pytorch_models_dir, self.file_name)
                     self.evaluate_and_print(evals, epoch, start_time)
                     epoch += 1
@@ -265,68 +347,70 @@ class TrainSAC(EnvInterface):  # クラス名をTrainSACに変更
                 if t >= self.timesteps_before_training:
                     allow_train = True
 
-                state, done = self.reset(), False
-                ep_total_reward, ep_timesteps = 0, 0
+                state = self.reset()
+                ep_total_reward = 0
+                ep_timesteps = 0
                 ep_num += 1
+                ep_finished = False
+
+                _ep_v_buf.clear()
+                _ep_w_buf.clear()
+                _ep_min_lidar_buf.clear()
+                _ep_initial_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
 
             timesteps_since_eval += 1
-            
-        # Final save
+
+        self.get_logger().info("Training completed!")
         self.save_models(self.final_models_dir, self.file_name)
-        self.get_logger().info("Training completed! Final models saved.")
-        
-        # Indicate that the training is done
         self.done_training = True
 
     def evaluate_and_print(self, evals, epoch, start_time):
-        """Evaluate the SAC agent and print the results"""
-
-        self.get_logger().info(self.border)
-        self.get_logger().info(f"| SAC Evaluation at epoch: {epoch}")
-        self.get_logger().info(
-            f"| Total time passed: {round((time.time()-start_time)/60.,2)} min(s)"
-        )
+        self.get_logger().info("=" * 50)
+        self.get_logger().info(f"Evaluating Epoch {epoch}")
+        self.get_logger().info(f"Time elapsed: {time.time() - start_time:.2f}s")
+        self.get_logger().info("=" * 50)
 
         total_reward = np.zeros(self.eval_eps)
         for ep in range(self.eval_eps):
-            state, done = self.reset(), False
+            state = self.reset()
+            done = False
             ep_timesteps = 0
             while not done and ep_timesteps < self.max_episode_steps:
-                # 評価時は決定的な行動（平均値）を使用
                 action = self.rl_agent.select_action(
-                    np.array(state), self.use_checkpoints, use_exploration=False
+                    np.array(state),
+                    use_checkpoint=self.use_checkpoints,
+                    use_exploration=False,
                 )
-                # Act
                 state, reward, done, _ = self.step(action)
                 total_reward[ep] += reward
                 ep_timesteps += 1
 
-        avg_reward = total_reward.mean()
-        std_reward = total_reward.std()
-        
+        mean_reward = np.mean(total_reward)
+        std_reward  = np.std(total_reward)
         self.get_logger().info(
-            f"| Average reward over {self.eval_eps} episodes: {avg_reward:.3f} (+/- {std_reward:.3f})"
+            f"Evaluation over {self.eval_eps} episodes: {mean_reward:.3f} ± {std_reward:.3f}"
         )
-        self.get_logger().info(self.border)
-        evals.append(avg_reward)
+        evals.append(mean_reward)
         np.save(f"{self.results_dir}/{self.file_name}", evals)
+        return mean_reward
 
 
 def main(args=None):
-    # Initialize the ROS2 communication
     rclpy.init(args=args)
-    # Initialize the SAC training node
-    train_sac_node = TrainSAC()
-    # Start training
-    train_sac_node.train_online()
     try:
-        while rclpy.ok() and not train_sac_node.done_training:
-            rclpy.spin_once(train_sac_node)
-    except KeyboardInterrupt as e:
-        train_sac_node.get_logger().warning(f"KeyboardInterrupt: {e}")
+        node = TrainSAC()
+        node.train_online()
+        while rclpy.ok() and not node.done_training:
+            rclpy.spin_once(node, timeout_sec=0.1)
+    except KeyboardInterrupt:
+        print("\nTraining interrupted by user")
+    except Exception as e:
+        print(f"Error during training: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
-        train_sac_node.get_logger().info("SAC training shutting down...")
-        train_sac_node.destroy_node()
+        if "node" in locals():
+            node.destroy_node()
         rclpy.shutdown()
 
 

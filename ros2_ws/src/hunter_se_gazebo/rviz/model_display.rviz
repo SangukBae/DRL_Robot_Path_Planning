@@ -231,7 +231,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: Linear Velocity
+      Name: Waypoint Distance
       Namespaces:
         {}
       Topic:
@@ -239,11 +239,11 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /linear_velocity
+        Value: /wp_r_norm
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Name: Angular Velocity
+      Name: Waypoint Angle
       Namespaces:
         {}
       Topic:
@@ -251,7 +251,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /angular_velocity
+        Value: /wp_theta_norm
       Value: true
   Enabled: true
   Global Options:

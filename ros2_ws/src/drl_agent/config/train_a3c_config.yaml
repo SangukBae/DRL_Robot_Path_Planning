@@ -7,4 +7,4 @@ train_settings:
   eval_freq: 5000
   timesteps_before_training: 1000
   eval_eps: 5
-  base_file_name: a3c_navigation
+  base_file_name: "a3c_agent"

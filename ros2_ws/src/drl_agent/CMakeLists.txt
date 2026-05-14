@@ -52,13 +52,19 @@ install(
     scripts/policy/train_a3c_agent.py
     scripts/policy/train_tqc_agent.py
     scripts/policy/train_tqc_ieqn_agent.py
+    scripts/policy/sb3_sac_agent.py
+    scripts/policy/sb3_td3_agent.py
+    scripts/policy/sb3_ppo_agent.py
+    scripts/policy/train_sb3_sac_agent.py
+    scripts/policy/train_sb3_td3_agent.py
+    scripts/policy/train_sb3_ppo_agent.py
     scripts/utils/buffer.py
     scripts/utils/point_cloud2.py
     scripts/utils/file_manager.py
     scripts/environment/environment_interface.py
     scripts/environment/environment.py
     scripts/environment/environment_360.py
-  DESTINATION 
+  DESTINATION
     lib/${PROJECT_NAME}
 )
 

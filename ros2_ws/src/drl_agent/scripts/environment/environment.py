@@ -215,12 +215,27 @@ class Environment(Node):
         self._rect_safety_ranges:  np.ndarray = None
         self._rect_warning_ranges: np.ndarray = None
 
+        # Start-pose heading/clearance safety parameters
+        self.start_edge_heading_margin = float(
+            self.environment_config.get("start_edge_heading_margin_m", 1.0))
+        self.start_front_clearance = float(
+            self.environment_config.get("start_front_clearance_m", 1.2))
+        self.start_front_fov_deg = float(
+            self.environment_config.get("start_front_fov_deg", 35.0))
+
         # Obstacle spawn margin parameters
         self.num_of_humans = int(self.environment_config.get("num_of_humans", 0))
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
         self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
         self.obstacle_mutual_margin = self.environment_config.get("obstacle_mutual_margin", 1.2)
+
+        # Actual arena wall inner-face boundary (used by start-pose heading checks).
+        # Derived from goal_obstacle bounds + obstacle_wall_margin so that
+        # obstacle placement "wall_margin" lines up with the true wall face.
+        # e.g. goal_obstacle_upper=8.5 + obstacle_wall_margin=1.0 → 9.5 m
+        self._arena_wall_lower = float(self.goal_obstacle_lower) - float(self.obstacle_wall_margin)
+        self._arena_wall_upper = float(self.goal_obstacle_upper) + float(self.obstacle_wall_margin)
 
         # Pool mode — spawn all obstacles once at startup, teleport per episode
         self.use_obstacle_pool = bool(self.environment_config.get("use_obstacle_pool", False))
@@ -460,12 +475,20 @@ class Environment(Node):
                 callback_group=self.laser_callback_group,
             )
 
-        # Define bins for grouping LaserScan (FULL 360°)
+        # Define bins for collision detection (FULL 360°)
         eps = 0.03
         width = 2*np.pi / self.environment_dim
         start = -np.pi - eps
         self.bins = [[start + i*width, start + (i+1)*width] for i in range(self.environment_dim)]
         self.bins[-1][-1] += eps
+
+        # Define bins for RL observation input only (FRONT 180°: -π/2 to +π/2)
+        obs_eps = 0.03
+        obs_width = np.pi / self.environment_dim
+        obs_start = -np.pi / 2 - obs_eps
+        self.obs_bins = [[obs_start + i*obs_width, obs_start + (i+1)*obs_width]
+                         for i in range(self.environment_dim)]
+        self.obs_bins[-1][-1] += obs_eps
 
         # Precompute per-bin safety ranges (rectangular footprint, paper Algorithm 1)
         self._rect_safety_ranges  = self._precompute_rect_safety_ranges()
@@ -496,6 +519,7 @@ class Environment(Node):
 
         # ...locks 생성 이후, config 값들 로드가 끝난 시점에 안전 초기값 세팅
         self.environment_state = np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
+        self.obs_state = np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
         self.agent_state = np.array(
             [np.inf, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=float
         )
@@ -881,17 +905,16 @@ class Environment(Node):
     def update_environment_state_from_cloud(self, cloud_msg):
         """Updates environment state using 360° LiDAR PointCloud2 data.
 
-        Reads 3D point cloud data (e.g., from Ouster), converts it into
-        planar distance data, and fills all 360° angular bins (self.bins)
-        with the minimum distance per sector.
+        Fills two separate arrays per point in one pass:
+        - self.environment_state: full 360° bins (for collision detection)
+        - self.obs_state: front 180° bins (for RL observation input only)
         """
         with self.environment_state_lock:
-            # 초기값: lidar_max_range로 모두 채움
             self.environment_state = (
                 np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
             )
+            self.obs_state = np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
 
-            # PointCloud2 → (x, y, z) 리스트
             data = list(
                 pc2.read_points(
                     cloud_msg, skip_nans=False, field_names=("x", "y", "z")
@@ -900,21 +923,24 @@ class Environment(Node):
 
             for x, y, z in data:
                 if self.obs_z_min_sensor_m <= z <= self.obs_z_max_sensor_m:
-                    # 각도(beta): 로봇 기준 평면 각도 [-pi, pi]
                     beta = math.atan2(y, x)
-
-                    # 거리: 3D 거리 그대로 사용, lidar_max_range로 클램프
                     dist = math.sqrt(x * x + y * y + z * z)
                     dist = min(dist, self.lidar_max_range)
 
-                    # 공통 bins(360°)에 투영
+                    # Full 360° bins: collision detection
                     for j in range(len(self.bins)):
                         if self.bins[j][0] <= beta < self.bins[j][1]:
                             if dist < self.environment_state[j]:
                                 self.environment_state[j] = dist
                             break
 
-            # 포인트클라우드 기반 env_state를 이용해 존 최소거리 계산
+                    # Front 180° bins: RL observation input only
+                    for j in range(len(self.obs_bins)):
+                        if self.obs_bins[j][0] <= beta < self.obs_bins[j][1]:
+                            if dist < self.obs_state[j]:
+                                self.obs_state[j] = dist
+                            break
+
             try:
                 self._update_zone_mins_from_env_state()
             except Exception as e:
@@ -925,42 +951,45 @@ class Environment(Node):
     def update_environment_state_from_scan(self, scan):
         """Updates environment state using LaserScan data (from pointcloud_to_laserscan)
 
-        Reads LaserScan (angle_min, angle_increment, ranges) and fills the
-        front-arc bins with the minimum planar distance per sector.
+        Fills two separate arrays per beam in one pass:
+        - self.environment_state: full 360° bins (for collision detection)
+        - self.obs_state: front 180° bins (for RL observation input only)
         """
         with self.environment_state_lock:
-            # 초기값: lidar_max_range로 채움(관측 없으면 최대거리로 유지)
             self.environment_state = np.ones(self.environment_dim) * self.lidar_max_range
+            self.obs_state = np.ones(self.environment_dim) * self.lidar_max_range
 
             self._angle_min = float(scan.angle_min)
             self._angle_max = float(scan.angle_max)
             self._angle_inc = float(scan.angle_increment)
 
-            # LaserScan 각도/간격
             angle = scan.angle_min
             inc = scan.angle_increment
 
-            # 각 빔(r) 순회
             for r in scan.ranges:
-                # 유효한 측정만 사용 (inf/NaN/범위밖 제외)
                 if not math.isfinite(r) or r < scan.range_min or r > scan.range_max:
                     angle += inc
                     continue
 
-                beta = angle          # 평면 각도 (rad)
-                dist = min(r, self.lidar_max_range)  # 환경 정의 최대거리로 클램프
+                beta = angle
+                dist = min(r, self.lidar_max_range)
 
-                # 섹터(bin) 찾기: 현재 bins는 전방 180° 영역만 커버
+                # Full 360° bins: collision detection
                 for j in range(len(self.bins)):
                     if self.bins[j][0] <= beta < self.bins[j][1]:
-                        # 해당 섹터의 최소 거리 갱신
                         if dist < self.environment_state[j]:
                             self.environment_state[j] = dist
                         break
 
+                # Front 180° bins: RL observation input only
+                for j in range(len(self.obs_bins)):
+                    if self.obs_bins[j][0] <= beta < self.obs_bins[j][1]:
+                        if dist < self.obs_state[j]:
+                            self.obs_state[j] = dist
+                        break
+
                 angle += inc
-            
-            # (for r in scan.ranges:) 루프 끝난 직후
+
             try:
                 self._update_zone_mins_from_env_state()
             except Exception as e:
@@ -968,11 +997,18 @@ class Environment(Node):
             self.scan_update_count += 1
 
     def get_environment_state(self):
-        """Returns a copy of the environment state"""
+        """Returns a copy of the full 360° environment state (for collision detection)."""
         with self.environment_state_lock:
             if self.environment_state is None:
                 return np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
             return self.environment_state.copy()
+
+    def get_obs_state(self):
+        """Returns a copy of the front 180° observation state (for RL input only)."""
+        with self.environment_state_lock:
+            if self.obs_state is None:
+                return np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
+            return self.obs_state.copy()
 
     def update_agent_state(self, odom):
         """Update agent state using data from odometry (robust atan2-based version)"""
@@ -1274,16 +1310,19 @@ class Environment(Node):
         self.propagate_state(self.time_delta)
     
         # 4) 상태 구성
+        # environment_state (360°): 충돌 판정 전용
+        # obs_state (전방 180°):    RL 입력 전용
         environment_state = self.get_environment_state()
+        obs_state = self.get_obs_state()
         agent_state = self.get_agent_state()
         # agent_state layout:
         #   [0]: goal_dist, [1]: theta_err
         #   [2:4]: previous normalized action (r_norm, theta_norm)
         #   [4]: actual_speed, [5]: actual_yaw_rate, [6]: center_steering
         agent_state[2], agent_state[3] = float(action[0]), float(action[1])
-        state = np.append(environment_state, agent_state)
-    
-        # 5) 충돌/완료 판단
+        state = np.append(obs_state, agent_state)
+
+        # 5) 충돌/완료 판단 (full 360° environment_state 사용)
         done, collision, min_used = self.check_collision(environment_state)
     
         curr_goal_dist = float(agent_state[0])
@@ -1453,9 +1492,9 @@ class Environment(Node):
         """*****************************************************
 		** Compute state after reset
 		*****************************************************"""
-        environment_state = self.get_environment_state()
+        obs_state = self.get_obs_state()
         agent_state = self.get_agent_state()
-        response.state = np.append(environment_state, agent_state).tolist()
+        response.state = np.append(obs_state, agent_state).tolist()
         return response
 
     def change_goal(self, start_x=0.0, start_y=0.0):
@@ -1464,29 +1503,84 @@ class Environment(Node):
             min_start_goal_dist = 3.0
             goal_radius = max(self.goal_threshold, 0.25)
             lingering = list(self.spawned_obstacle_records.values())
-            while True:
-                self.goal_x = random.uniform(
-                    self.goal_obstacle_lower, self.goal_obstacle_upper
-                )
-                self.goal_y = random.uniform(
-                    self.goal_obstacle_lower, self.goal_obstacle_upper
-                )
 
+            def _is_valid_goal(x: float, y: float, require_clearance: bool = True) -> bool:
                 if self.check_dead_zone(
-                    self.goal_x,
-                    self.goal_y,
+                    x,
+                    y,
                     use_cross_mask=False,
                     lower_bound=self.goal_obstacle_lower,
                     upper_bound=self.goal_obstacle_upper,
                 ):
-                    continue
-                if math.hypot(self.goal_x - start_x, self.goal_y - start_y) < min_start_goal_dist:
-                    continue
-                if self._pose_collides_with_placed(
-                    self.goal_x, self.goal_y, goal_radius, lingering
+                    return False
+                if math.hypot(x - start_x, y - start_y) < min_start_goal_dist:
+                    return False
+                if require_clearance and self._pose_collides_with_placed(
+                    x, y, goal_radius, lingering
                 ):
-                    continue
-                break
+                    return False
+                return True
+
+            # Phase 1: original strict sampling with full obstacle clearance.
+            for _ in range(1000):
+                x = random.uniform(self.goal_obstacle_lower, self.goal_obstacle_upper)
+                y = random.uniform(self.goal_obstacle_lower, self.goal_obstacle_upper)
+                if _is_valid_goal(x, y, require_clearance=True):
+                    self.goal_x, self.goal_y = x, y
+                    return
+
+            # Phase 2: still keep dead-zone and start-distance constraints, but
+            # relax lingering-obstacle exclusion to avoid hanging the reset loop.
+            self.get_logger().warn(
+                "change_goal: strict sampling failed after 1000 tries; "
+                "retrying with relaxed obstacle-clearance constraint"
+            )
+            for _ in range(300):
+                x = random.uniform(self.goal_obstacle_lower, self.goal_obstacle_upper)
+                y = random.uniform(self.goal_obstacle_lower, self.goal_obstacle_upper)
+                if _is_valid_goal(x, y, require_clearance=False):
+                    self.goal_x, self.goal_y = x, y
+                    return
+
+            # Phase 3: deterministic fallback on a coarse grid. Prefer points that
+            # are far from the start and maximize clearance from lingering obstacles.
+            best = None
+            best_score = -float("inf")
+            grid_size = 11
+            xs = np.linspace(self.goal_obstacle_lower, self.goal_obstacle_upper, grid_size)
+            ys = np.linspace(self.goal_obstacle_lower, self.goal_obstacle_upper, grid_size)
+            for x in xs:
+                for y in ys:
+                    if not _is_valid_goal(float(x), float(y), require_clearance=False):
+                        continue
+                    start_dist = math.hypot(float(x) - start_x, float(y) - start_y)
+                    if lingering:
+                        min_obs_clearance = min(
+                            math.hypot(float(x) - px, float(y) - py) - (goal_radius + pr)
+                            for px, py, pr in lingering
+                        )
+                    else:
+                        min_obs_clearance = float("inf")
+                    score = min_obs_clearance + 0.1 * start_dist
+                    if score > best_score:
+                        best_score = score
+                        best = (float(x), float(y))
+
+            if best is not None:
+                self.goal_x, self.goal_y = best
+                self.get_logger().warn(
+                    "change_goal: using deterministic fallback goal after sampling exhaustion"
+                )
+                return
+
+            # Last resort: keep the episode moving with a simple offset from the start.
+            # This should be rare and is preferable to deadlocking the entire run.
+            fallback_x = float(np.clip(start_x + min_start_goal_dist, self.goal_obstacle_lower, self.goal_obstacle_upper))
+            fallback_y = float(np.clip(start_y, self.goal_obstacle_lower, self.goal_obstacle_upper))
+            self.goal_x, self.goal_y = fallback_x, fallback_y
+            self.get_logger().warn(
+                "change_goal: all sampling phases failed; using last-resort fallback goal"
+            )
         else:
             self.goal_x = self.current_pairs["goal"]["x"]
             self.goal_y = self.current_pairs["goal"]["y"]
@@ -1555,7 +1649,7 @@ class Environment(Node):
         unselected depending on the face sampling phase, which caused missed
         collisions for head-on wall contact. Here every bin center gets its own
         ray-rectangle intersection distance, so the hard and soft boundaries are
-        defined continuously across the full 360-degree observation.
+        defined continuously across the full 360-degree collision bins (self.bins).
         """
         bin_centers = np.array([0.5 * (lo + hi) for lo, hi in self.bins], dtype=float)
         ranges = np.empty(self.environment_dim, dtype=float)
@@ -1729,12 +1823,136 @@ class Environment(Node):
                 return True
         return False
 
+    def _is_heading_toward_near_wall(self, x: float, y: float, yaw: float, margin: float) -> bool:
+        """
+        Return True when the robot is within *margin* of an actual arena wall AND its
+        heading points toward that wall.
+
+        Uses self._arena_wall_lower / _arena_wall_upper (≈ ±9.5 m), which are
+        derived from goal_obstacle bounds + obstacle_wall_margin.  This is the
+        true arena inner-face boundary, NOT the start-sampling box (self.lower/upper).
+
+        "Heading toward the wall" means the dot-product of the heading vector
+        with the outward wall normal is positive (angle < 90° from outward normal).
+
+        Only the wall(s) the robot is close to are evaluated — being near the
+        right wall but facing left is not rejected.
+        """
+        cx, cy = math.cos(yaw), math.sin(yaw)
+        lower, upper = self._arena_wall_lower, self._arena_wall_upper
+
+        # right wall (x = upper): outward normal = (+1, 0)
+        if x > upper - margin and cx > 0.0:
+            return True
+        # left wall (x = lower): outward normal = (-1, 0)
+        if x < lower + margin and cx < 0.0:
+            return True
+        # top wall (y = upper): outward normal = (0, +1)
+        if y > upper - margin and cy > 0.0:
+            return True
+        # bottom wall (y = lower): outward normal = (0, -1)
+        if y < lower + margin and cy < 0.0:
+            return True
+        return False
+
+    def _has_front_immediate_collision_risk(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        placed: list,
+        front_clearance: float,
+        fov_deg: float,
+    ) -> bool:
+        """
+        Return True when the front cone [±fov_deg] within *front_clearance* metres
+        contains an obstacle or an arena wall.
+
+        placed: list of (px, py, pr) — obstacle circles already in the scene.
+        The arena wall is checked via a simple ray cast in the heading direction.
+        """
+        fov_half = math.radians(fov_deg)
+        # Use actual arena wall inner face, not the start-sampling box boundary.
+        lower, upper = self._arena_wall_lower, self._arena_wall_upper
+        cx, cy = math.cos(yaw), math.sin(yaw)
+
+        # --- obstacle cone check ---
+        for px, py, pr in placed:
+            dx, dy = px - x, py - y
+            dist = math.hypot(dx, dy)
+            if dist < 1e-6:
+                return True
+            rel_angle = math.atan2(dy, dx) - yaw
+            # wrap to [-pi, pi]
+            rel_angle = (rel_angle + math.pi) % (2.0 * math.pi) - math.pi
+            if dist < front_clearance + pr and abs(rel_angle) < fov_half:
+                return True
+
+        # --- wall ray cast in heading direction ---
+        # Find distance to nearest arena boundary along heading vector.
+        t_min = float("inf")
+        if cx > 1e-9:
+            t_min = min(t_min, (upper - x) / cx)
+        elif cx < -1e-9:
+            t_min = min(t_min, (lower - x) / cx)
+        if cy > 1e-9:
+            t_min = min(t_min, (upper - y) / cy)
+        elif cy < -1e-9:
+            t_min = min(t_min, (lower - y) / cy)
+        if t_min < front_clearance:
+            return True
+
+        return False
+
     def _sample_train_start_pose(self):
-        """Sample a start pose that avoids dead zones and lingering obstacles."""
-        angle = np.random.uniform(-np.pi, np.pi)
+        """
+        Sample a collision-free start pose (x, y, yaw) for training episodes.
+
+        Checks (in order for each candidate):
+          1. Dead-zone exclusion
+          2. Lingering-obstacle overlap
+          3. Yaw sampled inside the loop — then:
+          4. Heading-toward-near-wall rejection
+          5. Front-cone immediate-collision rejection
+        """
         robot_radius = self._robot_collision_radius()
-        lingering = list(self.spawned_obstacle_records.values())
+        lingering    = list(self.spawned_obstacle_records.values())
+        edge_margin  = self.start_edge_heading_margin
+        clearance    = self.start_front_clearance
+        fov_deg      = self.start_front_fov_deg
+
         for _ in range(500):
+            start_x = np.random.uniform(self.lower, self.upper)
+            start_y = np.random.uniform(self.lower, self.upper)
+
+            # 1. Dead-zone
+            if self.check_dead_zone(start_x, start_y, use_cross_mask=False):
+                continue
+            # 2. Obstacle overlap
+            if self._pose_collides_with_placed(start_x, start_y, robot_radius, lingering):
+                continue
+
+            # 3. Sample heading inside the loop
+            angle = np.random.uniform(-np.pi, np.pi)
+
+            # 4. Heading-toward-wall rejection
+            if self._is_heading_toward_near_wall(start_x, start_y, angle, edge_margin):
+                continue
+            # 5. Front-cone immediate-collision rejection
+            if self._has_front_immediate_collision_risk(
+                start_x, start_y, angle, lingering, clearance, fov_deg
+            ):
+                continue
+
+            return start_x, start_y, angle
+
+        # Fallback: position-only safety (no heading constraint)
+        self.get_logger().warn(
+            "Start-pose heading checks exhausted 500 tries; "
+            "falling back to position-only safe pose"
+        )
+        angle = np.random.uniform(-np.pi, np.pi)
+        for _ in range(200):
             start_x = np.random.uniform(self.lower, self.upper)
             start_y = np.random.uniform(self.lower, self.upper)
             if self.check_dead_zone(start_x, start_y, use_cross_mask=False):
@@ -1742,8 +1960,10 @@ class Environment(Node):
             if self._pose_collides_with_placed(start_x, start_y, robot_radius, lingering):
                 continue
             return start_x, start_y, angle
+
         self.get_logger().warn(
-            "Falling back to a start pose without full lingering-obstacle clearance"
+            "Start-pose sampling exhausted all 700 tries (500 + 200 fallback); "
+            "returning origin (0, 0). Check dead-zone / obstacle configuration."
         )
         return 0.0, 0.0, angle
 
@@ -2089,22 +2309,22 @@ class Environment(Node):
         # 장애물 근접 (존 기반)
         z_weights=(0.6, 0.85, 1.0, 0.85, 0.6),
         safety_margin=1.5,
-        w_obs=1.2,
+        w_obs=1.5,
 
         # 장애물 근접 (폴백)
         d_safe_base=0.55,
         d_safe_speed=0.30,
 
         # 헤딩/시간/스무딩
-        k_h=0.1,
-        step_pen=0.02,
+        k_h=0.03,
+        step_pen=0.05,
         k_smooth=0.0,
         prev_v=None, prev_w=None,
 
         # 웨이포인트 스무딩 (급격한 방향 전환 억제)
         waypoint_theta=0.0,
         prev_waypoint_theta=0.0,
-        k_smooth_wp=0.1,
+        k_smooth_wp=0.05,
         return_terms=False,
     ):
         terms = {
@@ -2120,8 +2340,8 @@ class Environment(Node):
         }
         # 터미널
         if target:
-            terms["terminal"] = 10.0
-            return (10.0, terms) if return_terms else 10.0
+            terms["terminal"] = 20.0
+            return (20.0, terms) if return_terms else 20.0
         if collision:
             terms["terminal"] = -30.0
             return (-30.0, terms) if return_terms else -30.0

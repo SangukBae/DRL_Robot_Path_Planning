@@ -34,6 +34,11 @@ environment:
   # Obstacle catalog (relative to the config directory)
   obstacle_catalog: "drl_obstacle_assets"
 
+  # Start-pose heading/clearance safety (applied in _sample_train_start_pose)
+  start_edge_heading_margin_m: 1.0   # wall proximity band where heading-toward-wall is rejected
+  start_front_clearance_m: 1.2       # front cone clearance required from obstacles & walls
+  start_front_fov_deg: 35.0          # half-angle of front cone [deg]
+
   # Spawn safety margins (metres)
   obstacle_wall_margin: 1.0    # min clearance between obstacle centre and arena wall
   obstacle_robot_margin: 1.5   # min clearance between obstacle and robot start
