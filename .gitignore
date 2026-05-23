@@ -21,7 +21,7 @@ ros2_ws/src/depth_d455/
 ros2_ws/src/octomap_mapping/
 ros2_ws/src/scout_nav2/
 ros2_ws/src/ugv_gazebo_sim/
-ros2_ws/src/lio_sam/
+ros2_ws/src/LIO-SAM/
 ros2_ws/src/lightsfm/
 ros2_ws/src/people_msgs/
 ros2_ws/src/hunav_gazebo_fortress_wrapper/
