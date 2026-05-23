@@ -6,9 +6,9 @@ environment:
   # Walls are centered at +/-9.5 m; this keeps a 0.85 m margin to the inside face.
   goal_obstacle_lower: -8.5
   goal_obstacle_upper: 8.5
-  num_of_dynamic_obstacles: 8
+  num_of_dynamic_obstacles: 7
   num_of_static_obstacles: 1
-  num_of_humans: 0
+  num_of_humans: 4    # cylinder-based human proxies; managed by environment.py
   environment_state_dim: 80
   agent_state_dim: 7
   action_dim: 2
@@ -24,7 +24,7 @@ environment:
   vehicle_steering_limit_deg: 21.58
   vehicle_min_speed_for_steering_mps: 0.15
   # Pure Pursuit local controller
-  controller_cruise_speed_mps: 1.0   # nominal forward speed
+  controller_cruise_speed_mps: 2.0   # nominal forward speed
   controller_min_speed_mps: 0.3      # speed floor at full steering
   controller_speed_steer_factor: 0.6 # speed reduction fraction at max steering
   spawn_z: 0.02
@@ -33,6 +33,33 @@ environment:
 
   # Obstacle catalog (relative to the config directory)
   obstacle_catalog: "drl_obstacle_assets"
+
+  # Human proxy motion parameters (domain randomization)
+  human_update_rate: 20.0        # Hz — independent ROS timer rate for pedestrian kinematics
+  human_stop_prob_per_sec: 0.02  # probability per second of random stop (converted to per-tick internally)
+  human_pause_duration: 1.0      # seconds to stay stopped after a random stop
+  human_heading_jitter_deg: 15.0 # max random heading perturbation applied to desired yaw [deg]
+  human_retarget_prob_per_sec: 0.02  # probability per second of picking a new random waypoint
+  human_scan_dropout_prob: 0.03  # probability each LiDAR bin from a human is zeroed
+  human_scan_noise_std: 0.05     # gaussian noise std added to human LiDAR returns [m]
+  # Kinematic motion model limits
+  human_max_accel: 20.0          # max linear acceleration [m/s²]
+  human_max_yaw_rate: 10.0       # max angular velocity [rad/s]
+  human_max_yaw_accel: 20.0      # max angular acceleration [rad/s²]
+  human_k_yaw: 5.0               # proportional gain for yaw error → yaw rate command
+
+  # General dynamic obstacle motion parameters
+  dynamic_update_rate: 20.0          # Hz — independent ROS timer rate for dynamic obstacle kinematics
+  dynamic_speed_min: 0.25            # minimum nominal speed [m/s]
+  dynamic_speed_max: 0.90            # maximum nominal speed [m/s]
+  dynamic_stop_prob_per_sec: 0.03    # probability per second of random stop
+  dynamic_pause_duration: 1.5        # seconds to stay stopped after a random stop
+  dynamic_heading_jitter_deg: 12.0   # max random heading perturbation [deg]
+  dynamic_retarget_prob_per_sec: 0.02 # probability per second of picking a new waypoint
+  dynamic_max_accel: 0.6             # max linear acceleration [m/s²]
+  dynamic_max_yaw_rate: 0.9          # max angular velocity [rad/s]
+  dynamic_max_yaw_accel: 1.5         # max angular acceleration [rad/s²]
+  dynamic_k_yaw: 2.0                 # proportional gain for yaw error → yaw rate command
 
   # Start-pose heading/clearance safety (applied in _sample_train_start_pose)
   start_edge_heading_margin_m: 1.0   # wall proximity band where heading-toward-wall is rejected
@@ -47,9 +74,9 @@ environment:
 
   # Obstacle pool — pre-spawn once, teleport per episode (no delete/create per reset)
   use_obstacle_pool: true
-  obstacle_pool_dynamic_size: 15   # total dynamic slots; >= num_of_dynamic_obstacles
+  obstacle_pool_dynamic_size: 12   # total dynamic slots; >= num_of_dynamic_obstacles
   obstacle_pool_static_size: 3     # total static slots;  >= num_of_static_obstacles
-  obstacle_pool_human_size: 2      # total human slots;   >= num_of_humans
+  obstacle_pool_human_size: 8      # human proxy pool (visual+proxy pairs)
   # Parking slots: outside the 19 x 19 m walls but still on the floor plane.
   # Pool obstacles are always spawned on the ground, then either activated in
   # the arena or assigned to one of these parking slots via set_pose().

@@ -43,9 +43,16 @@
   gz_type_name: "ignition.msgs.Pose_V"
   direction: GZ_TO_ROS
 
-# Ouster OS1-64 point cloud
+# Ouster OS1-128 point cloud
 - ros_topic_name: "/ouster/points"
   gz_topic_name: "/hunter_se/pointcloud/points"
   ros_type_name: "sensor_msgs/msg/PointCloud2"
   gz_type_name: "ignition.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+
+# Chassis contact sensor for definitive physical-collision termination
+- ros_topic_name: "/hunter_se/chassis_contacts"
+  gz_topic_name: "/hunter_se/chassis_contacts"
+  ros_type_name: "ros_gz_interfaces/msg/Contacts"
+  gz_type_name: "ignition.msgs.Contacts"
   direction: GZ_TO_ROS

@@ -64,6 +64,8 @@ install(
     scripts/environment/environment_interface.py
     scripts/environment/environment.py
     scripts/environment/environment_360.py
+    scripts/environment/environment_curriculum.py
+    scripts/policy/train_tqc_curriculum_agent.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

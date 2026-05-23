@@ -13,7 +13,7 @@
   Drive type: Ackermann steering (front-wheel steer, rear-wheel drive).
   Matches VehicleController.cs FrontWheelSteer + IRWD configuration.
 
-  Sensors: Ouster OS1-64 (3-D PointCloud2 → /scan via pointcloud_to_laserscan).
+  Sensors: Ouster OS1-128 (3-D PointCloud2 → /scan via pointcloud_to_laserscan).
 
   Visual meshes are stored in this package so the current simulation can stay
   self-contained.
@@ -88,13 +88,13 @@
         </material>
       </visual>
       <!-- Two collision boxes: main body + narrowed raised centre rail -->
-      <collision>
+      <collision name="chassis_collision">
         <origin xyz="${base_collision_x_offset} 0 ${base_collision_z_center}" rpy="0 0 0"/>
         <geometry>
           <box size="${base_x_size} ${base_y_size} ${base_z_size}"/>
         </geometry>
       </collision>
-      <collision>
+      <collision name="center_rail_collision">
         <origin xyz="${base_collision_x_offset} 0 ${base_collision_z_center + base_z_size/6}" rpy="0 0 0"/>
         <geometry>
           <box size="${base_x_size/4} ${base_y_size*0.5} ${base_z_size/3}"/>

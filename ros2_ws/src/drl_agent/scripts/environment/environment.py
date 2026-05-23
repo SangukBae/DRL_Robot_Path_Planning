@@ -25,13 +25,16 @@ from sensor_msgs.msg import PointCloud2, JointState
 from visualization_msgs.msg import Marker, MarkerArray
 
 from drl_agent_interfaces.srv import Step, Reset, Seed, GetDimensions, SampleActionSpace
+from drl_agent_interfaces.msg import DrlModelPoseArray
 
 import point_cloud2 as pc2
 from file_manager import load_yaml
 from sensor_msgs.msg import LaserScan
 
+from ros_gz_interfaces.msg import Contacts
 from ros_gz_interfaces.msg import Entity as GzEntity
 from ros_gz_interfaces.srv import ControlWorld, SetEntityPose, SpawnEntity, DeleteEntity
+
 
 
 class Environment(Node):
@@ -77,6 +80,7 @@ class Environment(Node):
             p = os.path.expanduser(cfg_param)
             if os.path.isfile(p):
                 cfg_dir = os.path.dirname(p)
+                env_config_file_path = p
             else:
                 tried.append(p)
         
@@ -96,6 +100,7 @@ class Environment(Node):
                 env_full = os.path.expanduser(env_full)
                 if os.path.isfile(env_full):
                     cfg_dir = os.path.dirname(env_full)
+                    env_config_file_path = env_full
                 else:
                     tried.append(env_full)
         
@@ -132,7 +137,8 @@ class Environment(Node):
             )
             sys.exit(-1)
         
-        env_config_file_path = os.path.join(cfg_dir, env_config_file_name)
+        if "env_config_file_path" not in locals():
+            env_config_file_path = os.path.join(cfg_dir, env_config_file_name)
         start_goal_pairs_file_path = os.path.join(cfg_dir, start_goal_pairs_file)
         self.get_logger().info(f"Using config: {env_config_file_path}")
         # Define the dimensions of the state, action, and maximum action value
@@ -225,6 +231,50 @@ class Environment(Node):
 
         # Obstacle spawn margin parameters
         self.num_of_humans = int(self.environment_config.get("num_of_humans", 0))
+
+        # Human proxy motion / domain-randomization parameters
+        self.human_update_rate       = float(self.environment_config.get("human_update_rate",        20.0))
+        # Per-second probabilities (converted to per-tick inside the timer callback)
+        self.human_stop_prob_per_sec = float(self.environment_config.get("human_stop_prob_per_sec",
+                                             self.environment_config.get("human_stop_prob", 0.05)))
+        self.human_pause_duration    = float(self.environment_config.get("human_pause_duration",     2.0))
+        self.human_heading_jitter    = math.radians(float(self.environment_config.get("human_heading_jitter_deg", 15.0)))
+        self.human_retarget_prob_per_sec = float(self.environment_config.get("human_retarget_prob_per_sec",
+                                                  self.environment_config.get("human_retarget_prob", 0.02)))
+        self.human_scan_dropout_prob = float(self.environment_config.get("human_scan_dropout_prob",  0.03))
+        self.human_scan_noise_std    = float(self.environment_config.get("human_scan_noise_std",     0.05))
+        # Kinematic model limits
+        self.human_max_accel         = float(self.environment_config.get("human_max_accel",          0.6))
+        self.human_max_yaw_rate      = float(self.environment_config.get("human_max_yaw_rate",       0.9))
+        self.human_max_yaw_accel     = float(self.environment_config.get("human_max_yaw_accel",      1.5))
+        self.human_k_yaw             = float(self.environment_config.get("human_k_yaw",              2.0))
+
+        # General dynamic obstacle motion parameters. Defaults intentionally
+        # mirror the pedestrian controller so non-human dynamic obstacles move
+        # with similarly smooth waypoint-following behaviour.
+        self.dynamic_update_rate       = float(self.environment_config.get(
+            "dynamic_update_rate", self.human_update_rate))
+        self.dynamic_speed_min         = float(self.environment_config.get("dynamic_speed_min", 0.25))
+        self.dynamic_speed_max         = float(self.environment_config.get("dynamic_speed_max", 0.90))
+        self.dynamic_stop_prob_per_sec = float(self.environment_config.get(
+            "dynamic_stop_prob_per_sec", self.human_stop_prob_per_sec))
+        self.dynamic_pause_duration    = float(self.environment_config.get(
+            "dynamic_pause_duration", self.human_pause_duration))
+        self.dynamic_heading_jitter    = math.radians(float(self.environment_config.get(
+            "dynamic_heading_jitter_deg",
+            math.degrees(self.human_heading_jitter),
+        )))
+        self.dynamic_retarget_prob_per_sec = float(self.environment_config.get(
+            "dynamic_retarget_prob_per_sec", self.human_retarget_prob_per_sec))
+        self.dynamic_max_accel         = float(self.environment_config.get(
+            "dynamic_max_accel", self.human_max_accel))
+        self.dynamic_max_yaw_rate      = float(self.environment_config.get(
+            "dynamic_max_yaw_rate", self.human_max_yaw_rate))
+        self.dynamic_max_yaw_accel     = float(self.environment_config.get(
+            "dynamic_max_yaw_accel", self.human_max_yaw_accel))
+        self.dynamic_k_yaw             = float(self.environment_config.get(
+            "dynamic_k_yaw", self.human_k_yaw))
+
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
         self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
@@ -302,6 +352,17 @@ class Environment(Node):
         self.pool_static:  list = []
         self.pool_human:   list = []
         self.pool_initialized = False
+        self.dynamic_obstacle_states: dict = {}  # keyed by model entity name
+        self.human_states: dict = {}  # keyed by proxy entity name; active during each episode
+        # Mutual exclusion between the 20 Hz human timer and reset_callback.
+        # The timer holds this lock for the full _update_humans_kinematic() iteration.
+        # reset_callback acquires it (blocking) before clearing human_states, which
+        # guarantees any in-flight timer has finished before we touch shared state.
+        self._human_lock = threading.Lock()
+        # Secondary fast-path flag: False while reset is rebuilding human_states.
+        # Timer checks this before trying to acquire the lock (cheap early-out).
+        self._human_updates_enabled: bool = True
+        self.human_placement_mode: str = "quadrants"
         # Monotonically increasing episode counter — used to generate unique obstacle names
         # so a timed-out delete from the previous episode never collides with a new spawn.
         self._episode_count = 0
@@ -323,6 +384,11 @@ class Environment(Node):
         self.clients_callback_group = MutuallyExclusiveCallbackGroup()
         self.laser_callback_group = MutuallyExclusiveCallbackGroup()
         self.joint_state_callback_group = MutuallyExclusiveCallbackGroup()
+        self.contact_callback_group = MutuallyExclusiveCallbackGroup()
+        self.human_timer_callback_group = MutuallyExclusiveCallbackGroup()
+        self.use_contact_collision = False
+        self.contact_collision_latched = False
+        self.contact_event_count = 0
 
         # Initialize publishers
         # ★ 토픽 파라미터 (기본값을 Hunter SE Ignition 시스템에 맞춤)
@@ -330,6 +396,9 @@ class Environment(Node):
         self.declare_parameter("cmd_vel_filtered_topic", "/cmd_vel_filtered")
         self.declare_parameter("odom_topic", "/odometry")
         self.declare_parameter("joint_states_topic", "/hunter_se/joint_states")
+        self.declare_parameter("use_contact_collision", True)
+        self.declare_parameter("contact_topic", "/hunter_se/chassis_contacts")
+        self.declare_parameter("preserve_hunav_on_reset", True)
 
         cmd_vel_topic = self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
         cmd_vel_filtered_topic = (
@@ -338,6 +407,13 @@ class Environment(Node):
         odom_topic    = self.get_parameter("odom_topic").get_parameter_value().string_value
         joint_states_topic = (
             self.get_parameter("joint_states_topic").get_parameter_value().string_value
+        )
+        self.use_contact_collision = bool(
+            self.get_parameter("use_contact_collision").get_parameter_value().bool_value
+        )
+        contact_topic = self.get_parameter("contact_topic").get_parameter_value().string_value
+        self.preserve_hunav_on_reset = bool(
+            self.get_parameter("preserve_hunav_on_reset").get_parameter_value().bool_value
         )
         
         # self.velocity_publisher = self.create_publisher(Twist, "/cmd_vel", 10)
@@ -353,6 +429,16 @@ class Environment(Node):
         )
         self.robot_path_pub = self.create_publisher(
             Path, "robot_path", 10
+        )
+        # Kinematic obstacle motion: single non-blocking publish replaces per-model
+        # set_entity_pose_ignition service calls inside the 20 Hz timer callback.
+        # best_effort matches the plugin subscriber — avoids DDS QoS mismatch.
+        _kinematic_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self._model_pose_pub = self.create_publisher(
+            DrlModelPoseArray, "/drl/model_poses", _kinematic_qos
         )
 
         # Create services
@@ -432,6 +518,15 @@ class Environment(Node):
             qos_profile,
             callback_group=self.joint_state_callback_group,
         )
+        self.contact_sub = None
+        if self.use_contact_collision:
+            self.contact_sub = self.create_subscription(
+                Contacts,
+                contact_topic,
+                self._update_contact_collision,
+                qos_profile,
+                callback_group=self.contact_callback_group,
+            )
 
         # === 관측 소스 선택: LaserScan vs PointCloud2 ===
         self.declare_parameter("obs_source", "scan")      # "scan" 또는 "pointcloud"
@@ -508,6 +603,17 @@ class Environment(Node):
         # ====================================Ignition Finish===========================================
         # ----------------------------------------------------------------------------------------------
 
+        # Independent timer for obstacle kinematic updates.
+        # Uses its own MutuallyExclusiveCallbackGroup so it never blocks
+        # the RL step/reset service callbacks.
+        obstacle_update_rate = max(self.human_update_rate, self.dynamic_update_rate)
+        if self.num_of_humans > 0 or self.num_of_dynamic_obstacles > 0:
+            self.human_timer = self.create_timer(
+                1.0 / obstacle_update_rate,
+                self._human_timer_callback,
+                callback_group=self.human_timer_callback_group,
+            )
+
         # Initialize environment and agent state
         self.environment_state = None
         self.agent_state = None
@@ -531,6 +637,7 @@ class Environment(Node):
         self.latest_actual_yaw_rate = 0.0
         self.latest_odom_x = 0.0
         self.latest_odom_y = 0.0
+        self.latest_odom_yaw = 0.0
         self.latest_filtered_cmd_v = 0.0
         self.latest_filtered_cmd_w = 0.0
         self.latest_front_left_steering = 0.0
@@ -552,6 +659,8 @@ class Environment(Node):
         # Define initial goal pos
         self.goal_x = 0.0
         self.goal_y = 0.0
+        self.goal_marker_model_name = "rl_goal_marker"
+        self.goal_marker_spawned = False
 
         self._angle_min = float('nan')
         self._angle_max = float('nan')
@@ -795,17 +904,23 @@ class Environment(Node):
             odom_topic    = self.get_parameter("odom_topic").get_parameter_value().string_value
             scan_topic_   = self.get_parameter("scan_topic").get_parameter_value().string_value
             obs_source_   = self.get_parameter("obs_source").get_parameter_value().string_value
+            contact_topic_ = self.get_parameter("contact_topic").get_parameter_value().string_value
+            use_contact_collision_ = self.get_parameter("use_contact_collision").get_parameter_value().bool_value
         except Exception:
             cmd_vel_topic = "/cmd_vel"
             odom_topic    = "/odometry"
             scan_topic_   = "/scan"
             obs_source_   = "scan"
+            contact_topic_ = "/hunter_se/chassis_contacts"
+            use_contact_collision_ = False
 
         self.get_logger().info("[TOPICS]")
         self.get_logger().info(f"  cmd_vel_topic         : {cmd_vel_topic}")
         self.get_logger().info(f"  odom_topic            : {odom_topic}")
         self.get_logger().info(f"  obs_source            : {obs_source_}")
         self.get_logger().info(f"  scan_topic            : {scan_topic_}  (← actual subscription)")
+        self.get_logger().info(f"  use_contact_collision : {use_contact_collision_}")
+        self.get_logger().info(f"  contact_topic         : {contact_topic_}")
         self.get_logger().info("-----------------------------------------------------")
 
 
@@ -1003,12 +1118,88 @@ class Environment(Node):
                 return np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
             return self.environment_state.copy()
 
+    def _human_obs_bin_mask(self, obs: np.ndarray) -> np.ndarray:
+        """Return a boolean mask of obs_bins whose returns likely originate from a human proxy.
+
+        A bin is marked True only when BOTH conditions hold:
+          1. Bearing: the human's bearing in the robot local frame falls in the bin's
+             angular range (±1 neighbour bin on each side).
+          2. Range: the scan return in that bin is within the expected distance window
+             [human_dist - human_radius - margin, human_dist + human_radius + margin].
+             If a wall or static obstacle is closer (occluding the human), its return
+             will be much shorter than human_dist and the bin will NOT be marked.
+
+        This avoids overt-contaminating non-human returns that happen to share a bearing
+        with an active human proxy (occlusion case).
+        """
+        n = self.environment_dim
+        mask = np.zeros(n, dtype=bool)
+        if not self.human_states:
+            return mask
+
+        rx, ry, ryaw = self.latest_odom_x, self.latest_odom_y, self.latest_odom_yaw
+        obs_low  = self.obs_bins[0][0]
+        obs_high = self.obs_bins[-1][1]
+        bin_width = (obs_high - obs_low) / n
+        # Extra range margin beyond the physical proxy radius to absorb odometry drift
+        # and the gap between proxy centre and its LiDAR-facing surface.
+        range_margin = 0.3  # m
+
+        for state in self.human_states.values():
+            hx, hy = state["x"], state["y"]
+            human_dist   = math.hypot(hx - rx, hy - ry)
+            human_radius = float(state.get("radius", 0.30))
+            dist_tol     = human_radius + range_margin
+
+            # World-frame bearing → robot local frame, wrapped to [-π, π]
+            world_angle = math.atan2(hy - ry, hx - rx)
+            local_angle = (world_angle - ryaw + math.pi) % (2 * math.pi) - math.pi
+
+            # Skip humans outside the front 180° obs window
+            if local_angle < obs_low or local_angle >= obs_high:
+                continue
+
+            # Centre bin index for this human
+            idx = int((local_angle - obs_low) / bin_width)
+            idx = max(0, min(n - 1, idx))
+
+            # Mark ±1 bins only when the scan reading is in the human's range window
+            for di in (-1, 0, 1):
+                j = idx + di
+                if 0 <= j < n and abs(obs[j] - human_dist) <= dist_tol:
+                    mask[j] = True
+
+        return mask
+
     def get_obs_state(self):
-        """Returns a copy of the front 180° observation state (for RL input only)."""
+        """Returns a copy of the front 180° observation state (for RL input only).
+
+        When human proxies are active in train mode, applies noise and/or dropout ONLY
+        to bins whose scan return is close to an active human proxy's distance
+        (bearing AND range both match). Noise and dropout are independently controlled.
+        """
         with self.environment_state_lock:
             if self.obs_state is None:
                 return np.ones(self.environment_dim, dtype=float) * self.lidar_max_range
-            return self.obs_state.copy()
+            obs = self.obs_state.copy()
+
+        if self.train_mode and self.human_states:
+            do_noise   = self.human_scan_noise_std   > 0.0
+            do_dropout = self.human_scan_dropout_prob > 0.0
+            if do_noise or do_dropout:
+                human_mask = self._human_obs_bin_mask(obs)
+                if human_mask.any():
+                    if do_noise:
+                        noise = np.random.normal(0.0, self.human_scan_noise_std, obs.shape)
+                        obs[human_mask] = np.clip(
+                            obs[human_mask] + noise[human_mask], 0.05, self.lidar_max_range
+                        )
+                    if do_dropout:
+                        drop = np.random.rand(human_mask.sum()) < self.human_scan_dropout_prob
+                        human_indices = np.where(human_mask)[0]
+                        obs[human_indices[drop]] = self.lidar_max_range
+
+        return obs
 
     def update_agent_state(self, odom):
         """Update agent state using data from odometry (robust atan2-based version)"""
@@ -1033,6 +1224,7 @@ class Environment(Node):
                 odom.pose.pose.orientation.z,
             )
             yaw = q.to_euler(degrees=False)[2]  # [-pi, pi]
+            self.latest_odom_yaw = yaw
 
             # Vector to goal
             dx = self.goal_x - odom_x
@@ -1098,6 +1290,14 @@ class Environment(Node):
         self.latest_front_left_steering = left
         self.latest_front_right_steering = right
         self.latest_center_steering = 0.5 * (left + right)
+
+    def _update_contact_collision(self, msg: Contacts):
+        """Latch any chassis-contact event for definitive collision termination."""
+        if not self.use_contact_collision or not msg.contacts:
+            return
+        if not self.contact_collision_latched:
+            self.contact_event_count += 1
+        self.contact_collision_latched = True
 
     def _init_debug_csv(self):
         """Create a fresh step-by-step execution CSV for the current run."""
@@ -1245,6 +1445,25 @@ class Environment(Node):
             self.get_logger().error(f"{srv_name} (reset) service call failed: {e}")
             sys.exit(-1)
 
+    def _publish_zero_command(self):
+        """Stop the robot command stream before teleporting models during reset."""
+        self.velocity_command.linear.x = 0.0
+        self.velocity_command.linear.y = 0.0
+        self.velocity_command.linear.z = 0.0
+        self.velocity_command.angular.x = 0.0
+        self.velocity_command.angular.y = 0.0
+        self.velocity_command.angular.z = 0.0
+        self.velocity_publisher.publish(self.velocity_command)
+
+    def _prepare_episode_reset(self):
+        """Pause the world and optionally skip the expensive global model reset."""
+        self._publish_zero_command()
+        self.pause_world(True)
+        if self.preserve_hunav_on_reset:
+            return
+        self.reset_world()
+        self.goal_marker_spawned = False
+
     def set_entity_pose_ignition(self, name, x, y, z, qx, qy, qz, qw):
         """Ignition 월드에서 특정 모델을 텔레포트"""
         srv_name = f"/world/{self.world_name}/set_pose"
@@ -1306,10 +1525,12 @@ class Environment(Node):
         # (선택) 마커는 정규화 액션 기준 유지
         self.publish_markers(action)
 
-        # 3) 시뮬레이션 진행
+        # 3) 보행자 이동: 별도 20 Hz 타이머(_human_timer_callback)에서 처리
+
+        # 4) 시뮬레이션 진행
         self.propagate_state(self.time_delta)
-    
-        # 4) 상태 구성
+
+        # 5) 상태 구성
         # environment_state (360°): 충돌 판정 전용
         # obs_state (전방 180°):    RL 입력 전용
         environment_state = self.get_environment_state()
@@ -1322,8 +1543,12 @@ class Environment(Node):
         agent_state[2], agent_state[3] = float(action[0]), float(action[1])
         state = np.append(obs_state, agent_state)
 
-        # 5) 충돌/완료 판단 (full 360° environment_state 사용)
+        # 6) 충돌/완료 판단 (full 360° environment_state 사용)
         done, collision, min_used = self.check_collision(environment_state)
+        if self.use_contact_collision and self.contact_collision_latched:
+            done = True
+            collision = True
+            min_used = min(min_used, 0.0) if math.isfinite(min_used) else 0.0
     
         curr_goal_dist = float(agent_state[0])
         _pdist = getattr(self, "_prev_goal_dist", None)
@@ -1339,12 +1564,12 @@ class Environment(Node):
             target = True
             done = True
     
-        # 6) 직사각형 근접도 — 충돌/보상 기하 통일
+        # 7) 직사각형 근접도 — 충돌/보상 기하 통일
         rect_proximity = self._compute_rect_proximity(environment_state)
         lidar_min = float(np.min(environment_state)) if len(environment_state) else float("inf")
         lidar_mean = float(np.mean(environment_state)) if len(environment_state) else float("inf")
 
-        # 7) 보상 계산
+        # 8) 보상 계산
         # v_max, w_max: Pure Pursuit controller 기준 (actions_low/high는 웨이포인트 범위)
         v_max = self.controller_cruise_speed_mps
         w_max = v_max * math.tan(self.vehicle_steering_limit_rad) / max(self.vehicle_wheelbase_m, 1e-6)
@@ -1364,7 +1589,7 @@ class Environment(Node):
         )
         self._prev_waypoint_theta = theta
     
-        # 8) 다음 스텝 대비 기록
+        # 9) 다음 스텝 대비 기록
         self._prev_goal_dist = curr_goal_dist
         self._prev_v, self._prev_w = v, w_reward
         with open(self._env_step_csv, "a", newline="") as _f:
@@ -1399,7 +1624,7 @@ class Environment(Node):
                 int(bool(collision)), int(bool(target)), int(bool(done)),
             ])
 
-        # 9) 응답
+        # 10) 응답
         response.state  = state.tolist()
         response.reward = float(reward)
         response.done   = bool(done)
@@ -1408,8 +1633,19 @@ class Environment(Node):
 
     def reset_callback(self, _, response):
         """Resets the state of the environment and returns an initial observation, state"""
+        # Stop the obstacle-motion timer and wait for any in-flight iteration to finish.
+        # 1) Set the flag so the timer won't enter a new iteration.
+        self._human_updates_enabled = False
+        # 2) Acquire the lock: if a timer callback is mid-iteration, this blocks
+        #    until it releases the lock (i.e. finishes obstacle kinematic updates).
+        #    Once we hold the lock, no timer is touching shared obstacle state.
+        with self._human_lock:
+            self.dynamic_obstacle_states = {}
+            self.human_states = {}
+
         self._episode_count += 1
         self.current_episode_step = 0
+        self.contact_collision_latched = False
         # Clear per-episode reward memory so the first step of the new episode
         # does not inherit the last state of the previous episode.
         self._prev_goal_dist   = None
@@ -1427,7 +1663,7 @@ class Environment(Node):
         """*****************************************************
         ** Start by resetting Ignition world
         *****************************************************"""
-        self.reset_world()
+        self._prepare_episode_reset()
         time.sleep(self.time_delta)
         if self.use_obstacle_pool:
             if not self.pool_initialized:
@@ -1471,6 +1707,8 @@ class Environment(Node):
                 self._activate_random_obstacles(start_x, start_y)
             else:
                 self._spawn_random_obstacles(start_x, start_y)
+        # Obstacle motion state is now fully populated — re-enable the timer
+        self._human_updates_enabled = True
         # Publish markers for rviz
         self.publish_markers([0.0, 0.0])
         # Propagate state for 2*time_delta seconds
@@ -1527,6 +1765,7 @@ class Environment(Node):
                 y = random.uniform(self.goal_obstacle_lower, self.goal_obstacle_upper)
                 if _is_valid_goal(x, y, require_clearance=True):
                     self.goal_x, self.goal_y = x, y
+                    self._update_gazebo_goal_marker()
                     return
 
             # Phase 2: still keep dead-zone and start-distance constraints, but
@@ -1540,6 +1779,7 @@ class Environment(Node):
                 y = random.uniform(self.goal_obstacle_lower, self.goal_obstacle_upper)
                 if _is_valid_goal(x, y, require_clearance=False):
                     self.goal_x, self.goal_y = x, y
+                    self._update_gazebo_goal_marker()
                     return
 
             # Phase 3: deterministic fallback on a coarse grid. Prefer points that
@@ -1571,6 +1811,7 @@ class Environment(Node):
                 self.get_logger().warn(
                     "change_goal: using deterministic fallback goal after sampling exhaustion"
                 )
+                self._update_gazebo_goal_marker()
                 return
 
             # Last resort: keep the episode moving with a simple offset from the start.
@@ -1584,6 +1825,7 @@ class Environment(Node):
         else:
             self.goal_x = self.current_pairs["goal"]["x"]
             self.goal_y = self.current_pairs["goal"]["y"]
+        self._update_gazebo_goal_marker()
 
     def _compute_rect_safety_hit(
         self,
@@ -1751,6 +1993,29 @@ class Environment(Node):
             "</sdf>"
         )
 
+    def _make_goal_marker_sdf(self, model_name: str) -> str:
+        """Return a thin ground disc used to visualize the goal in Gazebo."""
+        radius = max(float(self.goal_threshold), 0.25)
+        height = 0.004
+        return (
+            '<sdf version="1.8">'
+            f'<model name="{model_name}">'
+            "<static>true</static>"
+            "<link name=\"goal_marker_link\">"
+            "<visual name=\"goal_marker_visual\">"
+            f"<geometry><cylinder><radius>{radius:.3f}</radius><length>{height:.3f}</length></cylinder></geometry>"
+            "<material>"
+            "<ambient>0.95 0.15 0.15 0.90</ambient>"
+            "<diffuse>0.95 0.15 0.15 0.90</diffuse>"
+            "<specular>0.05 0.05 0.05 0.90</specular>"
+            "<emissive>0.35 0.05 0.05 0.90</emissive>"
+            "</material>"
+            "</visual>"
+            "</link>"
+            "</model>"
+            "</sdf>"
+        )
+
     def _spawn_entity_sdf(self, model_name: str, uri: str, x: float, y: float, yaw: float, z: float = 0.0) -> bool:
         """Spawn one static obstacle and wait for Gazebo's confirmation.
 
@@ -1781,6 +2046,48 @@ class Environment(Node):
         except Exception as e:
             self.get_logger().warn(f"SpawnEntity for {model_name}: {e}")
             return False
+
+    def _spawn_goal_marker(self, x: float, y: float, z: float = 0.002) -> bool:
+        """Spawn the Gazebo goal marker once and keep moving it with set_pose afterwards."""
+        req = SpawnEntity.Request()
+        req.entity_factory.name = self.goal_marker_model_name
+        req.entity_factory.allow_renaming = False
+        req.entity_factory.sdf = self._make_goal_marker_sdf(self.goal_marker_model_name)
+        req.entity_factory.pose.position.x = float(x)
+        req.entity_factory.pose.position.y = float(y)
+        req.entity_factory.pose.position.z = float(z)
+        req.entity_factory.pose.orientation.w = 1.0
+        try:
+            future = self.spawn_entity_client.call_async(req)
+            result = self._await_future(future)
+            if result is None:
+                self.get_logger().warn("Spawn goal marker: timed out")
+                return False
+            if not result.success:
+                self.get_logger().warn("Spawn goal marker: Gazebo returned success=false")
+                return False
+            self.goal_marker_spawned = True
+            return True
+        except Exception as e:
+            self.get_logger().warn(f"Spawn goal marker failed: {e}")
+            return False
+
+    def _update_gazebo_goal_marker(self):
+        """Ensure the current goal is visible inside Gazebo as a thin ground disc."""
+        marker_z = 0.002
+        if not self.goal_marker_spawned:
+            if not self._spawn_goal_marker(self.goal_x, self.goal_y, marker_z):
+                return
+        self.set_entity_pose_ignition(
+            self.goal_marker_model_name,
+            self.goal_x,
+            self.goal_y,
+            marker_z,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        )
 
     def _delete_spawned_obstacles(self):
         """Delete all obstacles from the previous episode and wait for each confirmation."""
@@ -1988,6 +2295,488 @@ class Environment(Node):
                 return x, y
         return None
 
+    def _sample_free_pose_in_region(
+        self, radius: float, placed: list, start_x: float, start_y: float,
+        x_lo: float, x_hi: float, y_lo: float, y_hi: float
+    ):
+        """Like _sample_free_pose but constrained to [x_lo, x_hi] × [y_lo, y_hi]."""
+        for _ in range(200):
+            x = np.random.uniform(x_lo, x_hi)
+            y = np.random.uniform(y_lo, y_hi)
+            if math.hypot(x - start_x, y - start_y) < self.obstacle_robot_margin + radius:
+                continue
+            if math.hypot(x - self.goal_x, y - self.goal_y) < self.obstacle_goal_margin + radius:
+                continue
+            if not self._pose_collides_with_placed(
+                x, y, self.obstacle_mutual_margin + radius, placed
+            ):
+                return x, y
+        return None
+
+    def _build_human_spawn_regions(self):
+        """Return shuffled quadrant regions when stage wants distributed humans."""
+        if self.human_placement_mode != "quadrants":
+            return None
+
+        q_lo = self.goal_obstacle_lower + self.obstacle_wall_margin
+        q_hi = self.goal_obstacle_upper - self.obstacle_wall_margin
+        quadrants = [
+            (q_lo, 0.0, q_lo, 0.0),   # bottom-left
+            (0.0,  q_hi, q_lo, 0.0),  # bottom-right
+            (q_lo, 0.0, 0.0,  q_hi),  # top-left
+            (0.0,  q_hi, 0.0, q_hi),  # top-right
+        ]
+        random.shuffle(quadrants)
+        return quadrants
+
+    def _sample_human_spawn_pose(
+        self,
+        radius: float,
+        placed: list,
+        start_x: float,
+        start_y: float,
+        human_index: int,
+        spawn_regions,
+    ):
+        """Sample a human pose using the active placement mode."""
+        if spawn_regions:
+            x_lo, x_hi, y_lo, y_hi = spawn_regions[human_index % len(spawn_regions)]
+            return self._sample_free_pose_in_region(
+                radius, placed, start_x, start_y, x_lo, x_hi, y_lo, y_hi
+            )
+        return self._sample_free_pose(radius, placed, start_x, start_y)
+
+    def _sample_human_waypoint(self):
+        """Return a random (x, y) inside the arena for a pedestrian target waypoint."""
+        margin = 1.5
+        lower = self.goal_obstacle_lower + self.obstacle_wall_margin + margin
+        upper = self.goal_obstacle_upper - self.obstacle_wall_margin - margin
+        for _ in range(100):
+            x = np.random.uniform(lower, upper)
+            y = np.random.uniform(lower, upper)
+            if not self.check_dead_zone(x, y, use_cross_mask=False,
+                                        lower_bound=lower, upper_bound=upper):
+                return x, y
+        return 0.0, 0.0
+
+    def _sample_dynamic_waypoint(self, radius: float):
+        """Return a random (x, y) inside the arena for a dynamic obstacle target waypoint."""
+        margin = max(0.8, radius + 0.4)
+        lower = self.goal_obstacle_lower + self.obstacle_wall_margin + margin
+        upper = self.goal_obstacle_upper - self.obstacle_wall_margin - margin
+        for _ in range(100):
+            x = np.random.uniform(lower, upper)
+            y = np.random.uniform(lower, upper)
+            if not self.check_dead_zone(
+                x, y, use_cross_mask=False, lower_bound=lower, upper_bound=upper
+            ):
+                return x, y
+        return 0.0, 0.0
+
+    def _publish_model_poses(self, batch: list):
+        """Publish (name, x, y, z, qx, qy, qz, qw) tuples to DrlModelPosePlugin."""
+        msg = DrlModelPoseArray()
+        for name, x, y, z, qx, qy, qz, qw in batch:
+            msg.names.append(str(name))
+            p = Pose()
+            p.position.x = float(x)
+            p.position.y = float(y)
+            p.position.z = float(z)
+            p.orientation.x = float(qx)
+            p.orientation.y = float(qy)
+            p.orientation.z = float(qz)
+            p.orientation.w = float(qw)
+            msg.poses.append(p)
+        self._model_pose_pub.publish(msg)
+
+    def _collect_human_part_poses(self, state: dict, batch: list):
+        """Compute world poses for torso + 2 leg + 2 arm cylinders and append to batch.
+
+        Replaces _set_human_part_poses() service calls with batch entries that
+        are published in one shot by _publish_model_poses() at the end of the
+        timer callback.
+        """
+        x       = state["x"]
+        y       = state["y"]
+        yaw     = state["yaw"]
+        phase   = state["gait_phase"]
+        amp     = state["leg_swing_amp_rad"]
+        leg_len = state["leg_length"]
+        hip_z   = state["hip_z"]
+        leg_y   = state["leg_y_offset"]
+        torso_z = state["torso_z"]
+
+        left_pitch  =  amp * math.sin(phase)
+        right_pitch = -left_pitch
+
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+
+        def world_xy(lx, ly):
+            return x + cy * lx - sy * ly, y + sy * lx + cy * ly
+
+        # Torso — always upright at human centre
+        torso_q = Quaternion.from_euler(0.0, 0.0, yaw)
+        twx, twy = world_xy(0.0, 0.0)
+        for model_name in (state["visual_torso"], state["proxy_torso"]):
+            batch.append((model_name, twx, twy, torso_z,
+                          torso_q.x, torso_q.y, torso_q.z, torso_q.w))
+
+        # Legs — pendulum swing: hip end (-Z) is fixed, foot end (+Z) swings.
+        # Using (π - pitch) makes -Z end sit at the hip pivot and +Z end swing freely.
+        for vis_name, prx_name, pitch, side_y in (
+            (state["visual_left_leg"],  state["proxy_left_leg"],  left_pitch,  +leg_y),
+            (state["visual_right_leg"], state["proxy_right_leg"], right_pitch, -leg_y),
+        ):
+            lx_local = math.sin(pitch) * leg_len * 0.5
+            lz       = hip_z - math.cos(pitch) * leg_len * 0.5
+            wx, wy   = world_xy(lx_local, side_y)
+            q = Quaternion.from_euler(0.0, math.pi - pitch, yaw)
+            batch.append((vis_name, wx, wy, lz, q.x, q.y, q.z, q.w))
+            batch.append((prx_name, wx, wy, lz, q.x, q.y, q.z, q.w))
+
+        # Arms — pendulum swing: shoulder end (-Z) fixed, hand end (+Z) swings.
+        # Arms swing opposite to the same-side leg (natural cross-body gait).
+        arm_amp     = state.get("arm_swing_amp_rad", 0.0)
+        arm_len     = state.get("arm_length", 0.60)
+        shoulder_z  = state.get("shoulder_z", torso_z + 0.40)
+        arm_y       = state.get("arm_y_offset", 0.22)
+        # left arm opposes left leg; right arm opposes right leg
+        left_arm_pitch  = -left_pitch  * (arm_amp / max(amp, 1e-6))
+        right_arm_pitch = -right_pitch * (arm_amp / max(amp, 1e-6))
+        for vis_name, pitch, side_y in (
+            (state.get("visual_left_arm"),  left_arm_pitch,  +arm_y),
+            (state.get("visual_right_arm"), right_arm_pitch, -arm_y),
+        ):
+            if vis_name is None:
+                continue
+            ax_local = math.sin(pitch) * arm_len * 0.5
+            az       = shoulder_z - math.cos(pitch) * arm_len * 0.5
+            wx, wy   = world_xy(ax_local, side_y)
+            q = Quaternion.from_euler(0.0, math.pi - pitch, yaw)
+            batch.append((vis_name, wx, wy, az, q.x, q.y, q.z, q.w))
+
+    def _set_human_part_poses(self, state: dict):
+        """Compute and apply world poses for torso + 2 leg cylinders (visual and proxy).
+
+        The torso is placed upright at the human centre.  Each leg cylinder swings
+        around its hip pivot: centre offset = (sin(pitch)*leg_len/2, ±leg_y, hip_z - cos(pitch)*leg_len/2)
+        in the human local frame.  Orientation = Quaternion.from_euler(0, pitch, yaw).
+        """
+        x       = state["x"]
+        y       = state["y"]
+        yaw     = state["yaw"]
+        phase   = state["gait_phase"]
+        amp     = state["leg_swing_amp_rad"]
+        leg_len = state["leg_length"]
+        hip_z   = state["hip_z"]
+        leg_y   = state["leg_y_offset"]
+        torso_z = state["torso_z"]
+
+        left_pitch  =  amp * math.sin(phase)
+        right_pitch = -left_pitch
+
+        cy = math.cos(yaw)
+        sy = math.sin(yaw)
+
+        def world_xy(lx, ly):
+            return x + cy * lx - sy * ly, y + sy * lx + cy * ly
+
+        # Torso — always upright at human centre
+        torso_q = Quaternion.from_euler(0.0, 0.0, yaw)
+        twx, twy = world_xy(0.0, 0.0)
+        self.set_entity_pose_ignition(
+            state["visual_torso"], twx, twy, torso_z,
+            torso_q.x, torso_q.y, torso_q.z, torso_q.w,
+        )
+        self.set_entity_pose_ignition(
+            state["proxy_torso"], twx, twy, torso_z,
+            torso_q.x, torso_q.y, torso_q.z, torso_q.w,
+        )
+
+        # Legs — pendulum: hip end (-Z) fixed, foot end (+Z) swings
+        for vis_name, prx_name, pitch, side_y in (
+            (state["visual_left_leg"],  state["proxy_left_leg"],  left_pitch,  +leg_y),
+            (state["visual_right_leg"], state["proxy_right_leg"], right_pitch, -leg_y),
+        ):
+            lx_local = math.sin(pitch) * leg_len * 0.5
+            lz       = hip_z - math.cos(pitch) * leg_len * 0.5
+            wx, wy   = world_xy(lx_local, side_y)
+            q = Quaternion.from_euler(0.0, math.pi - pitch, yaw)
+            self.set_entity_pose_ignition(vis_name, wx, wy, lz, q.x, q.y, q.z, q.w)
+            self.set_entity_pose_ignition(prx_name, wx, wy, lz, q.x, q.y, q.z, q.w)
+
+        # Arms — pendulum: shoulder end (-Z) fixed, hand end (+Z) swings
+        amp_leg     = state["leg_swing_amp_rad"]
+        arm_amp     = state.get("arm_swing_amp_rad", 0.0)
+        arm_len     = state.get("arm_length", 0.60)
+        shoulder_z  = state.get("shoulder_z", torso_z + 0.40)
+        arm_y       = state.get("arm_y_offset", 0.22)
+        left_arm_pitch  = -left_pitch  * (arm_amp / max(amp_leg, 1e-6))
+        right_arm_pitch = -right_pitch * (arm_amp / max(amp_leg, 1e-6))
+        for vis_name, pitch, side_y in (
+            (state.get("visual_left_arm"),  left_arm_pitch,  +arm_y),
+            (state.get("visual_right_arm"), right_arm_pitch, -arm_y),
+        ):
+            if vis_name is None:
+                continue
+            ax_local = math.sin(pitch) * arm_len * 0.5
+            az       = shoulder_z - math.cos(pitch) * arm_len * 0.5
+            wx, wy   = world_xy(ax_local, side_y)
+            q = Quaternion.from_euler(0.0, math.pi - pitch, yaw)
+            self.set_entity_pose_ignition(vis_name, wx, wy, az, q.x, q.y, q.z, q.w)
+
+    def _human_timer_callback(self):
+        """ROS timer callback — drives moving obstacles independently of RL steps."""
+        # Fast-path flag check (no lock cost on the common path during reset).
+        if not self._human_updates_enabled or not self.human_states:
+            return
+        # Hold the lock for the entire iteration so reset_callback can guarantee
+        # no in-flight update is running before it clears human_states.
+        with self._human_lock:
+            if not self._human_updates_enabled or not self.human_states:
+                return
+            dt = 1.0 / self.human_update_rate
+            pose_batch = []
+            self._update_humans_kinematic(dt, pose_batch)
+            if pose_batch:
+                self._publish_model_poses(pose_batch)
+
+    def _update_dynamic_obstacles_kinematic(self, dt: float, pose_batch: list):
+        """Waypoint-following motion model for non-human dynamic obstacles."""
+        if not self.dynamic_obstacle_states:
+            return
+
+        arena_lower = self.goal_obstacle_lower + self.obstacle_wall_margin
+        arena_upper = self.goal_obstacle_upper - self.obstacle_wall_margin
+        wall_buffer = 0.8
+
+        stop_prob_tick = 1.0 - (1.0 - self.dynamic_stop_prob_per_sec) ** dt
+        retarget_prob_tick = 1.0 - (1.0 - self.dynamic_retarget_prob_per_sec) ** dt
+
+        for name, state in list(self.dynamic_obstacle_states.items()):
+            x, y = state["x"], state["y"]
+            yaw = state["yaw"]
+            v = state["v"]
+            w = state["w"]
+            tx, ty = state["target_x"], state["target_y"]
+
+            pause_left = state.get("pause_left", 0.0)
+            if pause_left > 0.0:
+                state["pause_left"] = max(0.0, pause_left - dt)
+                state["v"] = 0.0
+                state["w"] = 0.0
+                q = Quaternion.from_euler(0.0, 0.0, yaw)
+                pose_batch.append((name, x, y, 0.0, q.x, q.y, q.z, q.w))
+                self.spawned_obstacle_records[name] = (x, y, state["radius"])
+                continue
+
+            stopping = state.get("stopping", False)
+            if not stopping and np.random.rand() < stop_prob_tick:
+                stopping = True
+                state["stopping"] = True
+
+            if stopping:
+                max_dv = self.dynamic_max_accel * dt
+                max_dw = self.dynamic_max_yaw_accel * dt
+                v = max(0.0, v - max_dv)
+                w = float(np.clip(0.0, w - max_dw, w + max_dw))
+
+                yaw = (yaw + w * dt + math.pi) % (2.0 * math.pi) - math.pi
+                new_x = max(arena_lower, min(arena_upper, x + v * math.cos(yaw) * dt))
+                new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
+
+                state["x"] = new_x
+                state["y"] = new_y
+                state["yaw"] = yaw
+                state["v"] = v
+                state["w"] = w
+
+                if v < 0.05 and abs(w) < 0.05:
+                    state["stopping"] = False
+                    state["pause_left"] = self.dynamic_pause_duration
+                    state["v"] = 0.0
+                    state["w"] = 0.0
+
+                q = Quaternion.from_euler(0.0, 0.0, yaw)
+                pose_batch.append((name, new_x, new_y, 0.0, q.x, q.y, q.z, q.w))
+                self.spawned_obstacle_records[name] = (new_x, new_y, state["radius"])
+                continue
+
+            dist_to_target = math.hypot(tx - x, ty - y)
+            near_wall = (
+                x <= arena_lower + wall_buffer or x >= arena_upper - wall_buffer or
+                y <= arena_lower + wall_buffer or y >= arena_upper - wall_buffer
+            )
+            if dist_to_target < 0.5 or near_wall or np.random.rand() < retarget_prob_tick:
+                tx, ty = self._sample_dynamic_waypoint(state["radius"])
+                state["target_x"] = tx
+                state["target_y"] = ty
+
+            dx_t, dy_t = tx - x, ty - y
+            desired_yaw = math.atan2(dy_t, dx_t)
+            jitter = np.random.uniform(-self.dynamic_heading_jitter, self.dynamic_heading_jitter)
+            desired_yaw += jitter
+
+            yaw_error = (desired_yaw - yaw + math.pi) % (2.0 * math.pi) - math.pi
+            w_cmd = float(np.clip(
+                self.dynamic_k_yaw * yaw_error,
+                -self.dynamic_max_yaw_rate, self.dynamic_max_yaw_rate,
+            ))
+            max_dw = self.dynamic_max_yaw_accel * dt
+            w = float(np.clip(w_cmd, w - max_dw, w + max_dw))
+
+            abs_err = abs(yaw_error)
+            if abs_err > 0.6:
+                v_des = state["speed"] * 0.4
+            elif abs_err > 0.3:
+                v_des = state["speed"] * 0.7
+            else:
+                v_des = state["speed"]
+
+            max_dv = self.dynamic_max_accel * dt
+            v = float(np.clip(v_des, v - max_dv, v + max_dv))
+            v = max(0.0, v)
+
+            yaw = (yaw + w * dt + math.pi) % (2.0 * math.pi) - math.pi
+            new_x = max(arena_lower, min(arena_upper, x + v * math.cos(yaw) * dt))
+            new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
+
+            state["x"] = new_x
+            state["y"] = new_y
+            state["yaw"] = yaw
+            state["v"] = v
+            state["w"] = w
+
+            q = Quaternion.from_euler(0.0, 0.0, yaw)
+            pose_batch.append((name, new_x, new_y, 0.0, q.x, q.y, q.z, q.w))
+            self.spawned_obstacle_records[name] = (new_x, new_y, state["radius"])
+
+    def _update_humans_kinematic(self, dt: float, pose_batch: list):
+        """Kinematic pedestrian motion with acceleration limits, smooth stop/resume, and gait.
+
+        Stop/pause state machine (per agent):
+          Normal  → stop_prob fires → Stopping (decelerate v,w → 0; position still integrates)
+          Stopping → v<0.05 and |w|<0.05 → Pause  (hold x,y; v=w=0; gait frozen)
+          Pause   → pause_left expires → Normal
+
+        Gait phase advances at rate proportional to current speed.
+        All poses are collected into pose_batch via _collect_human_part_poses() and
+        published in one shot by the timer callback to DrlModelPosePlugin.
+        """
+        arena_lower = self.goal_obstacle_lower + self.obstacle_wall_margin
+        arena_upper = self.goal_obstacle_upper - self.obstacle_wall_margin
+        wall_buffer = 0.8
+
+        stop_prob_tick     = 1.0 - (1.0 - self.human_stop_prob_per_sec)     ** dt
+        retarget_prob_tick = 1.0 - (1.0 - self.human_retarget_prob_per_sec) ** dt
+
+        for _key, state in list(self.human_states.items()):
+            x, y   = state["x"],   state["y"]
+            yaw    = state["yaw"]
+            v      = state["v"]
+            w      = state["w"]
+            tx, ty = state["target_x"], state["target_y"]
+
+            # ── True pause: hold position; zero v and w; freeze gait phase ──────
+            pause_left = state.get("pause_left", 0.0)
+            if pause_left > 0.0:
+                state["pause_left"] = max(0.0, pause_left - dt)
+                state["v"] = 0.0
+                state["w"] = 0.0
+                self._collect_human_part_poses(state, pose_batch)
+                self.spawned_obstacle_records[_key] = (x, y, state["radius"])
+                continue
+
+            # ── Stopping: decelerate v and w to 0; position still integrates ────
+            stopping = state.get("stopping", False)
+            if not stopping and np.random.rand() < stop_prob_tick:
+                stopping = True
+                state["stopping"] = True
+
+            if stopping:
+                max_dv = self.human_max_accel    * dt
+                max_dw = self.human_max_yaw_accel * dt
+                v = max(0.0, v - max_dv)
+                w = float(np.clip(0.0, w - max_dw, w + max_dw))
+
+                yaw   = (yaw + w * dt + math.pi) % (2.0 * math.pi) - math.pi
+                new_x = max(arena_lower, min(arena_upper, x + v * math.cos(yaw) * dt))
+                new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
+
+                state["x"]   = new_x
+                state["y"]   = new_y
+                state["yaw"] = yaw
+                state["v"]   = v
+                state["w"]   = w
+
+                # Advance gait phase at current (decelerating) speed
+                freq = state["gait_freq_hz"] * max(0.3, v / max(0.01, state["speed"]))
+                state["gait_phase"] = (state["gait_phase"] + 2.0 * math.pi * freq * dt) % (2.0 * math.pi)
+
+                if v < 0.05 and abs(w) < 0.05:
+                    state["stopping"]   = False
+                    state["pause_left"] = self.human_pause_duration
+                    state["v"]          = 0.0
+                    state["w"]          = 0.0
+
+                self._collect_human_part_poses(state, pose_batch)
+                self.spawned_obstacle_records[_key] = (new_x, new_y, state["radius"])
+                continue
+
+            # ── Normal motion: waypoint following with kinematic limits ──────────
+            dist_to_target = math.hypot(tx - x, ty - y)
+            near_wall = (
+                x <= arena_lower + wall_buffer or x >= arena_upper - wall_buffer or
+                y <= arena_lower + wall_buffer or y >= arena_upper - wall_buffer
+            )
+            if dist_to_target < 0.5 or near_wall or np.random.rand() < retarget_prob_tick:
+                tx, ty = self._sample_human_waypoint()
+                state["target_x"] = tx
+                state["target_y"] = ty
+
+            dx_t, dy_t = tx - x, ty - y
+            desired_yaw = math.atan2(dy_t, dx_t)
+            jitter = np.random.uniform(-self.human_heading_jitter, self.human_heading_jitter)
+            desired_yaw += jitter
+
+            yaw_error = (desired_yaw - yaw + math.pi) % (2.0 * math.pi) - math.pi
+            w_cmd = float(np.clip(
+                self.human_k_yaw * yaw_error,
+                -self.human_max_yaw_rate, self.human_max_yaw_rate,
+            ))
+            max_dw = self.human_max_yaw_accel * dt
+            w = float(np.clip(w_cmd, w - max_dw, w + max_dw))
+
+            abs_err = abs(yaw_error)
+            if abs_err > 0.6:
+                v_des = state["speed"] * 0.4
+            elif abs_err > 0.3:
+                v_des = state["speed"] * 0.7
+            else:
+                v_des = state["speed"]
+
+            max_dv = self.human_max_accel * dt
+            v = float(np.clip(v_des, v - max_dv, v + max_dv))
+            v = max(0.0, v)
+
+            yaw   = (yaw + w * dt + math.pi) % (2.0 * math.pi) - math.pi
+            new_x = max(arena_lower, min(arena_upper, x + v * math.cos(yaw) * dt))
+            new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
+
+            state["x"]   = new_x
+            state["y"]   = new_y
+            state["yaw"] = yaw
+            state["v"]   = v
+            state["w"]   = w
+
+            # Gait frequency scales with speed ratio (min 30% of nominal freq)
+            freq = state["gait_freq_hz"] * max(0.3, v / max(0.01, state["speed"]))
+            state["gait_phase"] = (state["gait_phase"] + 2.0 * math.pi * freq * dt) % (2.0 * math.pi)
+
+            self._collect_human_part_poses(state, pose_batch)
+            self.spawned_obstacle_records[_key] = (new_x, new_y, state["radius"])
+
     def _initialize_obstacle_pool(self):
         """Spawn all pool entities once on ground-level parking slots.
 
@@ -2001,6 +2790,7 @@ class Environment(Node):
         walls, and are later either activated in the arena or returned to
         parking slots.
         """
+        # Each human slot parks all 6 part models at one shared parking position.
         total_pool_slots = (
             self.obstacle_pool_dynamic_size
             + self.obstacle_pool_static_size
@@ -2014,10 +2804,10 @@ class Environment(Node):
 
         init_slots = list(self.parking_slots)
         random.shuffle(init_slots)
-        slot_index = 0
+        # Use a one-element list so nested functions share a single mutable counter.
+        slot_index = [0]
 
         def _build_pool(catalog, pool_size, name_prefix, label):
-            nonlocal slot_index
             pool = []
             if not catalog or pool_size <= 0:
                 return pool
@@ -2027,8 +2817,8 @@ class Environment(Node):
             for i in range(pool_size):
                 entry = shuffled_cat[i % len(shuffled_cat)]
                 model_name = f"{name_prefix}_{i:03d}"
-                park_x, park_y, park_z = init_slots[slot_index % len(init_slots)]
-                slot_index += 1
+                park_x, park_y, park_z = init_slots[slot_index[0] % len(init_slots)]
+                slot_index[0] += 1
                 ok = self._spawn_entity_sdf(
                     model_name, entry["uri"],
                     park_x, park_y,
@@ -2039,6 +2829,8 @@ class Environment(Node):
                         "name":       model_name,
                         "radius":     float(entry.get("radius", 0.5)),
                         "yaw_random": bool(entry.get("yaw_random", True)),
+                        "speed_min":  float(entry.get("speed_min", self.dynamic_speed_min)),
+                        "speed_max":  float(entry.get("speed_max", self.dynamic_speed_max)),
                         "park_x":     park_x,
                         "park_y":     park_y,
                         "park_z":     park_z,
@@ -2052,6 +2844,85 @@ class Environment(Node):
             )
             return pool
 
+        def _build_human_pool(catalog, pool_size, name_prefix, label):
+            """Spawn 8 part models per human slot (v_torso, v_ll, v_rl, v_la, v_ra, p_torso, p_ll, p_rl)."""
+            pool = []
+            if not catalog or pool_size <= 0:
+                return pool
+            shuffled_cat = list(catalog)
+            random.shuffle(shuffled_cat)
+            for i in range(pool_size):
+                entry = shuffled_cat[i % len(shuffled_cat)]
+                # All 8 parts share a single parking slot
+                park_x, park_y, park_z = init_slots[slot_index[0] % len(init_slots)]
+                slot_index[0] += 1
+
+                arm_uri = entry.get("visual_arm_uri", entry["visual_torso_uri"])
+                part_defs = [
+                    ("v_torso", entry["visual_torso_uri"]),
+                    ("v_ll",    entry["visual_leg_uri"]),
+                    ("v_rl",    entry["visual_leg_uri"]),
+                    ("v_la",    arm_uri),
+                    ("v_ra",    arm_uri),
+                    ("p_torso", entry["proxy_torso_uri"]),
+                    ("p_ll",    entry["proxy_leg_uri"]),
+                    ("p_rl",    entry["proxy_leg_uri"]),
+                ]
+                names = {}
+                all_ok = True
+                for part_key, uri in part_defs:
+                    part_name = f"{name_prefix}_{i:03d}_{part_key}"
+                    ok = self._spawn_entity_sdf(part_name, uri, park_x, park_y, yaw=0.0, z=park_z)
+                    if ok:
+                        names[part_key] = part_name
+                    else:
+                        all_ok = False
+                        break
+
+                if all_ok:
+                    pool.append({
+                        "v_torso": names["v_torso"],
+                        "v_ll":    names["v_ll"],
+                        "v_rl":    names["v_rl"],
+                        "v_la":    names["v_la"],
+                        "v_ra":    names["v_ra"],
+                        "p_torso": names["p_torso"],
+                        "p_ll":    names["p_ll"],
+                        "p_rl":    names["p_rl"],
+                        "radius":     float(entry.get("radius", 0.30)),
+                        "yaw_random": bool(entry.get("yaw_random", True)),
+                        "speed_min":  float(entry.get("speed_min", 0.3)),
+                        "speed_max":  float(entry.get("speed_max", 0.8)),
+                        "park_x": park_x, "park_y": park_y, "park_z": park_z,
+                        "torso_z":          float(entry.get("torso_z", 1.25)),
+                        "leg_length":       float(entry.get("leg_length", 0.90)),
+                        "hip_z":            float(entry.get("hip_z", 0.90)),
+                        "leg_y_offset":     float(entry.get("leg_y_offset", 0.13)),
+                        "leg_swing_amp_deg": float(entry.get("leg_swing_amp_deg", 18.0)),
+                        "arm_length":       float(entry.get("arm_length", 0.60)),
+                        "shoulder_z":       float(entry.get("shoulder_z", 1.55)),
+                        "arm_y_offset":     float(entry.get("arm_y_offset", 0.22)),
+                        "arm_swing_amp_deg": float(entry.get("arm_swing_amp_deg", 20.0)),
+                        "gait_freq_hz_min": float(entry.get("gait_freq_hz_min", 0.8)),
+                        "gait_freq_hz_max": float(entry.get("gait_freq_hz_max", 1.6)),
+                    })
+                else:
+                    for n in names.values():
+                        try:
+                            req = DeleteEntity.Request()
+                            req.entity.name = n
+                            req.entity.type = GzEntity.MODEL
+                            self.delete_entity_client.call_async(req)
+                        except Exception:
+                            pass
+                    self.get_logger().warn(
+                        f"Pool init: human slot {i} ({name_prefix}) partially failed; cleaned up"
+                    )
+            self.get_logger().info(
+                f"Pool init: {len(pool)}/{pool_size} {label} (8-part) slots ready"
+            )
+            return pool
+
         self.pool_dynamic = _build_pool(
             self.dynamic_obstacle_catalog,
             self.obstacle_pool_dynamic_size,
@@ -2062,7 +2933,7 @@ class Environment(Node):
             self.obstacle_pool_static_size,
             "rl_sta_pool", "static",
         )
-        self.pool_human = _build_pool(
+        self.pool_human = _build_human_pool(
             self.human_catalog,
             self.obstacle_pool_human_size,
             "rl_human_pool", "human",
@@ -2084,6 +2955,8 @@ class Environment(Node):
         parking_slots = list(self.parking_slots)
         random.shuffle(parking_slots)
         parking_index = 0
+        self.dynamic_obstacle_states = {}  # clear previous episode's moving dynamic state
+        self.human_states = {}  # clear previous episode's pedestrian state
 
         def _next_parking_slot():
             nonlocal parking_index
@@ -2116,6 +2989,17 @@ class Environment(Node):
                         )
                         placed.append((x, y, entry["radius"]))
                         new_records[entry["name"]] = (x, y, entry["radius"])
+                        if label == "dynamic":
+                            tx, ty = self._sample_dynamic_waypoint(entry["radius"])
+                            self.dynamic_obstacle_states[entry["name"]] = {
+                                "x": x, "y": y, "yaw": yaw,
+                                "radius": entry["radius"],
+                                "speed": np.random.uniform(entry["speed_min"], entry["speed_max"]),
+                                "v": 0.0, "w": 0.0,
+                                "target_x": tx, "target_y": ty,
+                                "pause_left": 0.0,
+                                "stopping": False,
+                            }
                         activated += 1
                         continue
                     self.get_logger().warn(
@@ -2129,9 +3013,84 @@ class Environment(Node):
                     0.0, 0.0, 0.0, 1.0,
                 )
 
+        def _place_human_pool_group(pool, count):
+            """Place 6-part pedestrian models; initialise human_states with gait params."""
+            if not pool or count <= 0:
+                return
+            spawn_regions = self._build_human_spawn_regions()
+            shuffled = list(pool)
+            random.shuffle(shuffled)
+            activated = 0
+            for entry in shuffled:
+                all_names = [entry["v_torso"], entry["v_ll"], entry["v_rl"],
+                             entry["v_la"],    entry["v_ra"],
+                             entry["p_torso"], entry["p_ll"],  entry["p_rl"]]
+                if activated < count:
+                    pose = self._sample_human_spawn_pose(
+                        entry["radius"],
+                        placed,
+                        start_x,
+                        start_y,
+                        activated,
+                        spawn_regions,
+                    )
+                    if pose is not None:
+                        x, y = pose
+                        yaw = (
+                            np.random.uniform(-math.pi, math.pi)
+                            if entry["yaw_random"]
+                            else 0.0
+                        )
+                        tx, ty = self._sample_human_waypoint()
+                        speed = np.random.uniform(entry["speed_min"], entry["speed_max"])
+                        name_p_torso = entry["p_torso"]
+                        state = {
+                            "visual_torso":      entry["v_torso"],
+                            "visual_left_leg":   entry["v_ll"],
+                            "visual_right_leg":  entry["v_rl"],
+                            "visual_left_arm":   entry["v_la"],
+                            "visual_right_arm":  entry["v_ra"],
+                            "proxy_torso":       name_p_torso,
+                            "proxy_left_leg":    entry["p_ll"],
+                            "proxy_right_leg":   entry["p_rl"],
+                            "x": x, "y": y, "yaw": yaw,
+                            "radius":            entry["radius"],
+                            "speed":             speed,
+                            "v": 0.0, "w": 0.0,
+                            "target_x": tx, "target_y": ty,
+                            "pause_left": 0.0,
+                            "stopping": False,
+                            "gait_phase":        np.random.uniform(0.0, 2.0 * math.pi),
+                            "gait_freq_hz":      np.random.uniform(
+                                                     entry["gait_freq_hz_min"],
+                                                     entry["gait_freq_hz_max"]),
+                            "leg_swing_amp_rad": math.radians(entry["leg_swing_amp_deg"]),
+                            "leg_length":        entry["leg_length"],
+                            "leg_y_offset":      entry["leg_y_offset"],
+                            "hip_z":             entry["hip_z"],
+                            "torso_z":           entry["torso_z"],
+                            "arm_swing_amp_rad": math.radians(entry["arm_swing_amp_deg"]),
+                            "arm_length":        entry["arm_length"],
+                            "shoulder_z":        entry["shoulder_z"],
+                            "arm_y_offset":      entry["arm_y_offset"],
+                        }
+                        self.human_states[name_p_torso] = state
+                        self._set_human_part_poses(state)
+                        placed.append((x, y, entry["radius"]))
+                        new_records[name_p_torso] = (x, y, entry["radius"])
+                        activated += 1
+                        continue
+                    self.get_logger().warn(
+                        f"Pool: no free pose for human — parking all 8 parts"
+                    )
+                # Park all 8 parts at the stored parking slot
+                px, py, pz = entry["park_x"], entry["park_y"], entry["park_z"]
+                for n in all_names:
+                    self.set_entity_pose_ignition(n, px, py, pz, 0.0, 0.0, 0.0, 1.0)
+
         _place_pool_group(self.pool_dynamic, self.num_of_dynamic_obstacles, "dynamic")
         _place_pool_group(self.pool_static,  self.num_of_static_obstacles,  "static")
-        _place_pool_group(self.pool_human,   self.num_of_humans,            "human")
+        _place_human_pool_group(self.pool_human, self.num_of_humans)
 
         self.spawned_obstacle_records = new_records
         self.spawned_obstacle_names   = list(new_records.keys())
@@ -2143,6 +3102,7 @@ class Environment(Node):
         delete from the previous episode can never block a new spawn.
         """
         self._delete_spawned_obstacles()
+        self.dynamic_obstacle_states = {}
         if (
             (not self.dynamic_obstacle_catalog or self.num_of_dynamic_obstacles <= 0)
             and (not self.static_obstacle_catalog  or self.num_of_static_obstacles  <= 0)
@@ -2168,6 +3128,20 @@ class Environment(Node):
                     self.spawned_obstacle_names.append(model_name)
                     self.spawned_obstacle_records[model_name] = (x, y, radius)
                     placed.append((x, y, radius))
+                    if log_label == "dynamic obstacle":
+                        tx, ty = self._sample_dynamic_waypoint(radius)
+                        self.dynamic_obstacle_states[model_name] = {
+                            "x": x, "y": y, "yaw": yaw,
+                            "radius": radius,
+                            "speed": np.random.uniform(
+                                float(entry.get("speed_min", self.dynamic_speed_min)),
+                                float(entry.get("speed_max", self.dynamic_speed_max)),
+                            ),
+                            "v": 0.0, "w": 0.0,
+                            "target_x": tx, "target_y": ty,
+                            "pause_left": 0.0,
+                            "stopping": False,
+                        }
                     spawned += 1
             return spawned
 
@@ -2178,7 +3152,96 @@ class Environment(Node):
             _spawn_from_catalog(self.static_obstacle_catalog, self.num_of_static_obstacles, "rl_sta", "static obstacle")
 
         if self.human_catalog and self.num_of_humans > 0:
-            _spawn_from_catalog(self.human_catalog, self.num_of_humans, "rl_human", "human")
+            self.human_states = {}
+            spawn_regions = self._build_human_spawn_regions()
+            for i in range(self.num_of_humans):
+                entry = random.choice(self.human_catalog)
+                radius = float(entry.get("radius", 0.30))
+                result = self._sample_human_spawn_pose(
+                    radius, placed, start_x, start_y, i, spawn_regions
+                )
+                if result is None:
+                    self.get_logger().warn(f"Could not place human {i + 1} — skipping")
+                    continue
+                x, y = result
+                yaw = np.random.uniform(-math.pi, math.pi) if entry.get("yaw_random", True) else 0.0
+                prefix = f"rl_human_{ep:04d}_{i + 1:03d}"
+                arm_uri = entry.get("visual_arm_uri", entry["visual_torso_uri"])
+                part_defs = [
+                    ("v_torso", entry["visual_torso_uri"]),
+                    ("v_ll",    entry["visual_leg_uri"]),
+                    ("v_rl",    entry["visual_leg_uri"]),
+                    ("v_la",    arm_uri),
+                    ("v_ra",    arm_uri),
+                    ("p_torso", entry["proxy_torso_uri"]),
+                    ("p_ll",    entry["proxy_leg_uri"]),
+                    ("p_rl",    entry["proxy_leg_uri"]),
+                ]
+                names = {}
+                spawned_so_far = []
+                all_ok = True
+                for part_key, uri in part_defs:
+                    pname = f"{prefix}_{part_key}"
+                    if self._spawn_entity_sdf(pname, uri, x, y, yaw):
+                        names[part_key] = pname
+                        spawned_so_far.append(pname)
+                    else:
+                        all_ok = False
+                        break
+
+                if all_ok:
+                    tx, ty = self._sample_human_waypoint()
+                    speed = np.random.uniform(
+                        float(entry.get("speed_min", 0.3)),
+                        float(entry.get("speed_max", 0.8)),
+                    )
+                    state = {
+                        "visual_torso":      names["v_torso"],
+                        "visual_left_leg":   names["v_ll"],
+                        "visual_right_leg":  names["v_rl"],
+                        "visual_left_arm":   names["v_la"],
+                        "visual_right_arm":  names["v_ra"],
+                        "proxy_torso":       names["p_torso"],
+                        "proxy_left_leg":    names["p_ll"],
+                        "proxy_right_leg":   names["p_rl"],
+                        "x": x, "y": y, "yaw": yaw,
+                        "radius":            radius,
+                        "speed":             speed,
+                        "v": 0.0, "w": 0.0,
+                        "target_x": tx, "target_y": ty,
+                        "pause_left": 0.0,
+                        "stopping": False,
+                        "gait_phase":        np.random.uniform(0.0, 2.0 * math.pi),
+                        "gait_freq_hz":      np.random.uniform(
+                                                 float(entry.get("gait_freq_hz_min", 0.8)),
+                                                 float(entry.get("gait_freq_hz_max", 1.6))),
+                        "leg_swing_amp_rad": math.radians(float(entry.get("leg_swing_amp_deg", 18.0))),
+                        "leg_length":        float(entry.get("leg_length", 0.90)),
+                        "leg_y_offset":      float(entry.get("leg_y_offset", 0.13)),
+                        "hip_z":             float(entry.get("hip_z", 0.90)),
+                        "torso_z":           float(entry.get("torso_z", 1.25)),
+                        "arm_swing_amp_rad": math.radians(float(entry.get("arm_swing_amp_deg", 20.0))),
+                        "arm_length":        float(entry.get("arm_length", 0.60)),
+                        "shoulder_z":        float(entry.get("shoulder_z", 1.55)),
+                        "arm_y_offset":      float(entry.get("arm_y_offset", 0.22)),
+                    }
+                    self.human_states[names["p_torso"]] = state
+                    self._set_human_part_poses(state)
+                    self.spawned_obstacle_names.extend(spawned_so_far)
+                    self.spawned_obstacle_records[names["p_torso"]] = (x, y, radius)
+                    placed.append((x, y, radius))
+                else:
+                    for n in spawned_so_far:
+                        try:
+                            req = DeleteEntity.Request()
+                            req.entity.name = n
+                            req.entity.type = GzEntity.MODEL
+                            self.delete_entity_client.call_async(req)
+                        except Exception:
+                            pass
+                    self.get_logger().warn(
+                        f"Human {i + 1}: partial spawn failure; {len(spawned_so_far)}/8 parts cleaned up"
+                    )
 
     def check_dead_zone(
         self,
@@ -2212,17 +3275,18 @@ class Environment(Node):
         return False
 
     def publish_markers(self, action):
-        """Publishes visual data for RViz: goal cylinder + waypoint action bars.
+        """Publishes visual data for RViz: goal ground-disc + waypoint action bars.
         action[0] (normalized) → wp_r_norm bar   (waypoint distance, larger = farther)
         action[1] (normalized) → wp_theta_norm bar (waypoint angle, larger = sharper turn)
         """
+        goal_diameter = max(2.0 * float(self.goal_threshold), 0.5)
         marker_specs = [
             {
                 "frame_id": "odom",
                 "marker_type": Marker.CYLINDER,
-                "scale": (0.1, 0.1, 0.01),
-                "color": (1.0, 0.0, 1.0, 0.0),
-                "position": (self.goal_x, self.goal_y, 0.0),
+                "scale": (goal_diameter, goal_diameter, 0.004),
+                "color": (0.9, 1.0, 0.1, 0.1),
+                "position": (self.goal_x, self.goal_y, 0.002),
                 "orientation": (0.0, 0.0, 0.0, 1.0),
                 "action": Marker.ADD,
                 "ns": "",

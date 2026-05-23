@@ -26,6 +26,7 @@ install(PROGRAMS
   scripts/hunter_se_steering_monitor.py
   scripts/hunter_se_dynamics_monitor.py
   scripts/hunter_se_mesh_extent.py
+  scripts/hunav_pose_csv_logger.py
   scripts/hunter_se_validation_driver.py
   scripts/hunter_se_validation_logger.py
   DESTINATION lib/${PROJECT_NAME}

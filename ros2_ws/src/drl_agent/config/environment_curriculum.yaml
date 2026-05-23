@@ -1,0 +1,171 @@
+# Curriculum-learning environment config.
+# Identical to environment.yaml except:
+#   - Pool sizes are set to the maximum stage counts.
+#   - num_of_* base values reflect final-stage maximums (overridden per-episode by stage).
+#   - curriculum: block defines the 5 stages.
+#
+# Usage: pass as --ros-args -p config_file:=<path>/environment_curriculum.yaml
+#        when launching environment_curriculum.py
+
+environment:
+  # Robot training-start sampling region. Keep unchanged.
+  lower: -6.5
+  upper: 6.5
+  goal_obstacle_lower: -8.5
+  goal_obstacle_upper: 8.5
+  # Base counts = final-stage maximums. _apply_curriculum_stage() overrides these
+  # each episode, so the yaml values only affect pool allocation at startup.
+  num_of_dynamic_obstacles: 6
+  num_of_static_obstacles: 3
+  num_of_humans: 5
+  environment_state_dim: 80
+  agent_state_dim: 7
+  action_dim: 2
+  agent_name: "hunter_se"
+  max_action: 1.0
+  actions_low:  [0.8, -0.524]
+  actions_high: [2.0,  0.524]
+  vehicle_wheelbase_m: 0.547696
+  vehicle_steering_limit_deg: 21.58
+  vehicle_min_speed_for_steering_mps: 0.15
+  controller_cruise_speed_mps: 2.0
+  controller_min_speed_mps: 0.3
+  controller_speed_steer_factor: 0.6
+  spawn_z: 0.02
+  obs_z_min_sensor_m: -0.455
+  obs_z_max_sensor_m:  0.250
+
+  obstacle_catalog: "drl_obstacle_assets"
+
+  human_update_rate: 20.0
+  human_stop_prob_per_sec: 0.02
+  human_pause_duration: 1.0
+  human_heading_jitter_deg: 15.0
+  human_retarget_prob_per_sec: 0.02
+  human_scan_dropout_prob: 0.04   # final-stage value; overridden per stage
+  human_scan_noise_std: 0.06      # final-stage value; overridden per stage
+  human_max_accel: 20.0
+  human_max_yaw_rate: 10.0
+  human_max_yaw_accel: 20.0
+  human_k_yaw: 5.0
+
+  dynamic_update_rate: 20.0
+  dynamic_speed_min: 0.35         # final-stage value; overridden per stage
+  dynamic_speed_max: 1.10         # final-stage value; overridden per stage
+  dynamic_stop_prob_per_sec: 0.03
+  dynamic_pause_duration: 1.5
+  dynamic_heading_jitter_deg: 12.0
+  dynamic_retarget_prob_per_sec: 0.02
+  dynamic_max_accel: 0.6
+  dynamic_max_yaw_rate: 0.9
+  dynamic_max_yaw_accel: 1.5
+  dynamic_k_yaw: 2.0
+
+  start_edge_heading_margin_m: 1.0
+  start_front_clearance_m: 1.2
+  start_front_fov_deg: 35.0
+
+  obstacle_wall_margin: 1.0
+  obstacle_robot_margin: 1.5
+  obstacle_goal_margin: 1.5
+  obstacle_mutual_margin: 1.2
+
+  use_obstacle_pool: true
+  obstacle_pool_dynamic_size: 12  # >= max active_dynamic across all stages (6)
+  obstacle_pool_static_size: 4    # >= max active_static across all stages (3)
+  obstacle_pool_human_size: 8     # >= max active_humans across all stages (5)
+  parking_slot_xs: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
+  parking_slot_ys: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
+  parking_z: 0.0
+
+threshold_parameters:
+  goal_threshold: 0.42
+  collision_threshold: 0.7
+  time_delta: 0.2
+  inter_entity_distance: 2.5
+  lidar_max_range: 50
+
+use_zone_collision: false
+zone_angles_deg: [-30, 30,   -50, -30,   30, 50,   -130, -50,  50, 130,  -150, -130, 130, 150,  150, -150]
+zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68]
+
+safety_region:
+  d_front: 0.475638
+  d_rear:  0.410000
+  d_left:  0.322
+  d_right: 0.322
+  margin_front: 0.10
+  margin_rear:  0.03
+  margin_left:  0.03
+  margin_right: 0.03
+  reward_warning_scale_front: 1.2
+  reward_warning_scale_rear:  1.2
+  reward_warning_scale_left:  1.2
+  reward_warning_scale_right: 1.2
+  scan_resolution: 0.05
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Curriculum stage definitions
+# Fields overridden per episode by _apply_curriculum_stage():
+#   active_static, active_dynamic, active_humans   → num_of_*_obstacles / num_of_humans
+#   dynamic_speed_min/max                          → self.dynamic_speed_min/max
+#   human_scan_noise_std, human_scan_dropout_prob  → self.human_scan_noise_std/dropout
+# Fields absent in a stage inherit the base environment values above.
+# ──────────────────────────────────────────────────────────────────────────────
+curriculum:
+  enabled: true
+  initial_stage: 0   # node starts here; trainer advances via curriculum_stage parameter
+
+  stages:
+    # ── Stage 0: empty map ──────────────────────────────────────────────
+    - name: empty
+      active_static: 0
+      active_dynamic: 0
+      active_humans: 0
+      dynamic_speed_min: 0.0
+      dynamic_speed_max: 0.0
+      human_scan_noise_std: 0.0
+      human_scan_dropout_prob: 0.0
+
+    # ── Stage 1: static obstacles only ──────────────────────────────────
+    - name: static_only
+      active_static: 3
+      active_dynamic: 0
+      active_humans: 0
+      dynamic_speed_min: 0.0
+      dynamic_speed_max: 0.0
+      human_scan_noise_std: 0.0
+      human_scan_dropout_prob: 0.0
+
+    # ── Stage 2: slow dynamic obstacles + 1 human, quadrant placement ──
+    - name: slow_dynamic
+      active_static: 2
+      active_dynamic: 3
+      active_humans: 1
+      human_placement_mode: quadrants
+      dynamic_speed_min: 0.20
+      dynamic_speed_max: 0.55
+      human_scan_noise_std: 0.0
+      human_scan_dropout_prob: 0.0
+
+    # ── Stage 3: 4 humans, one per quadrant ────────────────────────────
+    - name: mixed_medium
+      active_static: 2
+      active_dynamic: 4
+      active_humans: 4
+      human_placement_mode: quadrants
+      dynamic_speed_min: 0.30
+      dynamic_speed_max: 0.75
+      human_scan_noise_std: 0.03
+      human_scan_dropout_prob: 0.015
+
+    # ── Stage 4: full complexity, humans placed globally at random ─────
+    - name: full_complexity
+      active_static: 3
+      active_dynamic: 6
+      active_humans: 5
+      human_placement_mode: global_random
+      dynamic_speed_min: 0.35
+      dynamic_speed_max: 1.10
+      human_scan_noise_std: 0.06
+      human_scan_dropout_prob: 0.04

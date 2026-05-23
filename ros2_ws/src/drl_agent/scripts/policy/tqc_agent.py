@@ -477,9 +477,9 @@ class Agent(object):
         # Update checkpoint
         elif self.eps_since_update == self.max_eps_before_update:
             self.best_min_return = self.min_return
-            self.checkpoint_actor.load_state_dict(self.actor.state_dict())
-            
             self.train_and_reset()
+            # Keep the checkpoint policy aligned with the freshly trained actor.
+            self.checkpoint_actor.load_state_dict(self.actor.state_dict())
     
     def train_and_reset(self):
         """Batch training and reset counters"""
@@ -516,6 +516,9 @@ class Agent(object):
             torch.save(self.ent_coef_optimizer.state_dict(), f"{directory}/{filename}_ent_coef_optimizer.pth")
         else:
             torch.save(self.ent_coef_tensor, f"{directory}/{filename}_ent_coef_tensor.pth")
+
+        # Replay buffer — enables full off-policy resume
+        self.replay_buffer.save(f"{directory}/{filename}_replay_buffer")
     
     def load(self, directory, filename):
         import os, torch
@@ -561,3 +564,8 @@ class Agent(object):
             if os.path.exists(p):
                 loaded = torch.load(p, map_location=maploc)
                 self.ent_coef_tensor = loaded.to(maploc).detach()
+
+        # Replay buffer
+        buf_path = f"{directory}/{filename}_replay_buffer"
+        if os.path.isfile(buf_path + ".npz"):
+            self.replay_buffer.load(buf_path)

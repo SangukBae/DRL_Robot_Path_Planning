@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import torch
 
@@ -75,6 +77,56 @@ class LAP(object):
 
     def reset_max_priority(self):
         self.max_priority = float(self.priority[: self.size].max())
+
+    def save(self, path: str):
+        """Save buffer to <path>.npz (+ <path>_priority.pt when prioritized).
+
+        Only the filled portion of the arrays is written, so early-training
+        checkpoints are compact even when max_size is 1 M.
+        """
+        dirname = os.path.dirname(path)
+        if dirname:
+            os.makedirs(dirname, exist_ok=True)
+        np.savez_compressed(
+            path,
+            state=self.state[: self.size],
+            action=self.action[: self.size],
+            next_state=self.next_state[: self.size],
+            reward=self.reward[: self.size],
+            not_done=self.not_done[: self.size],
+            meta=np.array([self.ptr, self.size, self.max_size]),
+            max_priority=np.array([self.max_priority if self.prioritized else 1.0]),
+        )
+        if self.prioritized:
+            torch.save(
+                self.priority[: self.size].cpu(), path + "_priority.pt"
+            )
+
+    def load(self, path: str) -> bool:
+        """Restore buffer from <path>.npz.  Returns True on success."""
+        npz = path if path.endswith(".npz") else path + ".npz"
+        if not os.path.isfile(npz):
+            return False
+        d    = np.load(npz)
+        meta = d["meta"].tolist()
+        ptr, size = int(meta[0]), int(meta[1])
+        self.state[: size]      = d["state"]
+        self.action[: size]     = d["action"]
+        self.next_state[: size] = d["next_state"]
+        self.reward[: size]     = d["reward"]
+        self.not_done[: size]   = d["not_done"]
+        self.ptr  = ptr
+        self.size = size
+        if self.prioritized:
+            self.max_priority = float(d["max_priority"][0])
+            ppt = path + "_priority.pt"
+            if os.path.isfile(ppt):
+                self.priority[: size] = torch.load(
+                    ppt, map_location=self.device
+                ).to(self.device)
+            else:
+                self.priority[: size] = self.max_priority
+        return True
 
     def load_D4RL(self, dataset):
         self.state = dataset["observations"]

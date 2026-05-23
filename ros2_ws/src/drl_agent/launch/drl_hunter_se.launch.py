@@ -45,6 +45,12 @@ def generate_launch_description():
             # 2-D LiDAR bridged to /scan
             "obs_source":      "scan",
             "scan_topic":      "/scan",
+            # Chassis contact sensor bridged from Gazebo for definitive collision termination.
+            "use_contact_collision": True,
+            "contact_topic":   "/hunter_se/chassis_contacts",
+            # Keep HuNav pedestrians running across episode resets; only the
+            # robot, goal, and non-human obstacles are repositioned per episode.
+            "preserve_hunav_on_reset": True,
             # Must match the SDF <world name="..."> in the running world file.
             # drl_arena.world and hospital_ignition.world both use name="default".
             "world_name":      "default",

@@ -17,7 +17,7 @@ hunter_se_cmd_prefilter:
     accel_limit_mps2: 6.0
     brake_decel_mps2: 6.0
     deadband_speed_mps: 0.02
-    max_speed_mps: 1.333
+    max_speed_mps: 2.0
     odom_topic: /odometry
     overspeed_deadband_mps: 0.01
     speed_governor_gain: 2.5

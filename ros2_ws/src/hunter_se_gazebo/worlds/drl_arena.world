@@ -37,6 +37,16 @@
             name="ignition::gazebo::systems::UserCommands"/>
     <plugin filename="ignition-gazebo-scene-broadcaster-system"
             name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-sensors-system"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin filename="ignition-gazebo-contact-system"
+            name="ignition::gazebo::systems::Contact"/>
+
+    <!-- DRL obstacle motion plugin: receives /drl/model_poses from environment.py
+         and applies all poses directly via ECM — no blocking service calls. -->
+    <plugin filename="DrlModelPosePlugin" name="drl::DrlModelPosePlugin"/>
 
     <!-- ── Sunlight ── -->
     <light name="sun" type="directional">

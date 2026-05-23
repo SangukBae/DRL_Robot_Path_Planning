@@ -122,6 +122,16 @@ def generate_launch_description():
     rgl_server_plugin_path = os.path.join(rgl_install_dir, "RGLServerPlugin")
     rgl_gui_plugin_path    = os.path.join(rgl_install_dir, "RGLVisualize")
 
+    # DrlModelPosePlugin — built into drl_obstacle_assets lib dir
+    try:
+        drl_obstacle_assets_lib = os.path.join(
+            os.path.dirname(get_package_share_directory("drl_obstacle_assets")),
+            "..", "lib",
+        )
+        drl_obstacle_assets_lib = os.path.realpath(drl_obstacle_assets_lib)
+    except Exception:
+        drl_obstacle_assets_lib = ""
+
     # Include both package-share root AND models/ sub-directory for each AWS
     # package so that model:// URIs resolve correctly via GZ_SIM_RESOURCE_PATH.
     aws_resource_paths = [p for p in [
@@ -155,6 +165,7 @@ def generate_launch_description():
         ])),
         "IGN_GAZEBO_SYSTEM_PLUGIN_PATH": ":".join(filter(None, [
             rgl_server_plugin_path,
+            drl_obstacle_assets_lib,
             environ.get("IGN_GAZEBO_SYSTEM_PLUGIN_PATH", ""),
             environ.get("LD_LIBRARY_PATH", ""),
         ])),
@@ -164,6 +175,7 @@ def generate_launch_description():
         ])),
         "LD_LIBRARY_PATH": ":".join(filter(None, [
             rgl_server_plugin_path,
+            drl_obstacle_assets_lib,
             environ.get("LD_LIBRARY_PATH", ""),
         ])),
     }
@@ -241,10 +253,10 @@ def generate_launch_description():
 
     # ------------------------------------------------------------------ #
     # pointcloud_to_laserscan
-    # Converts Ouster OS1-64 PointCloud2 (/ouster/points) to LaserScan
+    # Converts Ouster OS1-128 PointCloud2 (/ouster/points) to LaserScan
     # (/scan) so the DRL environment node can use obs_source:=scan.
     # Height filter mirrors environment.py cloud callback (z > -0.2 m in
-    # sensor frame).  Full 360° at ~0.36° resolution matches Ouster 1024
+    # sensor frame). Full 360° at ~0.176° resolution matches Ouster 2048
     # samples/rotation.
     # ------------------------------------------------------------------ #
     pointcloud_to_laserscan_node = Node(

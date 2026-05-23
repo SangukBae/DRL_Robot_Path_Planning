@@ -1,0 +1,22 @@
+# Curriculum-learning settings for train_tqc_curriculum_agent.py.
+# Only the curriculum_settings block is here; base train_settings are
+# still read from train_tqc_config.yaml by the parent TrainTQC class.
+
+curriculum_settings:
+  enabled: true
+
+  # Minimum steps/episodes spent in a stage before advancement is considered.
+  # Prevents premature promotion if eval happens to hit a lucky streak early.
+  min_stage_steps: 15000
+  min_stage_episodes: 20
+
+  # Per-stage success / collision thresholds (list index = stage index).
+  # Early stages require high success because the task is simple; later stages
+  # allow lower success as the environment becomes genuinely harder.
+  # List length should equal (num_stages - 1): one entry per promotable stage.
+  pass_eval_success_rate:   [0.90, 0.85, 0.75, 0.70]
+  pass_eval_collision_rate: [0.05, 0.10, 0.15, 0.20]
+
+  # How many consecutive evaluations must pass the threshold before promotion.
+  # Set to 1 for faster iteration, 2-3 for more conservative advancement.
+  consecutive_eval_passes: 2

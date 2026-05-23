@@ -21,6 +21,21 @@
     </plugin>
   </gazebo>
 
+  <!-- Contact sensor on the chassis body only.
+       This avoids wheel-ground contacts while still latching true body hits
+       against dynamic obstacles / humans. -->
+  <gazebo reference="mobile_robot_base_link">
+    <sensor name="chassis_contact_sensor" type="contact">
+      <always_on>true</always_on>
+      <update_rate>50</update_rate>
+      <visualize>false</visualize>
+      <topic>/hunter_se/chassis_contacts</topic>
+      <contact>
+        <collision>chassis_collision</collision>
+      </contact>
+    </sensor>
+  </gazebo>
+
   <!-- ===================== ACKERMANN STEERING DRIVE =====================
        Correct class name for Ignition Fortress: gz::sim::systems::AckermannSteering
        Rear wheels are driven (RWD); front 2 steer (Ackermann).

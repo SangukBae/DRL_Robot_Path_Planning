@@ -286,10 +286,10 @@ class TrainTQC(EnvInterface):
             self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv"
         )
         reward_header  = ["episode", "global_t", "steps", "total_reward", "mean_reward",
-                          "goal_reached", "collision", "timeout", "final_goal_dist_m"]
+                          "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m"]
         driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
                           "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
-                          "min_lidar_m", "mean_min_lidar_m", "goal_reached"]
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut"]
         step_header = ["episode", "global_t", "episode_step", "action_source",
                        "action_0_norm", "action_1_norm",
                        "goal_dist_before_m", "goal_dist_after_m",
@@ -325,6 +325,62 @@ class TrainTQC(EnvInterface):
         self.get_logger().info(f"Max timesteps: {self.max_timesteps}")
         self.get_logger().info(f"Use checkpoints: {self.use_checkpoints}")
         self.get_logger().info("=" * 50)
+
+    def _write_episode_logs(
+        self,
+        ep_num: int,
+        global_t: int,
+        ep_timesteps: int,
+        ep_total_reward: float,
+        state,
+        info,
+        episode_done: bool,
+        episode_limit: bool,
+        ep_v_buf: list,
+        ep_w_buf: list,
+        ep_min_lidar_buf: list,
+        ep_initial_goal_dist: float,
+        eval_cut: bool = False,
+    ):
+        """Write episode summary logs and return the textual result label."""
+        final_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[self.environment_dim])
+        goal_reached = bool(episode_done and info) and not eval_cut
+        collision = bool(episode_done and (not goal_reached)) and not eval_cut
+        timeout = bool(episode_limit and (not episode_done)) and not eval_cut
+
+        if goal_reached:
+            result = "GOAL"
+        elif collision:
+            result = "COLLISION"
+        elif eval_cut:
+            result = "EVAL_CUT"
+        else:
+            result = "TIMEOUT"
+
+        with open(self._reward_csv, "a", newline="") as _f:
+            csv.writer(_f).writerow([
+                ep_num, global_t, ep_timesteps,
+                round(ep_total_reward, 4),
+                round(ep_total_reward / max(ep_timesteps, 1), 4),
+                int(goal_reached), int(collision), int(timeout), int(eval_cut),
+                round(final_goal_dist, 4),
+            ])
+
+        if ep_v_buf:
+            with open(self._driving_csv, "a", newline="") as _f:
+                csv.writer(_f).writerow([
+                    ep_num, global_t, ep_timesteps,
+                    round(float(np.mean(ep_v_buf)), 4),
+                    round(float(np.mean(np.abs(ep_w_buf))), 4),
+                    round(ep_initial_goal_dist, 4),
+                    round(final_goal_dist, 4),
+                    round(ep_initial_goal_dist - final_goal_dist, 4),
+                    round(float(np.min(ep_min_lidar_buf)), 4),
+                    round(float(np.mean(ep_min_lidar_buf)), 4),
+                    int(goal_reached), int(eval_cut),
+                ])
+
+        return result
     
     def save_models(self, directory, file_name):
         """Save agent models"""
@@ -336,8 +392,8 @@ class TrainTQC(EnvInterface):
         start_time = time.time()
         evals = []
         epoch = 1
-        timesteps_since_eval = 0
-        allow_train = False
+        next_eval_t = self.eval_freq if self.eval_freq > 0 else None
+        training_enabled_logged = False
         
         ENV_DIM = self.environment_dim
 
@@ -358,6 +414,15 @@ class TrainTQC(EnvInterface):
         
         # Main training loop
         for t in range(1, self.max_timesteps + 1):
+            train_ready = t >= self.timesteps_before_training
+            use_policy = t > self.timesteps_before_training
+            if train_ready and not training_enabled_logged:
+                self.get_logger().info(
+                    f"Warmup finished at step {t}; enabling gradient updates now "
+                    f"and policy actions from step {t + 1}."
+                )
+                training_enabled_logged = True
+
             _state_before = np.asarray(state, dtype=np.float32).ravel()
             _lidar_before = _state_before[:ENV_DIM]
             _goal_before = float(_state_before[ENV_DIM])
@@ -375,7 +440,7 @@ class TrainTQC(EnvInterface):
             #         self.get_logger().warn("[OBS] lidar has negatives!")
 
             # Select action
-            if allow_train:
+            if use_policy:
                 action_source = "policy"
                 action = self.rl_agent.select_action(state)
             else:
@@ -420,20 +485,30 @@ class TrainTQC(EnvInterface):
                 ])
 
             # Train agent (if not using checkpoints)
-            if allow_train and not self.use_checkpoints:
+            if train_ready and not self.use_checkpoints:
                 self.rl_agent.train()
 
-            # Episode finished
-            if ep_finished or ep_timesteps >= self.max_episode_steps:
-                _goal_reached = bool(info) and bool(ep_finished)
-                _collision    = bool(ep_finished) and not _goal_reached
-                _timeout      = not bool(ep_finished)
-                if _goal_reached:
-                    _result = "GOAL"
-                elif _collision:
-                    _result = "COLLISION"
-                else:
-                    _result = "TIMEOUT"
+            eval_due = bool(next_eval_t is not None and t >= next_eval_t)
+            episode_limit = ep_timesteps >= self.max_episode_steps
+            force_eval_cut = eval_due and not ep_finished and not episode_limit
+
+            # Episode finished or cut for exact-step evaluation
+            if ep_finished or episode_limit or force_eval_cut:
+                _result = self._write_episode_logs(
+                    ep_num=ep_num,
+                    global_t=t,
+                    ep_timesteps=ep_timesteps,
+                    ep_total_reward=ep_total_reward,
+                    state=state,
+                    info=info,
+                    episode_done=ep_finished,
+                    episode_limit=episode_limit,
+                    ep_v_buf=_ep_v_buf,
+                    ep_w_buf=_ep_w_buf,
+                    ep_min_lidar_buf=_ep_min_lidar_buf,
+                    ep_initial_goal_dist=_ep_initial_goal_dist,
+                    eval_cut=force_eval_cut,
+                )
 
                 self.get_logger().info(
                     f"Total T: {t} | Episode: {ep_num} | "
@@ -441,44 +516,19 @@ class TrainTQC(EnvInterface):
                     f"Result: {_result}"
                 )
 
-                # CSV logging
-                _final_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
-                with open(self._reward_csv, "a", newline="") as _f:
-                    csv.writer(_f).writerow([
-                        ep_num, t, ep_timesteps,
-                        round(ep_total_reward, 4),
-                        round(ep_total_reward / max(ep_timesteps, 1), 4),
-                        int(_goal_reached), int(_collision), int(_timeout),
-                        round(_final_goal_dist, 4),
-                    ])
-                if _ep_v_buf:
-                    with open(self._driving_csv, "a", newline="") as _f:
-                        csv.writer(_f).writerow([
-                            ep_num, t, ep_timesteps,
-                            round(float(np.mean(_ep_v_buf)), 4),
-                            round(float(np.mean(np.abs(_ep_w_buf))), 4),
-                            round(_ep_initial_goal_dist, 4),
-                            round(_final_goal_dist, 4),
-                            round(_ep_initial_goal_dist - _final_goal_dist, 4),
-                            round(float(np.min(_ep_min_lidar_buf)), 4),
-                            round(float(np.mean(_ep_min_lidar_buf)), 4),
-                            int(_goal_reached),
-                        ])
-
                 # Checkpoint training if enabled
-                if self.use_checkpoints and allow_train:
+                if self.use_checkpoints and train_ready:
                     self.rl_agent.train_and_checkpoint(ep_timesteps, ep_total_reward)
 
-                # Evaluation
-                if allow_train and timesteps_since_eval >= self.eval_freq:
-                    timesteps_since_eval %= self.eval_freq
+                # Exact-step evaluation schedule. If the threshold is hit mid-episode,
+                # the current episode is intentionally cut here so evaluation happens
+                # on the configured environment step instead of the next boundary.
+                if eval_due:
                     self.save_models(self.pytorch_models_dir, self.file_name)
                     self.evaluate_and_print(evals, epoch, start_time)
                     epoch += 1
-
-                # Enable training after warmup
-                if t >= self.timesteps_before_training:
-                    allow_train = True
+                    while next_eval_t is not None and next_eval_t <= t:
+                        next_eval_t += self.eval_freq
 
                 # Reset episode
                 state = self.reset()
@@ -492,8 +542,6 @@ class TrainTQC(EnvInterface):
                 _ep_w_buf.clear()
                 _ep_min_lidar_buf.clear()
                 _ep_initial_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[ENV_DIM])
-            
-            timesteps_since_eval += 1
         
         # Training complete
         self.get_logger().info("Training completed!")
@@ -518,7 +566,7 @@ class TrainTQC(EnvInterface):
                 # Deterministic evaluation
                 action = self.rl_agent.select_action(
                     state,
-                    use_checkpoint=self.use_checkpoints,
+                    use_checkpoint=False,
                     use_exploration=False
                 )
                 state, reward, done, _ = self.step(action)

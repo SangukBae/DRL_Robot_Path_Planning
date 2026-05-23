@@ -9,6 +9,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 if(BUILD_TESTING)
@@ -24,6 +25,7 @@ if(BUILD_TESTING)
 endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/DrlModelPoseArray.msg"
   "srv/Step.srv"
   "srv/Reset.srv"
   "srv/GetDimensions.srv"
@@ -32,6 +34,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/GetTestEpisodes.srv"
   "srv/GetStartGoalPairs.srv"
   "action/StartDrlSession.action"
+  DEPENDENCIES geometry_msgs
 )
 
 ament_package()
