@@ -4,9 +4,11 @@ ROS2 Humble + Gazebo Ignition Fortress 기반 AgileX Hunter SE DRL 경로 계획
 
 ## Overview
 
-AgileX Hunter SE Ackermann 조향 로봇이 장애물 환경(DRL Arena, Hospital 등)에서 DRL 알고리즘(TQC, TD7, SAC, A3C)으로 자율 주행을 학습한다.
+AgileX Hunter SE Ackermann 조향 로봇이 장애물 환경(DRL Arena, Hospital 등)에서 커리큘럼 강화학습(TQC)으로 자율 주행을 학습한다.
 
-**Tech Stack**: ROS2 Humble, Gazebo Ignition Fortress, PyTorch 2.4.1 (CUDA 11.8), Navigation2
+정책은 2D Waypoint 명령(거리·방향각)을 출력하고, Pure Pursuit 로컬 컨트롤러가 이를 `cmd_vel`로 변환한다. 커리큘럼은 빈 환경 → 정적 장애물 → 동적 장애물 → 사람 포함 복합 환경 순서로 5단계에 걸쳐 자동 진급한다.
+
+**Tech Stack**: ROS2 Humble, Gazebo Ignition Fortress, PyTorch 2.4.1 (CUDA 11.8)
 
 ## Layout
 
@@ -75,30 +77,48 @@ ros2 launch aws_robomaker_small_house_world small_house_ignition.launch.py
 ros2 launch aws_robomaker_small_warehouse_world small_warehouse_ignition.launch.py
 ```
 
-### 3. DRL 학습/테스트
+### 3. DRL 학습 (커리큘럼 — 권장)
 
 터미널을 3개 사용한다.
 
 ```bash
-# [터미널 1] Gazebo 시뮬레이션 실행
-ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py
+# [터미널 1] Gazebo 시뮬레이션
+ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 
-# [터미널 2] DRL 환경 노드 실행
-ros2 launch drl_agent drl_hunter_se.launch.py            # 학습
-ros2 launch drl_agent drl_hunter_se.launch.py mode:=test  # 테스트
+# [터미널 2] 커리큘럼 환경 노드
+ros2 run drl_agent environment_curriculum.py \
+  --ros-args -p config_file:=$(ros2 pkg prefix drl_agent --share)/config/environment_curriculum.yaml
 
-# [터미널 3] 에이전트 실행
-ros2 run drl_agent train_tqc_agent.py      # TQC (주력)
-ros2 run drl_agent train_tqc_ieqn_agent.py # TQC + IEQn
-ros2 run drl_agent train_td7_agent.py      # TD7
-ros2 run drl_agent train_sac_agent.py      # SAC
-ros2 run drl_agent train_a3c_agent.py      # A3C
+# [터미널 3] TQC 커리큘럼 학습
+ros2 run drl_agent train_tqc_curriculum_agent.py
+```
 
+커리큘럼 진급 상황과 에피소드 보상은 아래 파일에 기록된다:
+- `results/curriculum_episode_rewards_<run>.csv` — 에피소드별 스테이지·보상·성공 여부
+- `results/curriculum_state.json` — 현재 스테이지·글로벌 스텝 (학습 재개용)
+
+재개 시 `load_model: true`를 `train_tqc_config.yaml`에 설정하면 모델·리플레이 버퍼·커리큘럼 상태가 모두 복원된다.
+
+```bash
 # TensorBoard 모니터링
 tensorboard --logdir ros2_ws/src/drl_agent/results/
 ```
 
-테스트만 할 경우:
+### 4. DRL 학습 (단일 알고리즘 — 대안)
+
+```bash
+# [터미널 2] 표준 환경 노드
+ros2 launch drl_agent drl_hunter_se.launch.py
+
+# [터미널 3] 알고리즘 선택
+ros2 run drl_agent train_tqc_agent.py      # TQC
+ros2 run drl_agent train_tqc_ieqn_agent.py # TQC + IEQn
+ros2 run drl_agent train_td7_agent.py      # TD7
+ros2 run drl_agent train_sac_agent.py      # SAC
+ros2 run drl_agent train_a3c_agent.py      # A3C
+```
+
+### 5. 테스트
 
 ```bash
 ros2 launch drl_agent test_tqc.launch.py
@@ -110,35 +130,69 @@ ros2 launch drl_agent test_td7.launch.py
 ### 서비스 기반 환경 인터페이스
 
 ```
-Environment Node (environment.py)          Agent Node (train_*_agent.py)
-├── /reset           ←──────────────────── 에피소드 시작 시 초기화
-├── /step            ←──────────────────── 액션 전달 + 상태/보상 반환
-├── /get_dimensions  ←──────────────────── state_dim, action_dim 조회
-├── /seed            ←──────────────────── 랜덤 시드 설정
-└── /action_space_sample ←──────────────── 랜덤 액션 샘플 (워밍업)
+Environment Node (environment_curriculum.py)   Agent Node (train_tqc_curriculum_agent.py)
+├── /reset               ←─────────────────── 에피소드 시작 시 초기화
+├── /step                ←─────────────────── 액션(Waypoint) 전달 + 상태/보상 반환
+├── /get_dimensions      ←─────────────────── state_dim, action_dim 조회
+├── /seed                ←─────────────────── 랜덤 시드 설정
+└── /action_space_sample ←─────────────────── 랜덤 액션 샘플 (워밍업)
 ```
 
 서비스 정의: `drl_agent_interfaces/srv/`
 
 ### DRL 상태/액션 공간
 
-- **State (80D)**: 에이전트 포즈 (4D) + LiDAR 관측 (76D)
-- **Action (2D)**: 선속도 [0.0, 1.333] m/s (전진 전용), 각속도 [-1.4, 1.4] rad/s
-- **토픽**: `/cmd_vel` (명령), `/odometry` (상태), `/ouster/points` (3D LiDAR → `/scan` 변환)
+- **State (87D)**:
+  - `[0:80]` — LiDAR 80 빈 (전방위 360°), 빈당 최근접 장애물 거리 [m]
+  - `[80]` — 목표까지 거리 [m]
+  - `[81]` — 목표 방향 오차 θ [rad]
+  - `[82]` — 이전 액션 r (웨이포인트 거리), 정규화
+  - `[83]` — 이전 액션 θ (웨이포인트 각도), 정규화
+  - `[84]` — 실제 선속도 [m/s] (오도메트리)
+  - `[85]` — 실제 요레이트 [rad/s] (오도메트리)
+  - `[86]` — 중심 조향각 [rad] (조인트 스테이트)
 
-**환경 인터페이스**: `environment_interface.py`가 에이전트 출력 `[-1, 1]`을 `[0, 1]`로 리매핑 후 `/step` 서비스 호출. 환경은 `[0, 1.333]` m/s로 스케일 변환.
+- **Action (2D) — Waypoint 명령 (Pure Pursuit)**:
+  - `action[0]`: 웨이포인트 거리 r ∈ [0.8, 2.0] m (전진, 로봇 프레임)
+  - `action[1]`: 웨이포인트 각도 θ ∈ [-0.524, 0.524] rad (±30°, 로봇 프레임)
+  - 정책 출력 `[-1, 1]`을 `environment.py`가 물리 단위로 스케일 변환 후 Pure Pursuit 컨트롤러 구동 → `cmd_vel`
 
-### 두 가지 환경 구현
+- **토픽**: `/cmd_vel` (웨이포인트→트위스트), `/cmd_vel_filtered` (프리필터 출력), `/odometry`, `/ouster/points`, `/scan`
 
-| 파일 | 시뮬레이터 | 리셋 방식 |
-|------|-----------|---------|
-| `environment.py` | Ignition Fortress | `ros_gz_interfaces/SetEntityPose` |
-| `environment_360.py` | Classic Gazebo | `gazebo_msgs/SetEntityState` |
+### 커맨드 파이프라인
+
+```
+RL policy → /cmd_vel (twist) → hunter_se_cmd_prefilter → /cmd_vel_filtered → Gazebo
+                                  (스로틀/조향 셰이핑, 50 Hz)
+```
+
+### 환경 구현
+
+| 파일 | 용도 | 리셋 방식 |
+|------|------|---------|
+| `environment.py` | Ignition Fortress 기본 학습 | `ros_gz_interfaces/SetEntityPose` |
+| `environment_curriculum.py` | 커리큘럼 학습 (권장) | 동일 |
+| `environment_360.py` | Classic Gazebo (레거시) | `gazebo_msgs/SetEntityState` |
+
+### 커리큘럼 학습
+
+5단계 자동 진급 구조. `environment_curriculum.py`가 `/gym_node/set_parameters` 서비스로 스테이지를 수신하고, `train_tqc_curriculum_agent.py`가 평가 결과를 보고 진급 여부를 결정한다.
+
+| 스테이지 | 이름 | 정적 | 동적 | 사람 |
+|---------|------|------|------|------|
+| 0 | empty | 0 | 0 | 0 |
+| 1 | static_only | 2 | 0 | 0 |
+| 2 | slow_dynamic | 1 | 2 | 0 |
+| 3 | mixed_medium | 1 | 2 | 2 |
+| 4 | full_complexity | 1 | 4 | 4 |
+
+진급 조건: `pass_eval_success_rate` / `pass_eval_collision_rate` 임계값을 `consecutive_eval_passes`회 연속 통과.
 
 ### 알고리즘 구현
 
 `drl_agent/scripts/policy/`:
-- `tqc_agent.py` — Truncated Quantile Critics (주력, LAP 리플레이 버퍼)
+- `train_tqc_curriculum_agent.py` — TQC + 5단계 커리큘럼 (주력)
+- `tqc_agent.py` — Truncated Quantile Critics (LAP 리플레이 버퍼)
 - `tqc_ieqn_agent.py` — TQC + IEQn 부등식 제약
 - `td7_agent.py` — Twin Delayed DDPG v7
 - `sac_agent.py` — Soft Actor-Critic
@@ -151,8 +205,9 @@ Gazebo Ouster RGL
   → /hunter_se/pointcloud/points (Gz IgnitionTopic)
   → ros_gz_bridge
   → /ouster/points (ROS2 PointCloud2)
-  → /scan (ROS2 LaserScan, 360°)
-  → environment.py (76D 관측)
+  → pointcloud_to_laserscan (height filter: z ∈ [-0.455, 0.250] m, 360°, 0.176°/bin)
+  → /scan (ROS2 LaserScan)
+  → environment.py (80 빈 LiDAR 관측)
 ```
 
 ## 주요 설정 파일
@@ -162,6 +217,8 @@ Gazebo Ouster RGL
 | 파일 | 설명 |
 |------|------|
 | `environment.yaml` | 상태/액션 차원, 충돌 임계값, 안전 영역 |
+| `environment_curriculum.yaml` | 커리큘럼 환경 설정 (풀 크기, 5단계 정의) |
+| `train_tqc_curriculum_config.yaml` | 커리큘럼 진급 규칙 (임계값, 연속 통과 횟수) |
 | `hyperparameters_*.yaml` | 알고리즘별 네트워크 구조, 학습률 |
 | `train_*_config.yaml` | 학습 파라미터 (최대 스텝, 워밍업, 평가 주기) |
 | `test_tqc_config.yaml` | 테스트 파라미터 (시작/목표 쌍, 에피소드 수) |
@@ -171,7 +228,7 @@ Gazebo Ouster RGL
 - 워밍업 스텝: 25,000
 - 평가 주기: 5,000 스텝
 - 목표 도달 임계값: 0.42 m
-- 충돌 임계값: 전후 0.44 m / 좌우 0.352 m (직사각형 안전 영역)
+- 충돌 임계값: 직사각형 안전 영역 (전방 0.476 m, 후방 0.410 m, 좌우 0.322 m)
 
 ## 환경 변수
 
@@ -202,34 +259,6 @@ docker run --gpus all -it --rm \
 # X11 허용 (호스트)
 xhost +local:
 ```
-
-## 디버깅
-
-```bash
-# 토픽 주기 확인
-ros2 topic hz /scan               # ~10 Hz
-ros2 topic hz /cmd_vel_filtered   # ~50 Hz
-ros2 topic hz /odometry           # ~50 Hz
-
-# TF 트리 확인
-ros2 run tf2_tools view_frames
-
-# 환경 서비스 확인
-ros2 service list | grep -E "reset|step|dimensions"
-
-# GPU/CUDA 확인
-python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, Version: {torch.version.cuda}')"
-```
-
-## Troubleshooting
-
-| 문제 | 해결 |
-|------|------|
-| 서비스 타임아웃 | Gazebo와 DRL 환경 노드가 모두 실행 중인지 확인 |
-| `/odometry` 없음 | ros_gz_bridge 실행 여부, bridge config 확인 |
-| 시뮬레이션 RTF 저하 | RGL GPU 플러그인 경로 확인 (`IGN_GAZEBO_SYSTEM_PLUGIN_PATH`) |
-| rosdep 충돌 | `rosdep install --from-paths src -yi --rosdistro humble --skip-keys='libgraphicsmagick++1-dev graphicsmagick-libmagick-dev-compat'` |
-| Docker DDS 통신 | `--network host` + `RMW_IMPLEMENTATION` + `CYCLONEDDS_URI` 설정 |
 
 ## Package Index
 
