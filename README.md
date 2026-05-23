@@ -17,25 +17,13 @@ AgileX Hunter SE Ackermann 조향 로봇이 장애물 환경(DRL Arena, Hospital
 │   ├── drl_agent_interfaces/      # ROS2 srv/action 정의
 │   ├── hunter_se_gazebo/          # Hunter SE URDF, Gazebo launch, worlds
 │   ├── hunter_se_unity/           # Unity 시뮬레이션 에셋 (Hunter SE.fbx 등)
-│   ├── scout_nav2/
-│   │   ├── agilex_scout/          # Scout v2 URDF, Gazebo launch
-│   │   ├── scout_nav2/            # Nav2 config, maps, params
-│   │   └── nav2_bringup/          # Nav2 bringup
 │   ├── aws-robomaker-hospital-world/
 │   ├── aws-robomaker-bookstore-world/
 │   ├── aws-robomaker-small-house-world/
 │   ├── aws-robomaker-small-warehouse-world/
-│   ├── ugv_gazebo_sim/            # Scout/Bunker Gazebo 모델 메시
-│   ├── ouster_simulation/ouster_description/  # OS1-64 LiDAR (RGL)
-│   ├── pointcloud_to_laserscan/   # PointCloud2 → LaserScan 변환
-│   ├── depth_d435/                # Intel RealSense D435
-│   ├── depth_d455/                # Intel RealSense D455
-│   ├── octomap_mapping/           # 3D 점유 지도 (OctoMap)
-│   ├── dataset_builder/           # Offline RL 데이터셋 수집
-│   └── LIO-SAM/                   # LiDAR-Inertial SLAM
+│   └── ouster_simulation/ouster_description/  # OS1-64 LiDAR (RGL)
 ├── Dockerfile
-├── cyclonedds_config.xml
-└── CLAUDE.md
+└── cyclonedds_config.xml
 ```
 
 ## Build
@@ -117,60 +105,6 @@ ros2 launch drl_agent test_tqc.launch.py
 ros2 launch drl_agent test_td7.launch.py
 ```
 
-### 4. Navigation2 (Scout v2)
-
-```bash
-# [터미널 1] Gazebo 시뮬레이션
-ros2 launch agilex_scout simulate_control_gazebo_ignition.launch.py rviz:=true
-
-# [터미널 2] Nav2
-ros2 launch scout_nav2 nav2.launch.py simulation:=true slam:=false localization:=amcl  # AMCL
-ros2 launch scout_nav2 nav2.launch.py simulation:=true slam:=true localization:=slam_toolbox  # SLAM
-```
-
-### 5. LIO-SAM (LiDAR-Inertial SLAM)
-
-```bash
-# [터미널 1] Gazebo 시뮬레이션
-ros2 launch agilex_scout simulate_control_gazebo_ignition.launch.py rviz:=false
-
-# [터미널 2] LIO-SAM 매핑
-ros2 launch lio_sam run_scout_ignition.launch.py
-```
-
-### 6. 데이터셋 수집 (Offline RL)
-
-```bash
-# [터미널 1] Gazebo 시뮬레이션
-ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=true
-
-# [터미널 2] 녹화 시작
-ros2 launch dataset_builder record_run.launch.py run_id:=test_run_01 \
-  world_name:=drl_arena segment_duration_sec:=300
-```
-
-| 파라미터 | 기본값 | 설명 |
-|---------|--------|------|
-| `dataset_root` | `ros2_ws/data` | 데이터 저장 루트 경로 |
-| `run_id` | `auto` | 실행 ID (auto 시 타임스탬프 자동 생성) |
-| `segment_duration_sec` | `600` | 세그먼트 분할 간격 (초) |
-| `world_name` | `unknown_world` | Gazebo 월드 이름 |
-
-녹화 중지: `Ctrl+C`
-
-### 7. OctoMap 3D 점유 지도
-
-```bash
-# OctoMap 서버 실행 (Gazebo 실행 후)
-ros2 launch octomap_server octomap_scout_ignition.launch.py
-
-# 해상도/범위 조정
-ros2 launch octomap_server octomap_scout_ignition.launch.py resolution:=0.1 max_range:=15.0
-
-# 지도 저장
-ros2 run octomap_server octomap_saver_node --ros-args -p octomap_path:=/path/to/map.bt
-```
-
 ## Architecture
 
 ### 서비스 기반 환경 인터페이스
@@ -217,7 +151,6 @@ Gazebo Ouster RGL
   → /hunter_se/pointcloud/points (Gz IgnitionTopic)
   → ros_gz_bridge
   → /ouster/points (ROS2 PointCloud2)
-  → pointcloud_to_laserscan
   → /scan (ROS2 LaserScan, 360°)
   → environment.py (76D 관측)
 ```
@@ -232,7 +165,6 @@ Gazebo Ouster RGL
 | `hyperparameters_*.yaml` | 알고리즘별 네트워크 구조, 학습률 |
 | `train_*_config.yaml` | 학습 파라미터 (최대 스텝, 워밍업, 평가 주기) |
 | `test_tqc_config.yaml` | 테스트 파라미터 (시작/목표 쌍, 에피소드 수) |
-| `obstacle_catalog.yaml` | 장애물 카탈로그 |
 
 주요 학습 파라미터:
 - 최대 타임스텝: 1,000,000
@@ -295,7 +227,6 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, Version: {to
 |------|------|
 | 서비스 타임아웃 | Gazebo와 DRL 환경 노드가 모두 실행 중인지 확인 |
 | `/odometry` 없음 | ros_gz_bridge 실행 여부, bridge config 확인 |
-| `/scan` 없음 | `pointcloud_to_laserscan` 노드 실행 여부 확인 |
 | 시뮬레이션 RTF 저하 | RGL GPU 플러그인 경로 확인 (`IGN_GAZEBO_SYSTEM_PLUGIN_PATH`) |
 | rosdep 충돌 | `rosdep install --from-paths src -yi --rosdistro humble --skip-keys='libgraphicsmagick++1-dev graphicsmagick-libmagick-dev-compat'` |
 | Docker DDS 통신 | `--network host` + `RMW_IMPLEMENTATION` + `CYCLONEDDS_URI` 설정 |
@@ -308,14 +239,7 @@ python -c "import torch; print(f'CUDA: {torch.cuda.is_available()}, Version: {to
 | `drl_agent_interfaces` | `src/drl_agent_interfaces/` | ROS2 서비스/액션 정의 |
 | `hunter_se_gazebo` | `src/hunter_se_gazebo/` | Hunter SE URDF, Gazebo launch, worlds |
 | `hunter_se_unity` | `src/hunter_se_unity/` | Unity 시뮬레이션 에셋 |
-| `agilex_scout` | `src/scout_nav2/agilex_scout/` | Scout v2 URDF, Gazebo launch |
-| `scout_nav2` | `src/scout_nav2/scout_nav2/` | Nav2 설정, 맵, 파라미터 |
 | `ouster_description` | `src/ouster_simulation/ouster_description/` | OS1-64 LiDAR (RGL 플러그인) |
-| `pointcloud_to_laserscan` | `src/pointcloud_to_laserscan/` | PointCloud2 → LaserScan 변환 |
-| `ugv_gazebo_sim` | `src/ugv_gazebo_sim/` | Scout/Bunker Gazebo 모델 메시 |
-| `octomap_mapping` | `src/octomap_mapping/` | 3D 점유 지도 (OctoMap) |
-| `dataset_builder` | `src/dataset_builder/` | Offline RL 데이터셋 수집 |
-| `LIO-SAM` | `src/LIO-SAM/` | LiDAR-Inertial SLAM |
 | `aws-robomaker-hospital-world` | `src/aws-robomaker-hospital-world/` | Hospital 시뮬레이션 환경 |
 | `aws-robomaker-bookstore-world` | `src/aws-robomaker-bookstore-world/` | Bookstore 시뮬레이션 환경 |
 | `aws-robomaker-small-house-world` | `src/aws-robomaker-small-house-world/` | Small House 시뮬레이션 환경 |
