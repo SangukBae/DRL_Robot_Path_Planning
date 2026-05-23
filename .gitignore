@@ -1,0 +1,27 @@
+build/
+install/
+log/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/data/
+**/maps/
+CLAUDE.md
+Unguided Self-exploration in Narrow Spaces with Safety Region Enhanced Reinforcement Learning for Ackermann-steering Robots
+ros2_ws/src/aws-robomaker-bookstore-world/models/
+ros2_ws/src/aws-robomaker-hospital-world/fuel_models/
+ros2_ws/src/aws-robomaker-hospital-world/models/
+ros2_ws/src/aws-robomaker-small-house-world/models/
+ros2_ws/src/aws-robomaker-small-warehouse-world/models/
+ros2_ws/src/drl_obstacle_assets
+ros2_ws/src/drl_agent/runtime/
+ros2_ws/src/dataset_builder/
+ros2_ws/src/depth_d435/
+ros2_ws/src/depth_d455/
+ros2_ws/src/octomap_mapping/
+ros2_ws/src/scout_nav2/
+ros2_ws/src/ugv_gazebo_sim/
+ros2_ws/src/lio_sam/
+ros2_ws/src/lightsfm/
+ros2_ws/src/people_msgs/
+ros2_ws/src/hunav_gazebo_fortress_wrapper/
