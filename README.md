@@ -61,23 +61,7 @@ ros2 launch hunter_se_gazebo hunter_se_validation_empty.launch.py
 
 > **RGL LiDAR**: `~/DRL_Robot_Path_Planning/third_party/rgl/RGLGazeboPlugin/install` 에 설치 필요.
 
-### 2. AWS World 단독 실행
-
-```bash
-# Hospital World
-ros2 launch aws_robomaker_hospital_world hospital_ignition.launch.py
-
-# Bookstore World
-ros2 launch aws_robomaker_bookstore_world bookstore_ignition.launch.py
-
-# Small House World
-ros2 launch aws_robomaker_small_house_world small_house_ignition.launch.py
-
-# Small Warehouse World
-ros2 launch aws_robomaker_small_warehouse_world small_warehouse_ignition.launch.py
-```
-
-### 3. DRL 학습 (커리큘럼 — 권장)
+### 2. DRL 학습 (커리큘럼 — 권장)
 
 터미널을 3개 사용한다.
 
@@ -94,17 +78,17 @@ ros2 run drl_agent train_tqc_curriculum_agent.py
 ```
 
 커리큘럼 진급 상황과 에피소드 보상은 아래 파일에 기록된다:
-- `results/curriculum_episode_rewards_<run>.csv` — 에피소드별 스테이지·보상·성공 여부
-- `results/curriculum_state.json` — 현재 스테이지·글로벌 스텝 (학습 재개용)
+- `<run_dir>/logs/curriculum_episode_rewards_<run>.csv` — 에피소드별 스테이지·보상·성공 여부
+- `<run_dir>/logs/curriculum_state.json` — 현재 스테이지·글로벌 스텝 (학습 재개용)
 
 재개 시 `load_model: true`를 `train_tqc_config.yaml`에 설정하면 모델·리플레이 버퍼·커리큘럼 상태가 모두 복원된다.
 
 ```bash
-# TensorBoard 모니터링
-tensorboard --logdir ros2_ws/src/drl_agent/results/
+# TensorBoard 모니터링 (run_dir 기본값: runtime/tqc_state_80_nstactics_5_obstacle_11)
+tensorboard --logdir <run_dir>/logs
 ```
 
-### 4. DRL 학습 (단일 알고리즘 — 대안)
+### 3. DRL 학습 (단일 알고리즘 — 대안)
 
 ```bash
 # [터미널 2] 표준 환경 노드
@@ -118,7 +102,7 @@ ros2 run drl_agent train_sac_agent.py      # SAC
 ros2 run drl_agent train_a3c_agent.py      # A3C
 ```
 
-### 5. 테스트
+### 4. 테스트
 
 ```bash
 ros2 launch drl_agent test_tqc.launch.py
@@ -143,7 +127,7 @@ Environment Node (environment_curriculum.py)   Agent Node (train_tqc_curriculum_
 ### DRL 상태/액션 공간
 
 - **State (87D)**:
-  - `[0:80]` — LiDAR 80 빈 (전방위 360°), 빈당 최근접 장애물 거리 [m]
+  - `[0:80]` — LiDAR 80 빈 (전방 180°, obs_state), 빈당 최근접 장애물 거리 [m]
   - `[80]` — 목표까지 거리 [m]
   - `[81]` — 목표 방향 오차 θ [rad]
   - `[82]` — 이전 액션 r (웨이포인트 거리), 정규화
@@ -172,7 +156,6 @@ RL policy → /cmd_vel (twist) → hunter_se_cmd_prefilter → /cmd_vel_filtered
 |------|------|---------|
 | `environment.py` | Ignition Fortress 기본 학습 | `ros_gz_interfaces/SetEntityPose` |
 | `environment_curriculum.py` | 커리큘럼 학습 (권장) | 동일 |
-| `environment_360.py` | Classic Gazebo (레거시) | `gazebo_msgs/SetEntityState` |
 
 ### 커리큘럼 학습
 
@@ -181,10 +164,10 @@ RL policy → /cmd_vel (twist) → hunter_se_cmd_prefilter → /cmd_vel_filtered
 | 스테이지 | 이름 | 정적 | 동적 | 사람 |
 |---------|------|------|------|------|
 | 0 | empty | 0 | 0 | 0 |
-| 1 | static_only | 2 | 0 | 0 |
-| 2 | slow_dynamic | 1 | 2 | 0 |
-| 3 | mixed_medium | 1 | 2 | 2 |
-| 4 | full_complexity | 1 | 4 | 4 |
+| 1 | static_only | 3 | 0 | 0 |
+| 2 | slow_dynamic | 2 | 3 | 1 |
+| 3 | mixed_medium | 2 | 4 | 4 |
+| 4 | full_complexity | 3 | 6 | 5 |
 
 진급 조건: `pass_eval_success_rate` / `pass_eval_collision_rate` 임계값을 `consecutive_eval_passes`회 연속 통과.
 
@@ -225,8 +208,9 @@ Gazebo Ouster RGL
 
 주요 학습 파라미터:
 - 최대 타임스텝: 1,000,000
-- 워밍업 스텝: 25,000
-- 평가 주기: 5,000 스텝
+- 워밍업 스텝: 6,000 (5 Hz 기준)
+- 평가 주기: 6,000 스텝 (5 Hz 기준)
+- 커리큘럼 스테이지 최소 스텝: 15,000
 - 목표 도달 임계값: 0.42 m
 - 충돌 임계값: 직사각형 안전 영역 (전방 0.476 m, 후방 0.410 m, 좌우 0.322 m)
 
@@ -265,7 +249,7 @@ xhost +local:
 | 패키지 | 경로 | 설명 |
 |--------|------|------|
 | `drl_agent` | `src/drl_agent/` | DRL 환경, 정책, 학습/테스트 스크립트 |
-| `drl_agent_interfaces` | `src/drl_agent_interfaces/` | ROS2 서비스/액션 정의 |
+| `drl_agent_interfaces` | `src/drl_agent_interfaces/` | ROS2 서비스/액션/메시지 정의 |
 | `hunter_se_gazebo` | `src/hunter_se_gazebo/` | Hunter SE URDF, Gazebo launch, worlds |
 | `hunter_se_unity` | `src/hunter_se_unity/` | Unity 시뮬레이션 에셋 |
 | `ouster_description` | `src/ouster_simulation/ouster_description/` | OS1-64 LiDAR (RGL 플러그인) |
