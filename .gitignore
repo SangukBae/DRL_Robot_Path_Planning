@@ -25,3 +25,5 @@ ros2_ws/src/LIO-SAM/
 ros2_ws/src/lightsfm/
 ros2_ws/src/people_msgs/
 ros2_ws/src/hunav_gazebo_fortress_wrapper/
+__pycache__/
+*.pyc
