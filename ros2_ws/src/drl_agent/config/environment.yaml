@@ -7,8 +7,8 @@ environment:
   goal_obstacle_lower: -8.5
   goal_obstacle_upper: 8.5
   num_of_dynamic_obstacles: 7
-  num_of_static_obstacles: 1
-  num_of_humans: 4    # cylinder-based human proxies; managed by environment.py
+  num_of_static_obstacles: 3
+  num_of_humans: 0    # disable human obstacles for standard environment training
   environment_state_dim: 80
   agent_state_dim: 7
   action_dim: 2
@@ -87,7 +87,7 @@ environment:
 threshold_parameters:
   goal_threshold: 0.42
   collision_threshold: 0.7
-  time_delta: 0.3
+  time_delta: 0.1  # 10 Hz RL/environment step
   inter_entity_distance: 2.5
   lidar_max_range: 50
 

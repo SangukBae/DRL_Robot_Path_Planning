@@ -520,52 +520,70 @@ class Agent(object):
         # Replay buffer — enables full off-policy resume
         self.replay_buffer.save(f"{directory}/{filename}_replay_buffer")
     
-    def load(self, directory, filename):
+    def load(
+        self,
+        directory,
+        filename,
+        *,
+        load_optimizer_state=True,
+        load_replay_buffer=True,
+    ):
         import os, torch
 
         maploc = self.device
 
+        def _torch_load(path):
+            try:
+                return torch.load(path, map_location=maploc, weights_only=True)
+            except TypeError:
+                # Older PyTorch versions do not support weights_only.
+                return torch.load(path, map_location=maploc)
+
         # Actor
         p = f"{directory}/{filename}_actor.pth"
         if os.path.exists(p):
-            self.actor.load_state_dict(torch.load(p, map_location=maploc))
-        p = f"{directory}/{filename}_actor_optimizer.pth"
-        if os.path.exists(p):
-            self.actor_optimizer.load_state_dict(torch.load(p, map_location=maploc))
+            self.actor.load_state_dict(_torch_load(p))
+        if load_optimizer_state:
+            p = f"{directory}/{filename}_actor_optimizer.pth"
+            if os.path.exists(p):
+                self.actor_optimizer.load_state_dict(_torch_load(p))
 
         # Critic
         p = f"{directory}/{filename}_critic.pth"
         if os.path.exists(p):
-            self.critic.load_state_dict(torch.load(p, map_location=maploc))
+            self.critic.load_state_dict(_torch_load(p))
         p = f"{directory}/{filename}_critic_target.pth"
         if os.path.exists(p):
-            self.critic_target.load_state_dict(torch.load(p, map_location=maploc))
-        p = f"{directory}/{filename}_critic_optimizer.pth"
-        if os.path.exists(p):
-            self.critic_optimizer.load_state_dict(torch.load(p, map_location=maploc))
+            self.critic_target.load_state_dict(_torch_load(p))
+        if load_optimizer_state:
+            p = f"{directory}/{filename}_critic_optimizer.pth"
+            if os.path.exists(p):
+                self.critic_optimizer.load_state_dict(_torch_load(p))
 
         # Checkpoint actor
         p = f"{directory}/{filename}_checkpoint_actor.pth"
         if os.path.exists(p):
-            self.checkpoint_actor.load_state_dict(torch.load(p, map_location=maploc))
+            self.checkpoint_actor.load_state_dict(_torch_load(p))
 
         # Entropy coefficient
         if self.ent_coef_auto:
             p = f"{directory}/{filename}_log_ent_coef.pth"
             if os.path.exists(p):
-                loaded = torch.load(p, map_location=maploc)
+                loaded = _torch_load(p)
                 # <<< 핵심: 텐서 객체를 교체하지 말고 data만 복사 >>>
                 self.log_ent_coef.data.copy_(loaded.to(maploc).data)
-            p = f"{directory}/{filename}_ent_coef_optimizer.pth"
-            if os.path.exists(p):
-                self.ent_coef_optimizer.load_state_dict(torch.load(p, map_location=maploc))
+            if load_optimizer_state:
+                p = f"{directory}/{filename}_ent_coef_optimizer.pth"
+                if os.path.exists(p):
+                    self.ent_coef_optimizer.load_state_dict(_torch_load(p))
         else:
             p = f"{directory}/{filename}_ent_coef_tensor.pth"
             if os.path.exists(p):
-                loaded = torch.load(p, map_location=maploc)
+                loaded = _torch_load(p)
                 self.ent_coef_tensor = loaded.to(maploc).detach()
 
         # Replay buffer
-        buf_path = f"{directory}/{filename}_replay_buffer"
-        if os.path.isfile(buf_path + ".npz"):
-            self.replay_buffer.load(buf_path)
+        if load_replay_buffer:
+            buf_path = f"{directory}/{filename}_replay_buffer"
+            if os.path.isfile(buf_path + ".npz"):
+                self.replay_buffer.load(buf_path)

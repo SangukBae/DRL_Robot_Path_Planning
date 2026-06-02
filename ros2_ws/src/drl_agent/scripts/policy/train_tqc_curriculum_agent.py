@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Curriculum-learning subclass of TrainTQC.
+"""Curriculum-learning subclass of TrainTQCBase.
 
-No existing file is modified. This file only adds:
+Extends TrainTQCBase (train_tqc_base.py) with:
   - Loading curriculum_settings from train_tqc_curriculum_config.yaml
   - evaluate_and_print() returns success / collision / timeout rates (dict)
   - Automatic stage advancement via /gym_node/set_parameters
@@ -22,11 +22,11 @@ import time
 import json
 import pickle
 import random
+from datetime import datetime
 
 import numpy as np
 import torch
 import rclpy
-
 from rcl_interfaces.srv import GetParameters, SetParameters
 from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
 
@@ -39,20 +39,42 @@ sys.path.insert(
     0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils")
 )
 
-from train_tqc_agent import TrainTQC   # base class — not modified
+from train_tqc_base import TrainTQCBase
 from file_manager import load_yaml
 
 
-class TrainTQCCurriculum(TrainTQC):
+class TrainTQCCurriculum(TrainTQCBase):
     """TQC trainer with automatic curriculum stage advancement.
 
-    Inherits all setup, training loop, and model I/O from TrainTQC.
+    Inherits all setup and model I/O from TrainTQCBase.
     Adds:
       1. eval metrics (success / collision / timeout rates)
       2. stage-pass checking (consecutive evals threshold)
       3. ROS2 set_parameters call to push new stage to EnvironmentCurriculum
       4. curriculum-aware CSV log
     """
+
+    def _init_csv_loggers(self):
+        """Create only the reduced CSV logs used by curriculum training."""
+        self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._reward_csv = None
+        self._step_csv = None
+        self._driving_csv = os.path.join(
+            self.log_dir, f"episode_driving_{self._csv_run_tag}.csv"
+        )
+
+        driving_header = [
+            "episode", "global_t", "steps",
+            "mean_v_norm", "mean_abs_w_norm",
+            "initial_goal_dist_m",
+            "min_lidar_m", "mean_min_lidar_m", "mean_gazebo_rtf",
+        ]
+        with open(self._driving_csv, "w", newline="") as f:
+            csv.writer(f).writerow(driving_header)
+
+        self.get_logger().info("Episode rewards CSV: disabled")
+        self.get_logger().info(f"Episode driving CSV: {self._driving_csv}")
+        self.get_logger().info("Policy step CSV: disabled")
 
     def __init__(self):
         super().__init__()   # loads train_tqc_config.yaml, builds agent, etc.
@@ -89,6 +111,9 @@ class TrainTQCCurriculum(TrainTQC):
         self._resume_epoch           = 1
         self._partial_ep_timesteps   = 0
         self._partial_ep_reward      = 0.0
+        self._stage_restart_from_weights = False
+        self._stage_restart_source_prefix = ""
+        self._stage_restart_weights_dir = ""
 
         # ROS2 clients for the gym_node (EnvironmentCurriculum)
         # Node is named "gym_node" — matches Environment.__init__("gym_node")
@@ -107,9 +132,9 @@ class TrainTQCCurriculum(TrainTQC):
         with open(self._curriculum_reward_csv, "w", newline="") as f:
             csv.writer(f).writerow([
                 "episode", "global_t", "steps",
-                "total_reward", "mean_reward",
+                "total_reward",
                 "goal_reached", "collision", "timeout", "eval_cut",
-                "final_goal_dist_m", "curriculum_stage",
+                "final_goal_dist_m", "curriculum_stage", "mean_gazebo_rtf",
             ])
         self.get_logger().info(
             f"[Curriculum] Episode log (with stage): {self._curriculum_reward_csv}"
@@ -122,7 +147,35 @@ class TrainTQCCurriculum(TrainTQC):
             f"min_eps={self.cur_min_stage_eps} "
             f"consec={self.cur_consec_passes}"
         )
-        if self.load_model:
+        self.declare_parameter("resume_weight_prefix", "")
+        self.declare_parameter("resume_stage", -1)
+        self.declare_parameter("resume_weights_dir", "")
+        resume_weight_prefix = (
+            self.get_parameter("resume_weight_prefix")
+            .get_parameter_value().string_value.strip()
+        )
+        resume_stage = int(
+            self.get_parameter("resume_stage").get_parameter_value().integer_value
+        )
+        resume_weights_dir = (
+            self.get_parameter("resume_weights_dir")
+            .get_parameter_value().string_value.strip()
+        )
+
+        if resume_weight_prefix and resume_stage < 0:
+            raise ValueError(
+                "resume_stage must be >= 0 when resume_weight_prefix is provided."
+            )
+        if resume_stage >= 0 and not resume_weight_prefix:
+            raise ValueError(
+                "resume_weight_prefix must be provided when resume_stage is set."
+            )
+
+        if resume_weight_prefix:
+            self._start_from_specific_weights(
+                resume_weight_prefix, resume_stage, resume_weights_dir
+            )
+        elif self.load_model:
             self._load_curriculum_state()
 
     # ------------------------------------------------------------------ #
@@ -262,6 +315,46 @@ class TrainTQCCurriculum(TrainTQC):
             )
             return False
 
+    def _start_from_specific_weights(
+        self, weight_prefix: str, stage: int, weights_dir: str
+    ):
+        """Load a specific model prefix and restart curriculum from a user stage."""
+        weights_dir = os.path.expanduser(weights_dir) if weights_dir else self.pytorch_models_dir
+        actor_path = os.path.join(weights_dir, f"{weight_prefix}_actor.pth")
+        if not os.path.isfile(actor_path):
+            raise FileNotFoundError(
+                f"Specified model prefix not found: {actor_path}"
+            )
+
+        self.rl_agent.load(
+            weights_dir,
+            weight_prefix,
+            load_optimizer_state=False,
+            load_replay_buffer=False,
+        )
+
+        restart_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.file_name = f"{weight_prefix}_stage{int(stage)}_restart_{restart_tag}"
+        self._curriculum_stage = int(stage)
+        self._stage_start_step = self.timesteps_before_training
+        self._stage_start_ep = 0
+        self._consecutive_pass_count = 0
+        self._total_episodes = 0
+        self._resume_global_t = self.timesteps_before_training
+        self._resume_loaded = False
+        self._resume_epoch = 1
+        self._partial_ep_timesteps = 0
+        self._partial_ep_reward = 0.0
+        self._last_global_t = self._resume_global_t
+        self._stage_restart_from_weights = True
+        self._stage_restart_source_prefix = weight_prefix
+        self._stage_restart_weights_dir = weights_dir
+
+        self.get_logger().info(
+            f"[Curriculum] Loaded explicit model prefix '{weight_prefix}' "
+            f"from {weights_dir} and will restart from stage {stage}."
+        )
+
     def _fetch_num_stages(self) -> int:
         """Query curriculum_num_stages from the running gym_node.
 
@@ -314,6 +407,51 @@ class TrainTQCCurriculum(TrainTQC):
             metrics.get("success_rate",   0.0) >= required_sr
             and metrics.get("collision_rate", 1.0) <= required_cr
         )
+
+    def _write_episode_logs(
+        self,
+        ep_num: int,
+        global_t: int,
+        ep_timesteps: int,
+        ep_total_reward: float,
+        state,
+        info,
+        episode_done: bool,
+        episode_limit: bool,
+        ep_v_buf: list,
+        ep_w_buf: list,
+        ep_min_lidar_buf: list,
+        ep_gazebo_rtf_buf: list,
+        ep_initial_goal_dist: float,
+        eval_cut: bool = False,
+    ):
+        """Write the reduced episode-driving log and return the result label."""
+        goal_reached = bool(episode_done and info) and not eval_cut
+        collision = bool(episode_done and (not goal_reached)) and not eval_cut
+
+        if goal_reached:
+            result = "GOAL"
+        elif collision:
+            result = "COLLISION"
+        elif eval_cut:
+            result = "EVAL_CUT"
+        else:
+            result = "TIMEOUT"
+
+        if ep_v_buf:
+            with open(self._driving_csv, "a", newline="") as _f:
+                csv.writer(_f).writerow([
+                    ep_num, global_t, ep_timesteps,
+                    round(float(np.mean(ep_v_buf)), 4),
+                    round(float(np.mean(np.abs(ep_w_buf))), 4),
+                    round(ep_initial_goal_dist, 4),
+                    round(float(np.min(ep_min_lidar_buf)), 4),
+                    round(float(np.mean(ep_min_lidar_buf)), 4),
+                    round(float(np.mean(ep_gazebo_rtf_buf)), 4)
+                    if ep_gazebo_rtf_buf else float("nan"),
+                ])
+
+        return result
 
     # ------------------------------------------------------------------ #
     #  Override: evaluate_and_print → returns dict of metrics              #
@@ -410,7 +548,21 @@ class TrainTQCCurriculum(TrainTQC):
         # regardless of which config file the environment was launched with.
         num_stages = self._fetch_num_stages()
         self._curriculum_stage = max(0, min(self._curriculum_stage, num_stages - 1))
-        if self._resume_loaded:
+        if self._stage_restart_from_weights:
+            self.get_logger().info(
+                f"[Curriculum] Restarting from explicit weights "
+                f"'{self._stage_restart_source_prefix}' at stage "
+                f"{self._curriculum_stage}."
+            )
+            if not self._set_curriculum_stage(self._curriculum_stage):
+                raise RuntimeError(
+                    "[Curriculum] Cannot push requested restart stage to gym_node. "
+                    "Make sure environment_curriculum.py is running and "
+                    "/gym_node/set_parameters is reachable."
+                )
+            self._stage_start_step = self._resume_global_t
+            self._stage_start_ep = self._total_episodes
+        elif self._resume_loaded:
             self.get_logger().info(
                 f"[Curriculum] Resuming curriculum from stage "
                 f"{self._curriculum_stage} at global step {self._resume_global_t}."
@@ -455,6 +607,7 @@ class TrainTQCCurriculum(TrainTQC):
         _ep_v_buf:          list = []
         _ep_w_buf:          list = []
         _ep_min_lidar_buf:  list = []
+        _ep_gazebo_rtf_buf: list = []
         _state0 = np.asarray(state, dtype=np.float32).ravel()
         _ep_initial_goal_dist = float(_state0[ENV_DIM])
         if next_eval_t is not None and self._resume_global_t > 0:
@@ -471,16 +624,9 @@ class TrainTQCCurriculum(TrainTQC):
                 )
                 training_enabled_logged = True
 
-            _s_np         = np.asarray(state, dtype=np.float32).ravel()
-            _lidar_before = _s_np[:ENV_DIM]
-            _goal_before  = float(_s_np[ENV_DIM])
-            _theta_before = float(_s_np[ENV_DIM + 1])
-
             if use_policy:
-                action_source = "policy"
                 action = self.rl_agent.select_action(state)
             else:
-                action_source = "warmup"
                 action = self.sample_action_space()
 
             next_state, reward, ep_finished, info = self.step(action)
@@ -503,23 +649,8 @@ class TrainTQCCurriculum(TrainTQC):
             _ep_v_buf.append(float(action[0]))
             _ep_w_buf.append(float(action[1]))
             _ep_min_lidar_buf.append(float(np.min(_s_after[:ENV_DIM])))
-
-            # Step-level CSV (same schema as base class)
-            with open(self._step_csv, "a", newline="") as _f:
-                csv.writer(_f).writerow([
-                    ep_num, t, ep_timesteps, action_source,
-                    round(float(action[0]), 6), round(float(action[1]), 6),
-                    round(_goal_before, 6),
-                    round(float(_s_after[ENV_DIM]), 6),
-                    round(_theta_before, 6),
-                    round(float(_s_after[ENV_DIM + 1]), 6),
-                    round(float(np.min(_lidar_before)), 6),
-                    round(float(np.min(_s_after[:ENV_DIM])), 6),
-                    round(float(np.mean(_lidar_before)), 6),
-                    round(float(np.mean(_s_after[:ENV_DIM])), 6),
-                    round(float(reward), 6),
-                    int(bool(ep_finished)), int(bool(info)),
-                ])
+            if np.isfinite(self._latest_gazebo_rtf):
+                _ep_gazebo_rtf_buf.append(float(self._latest_gazebo_rtf))
 
             if train_ready and not self.use_checkpoints:
                 self.rl_agent.train()
@@ -537,6 +668,7 @@ class TrainTQCCurriculum(TrainTQC):
                     episode_done=ep_finished, episode_limit=episode_limit,
                     ep_v_buf=_ep_v_buf, ep_w_buf=_ep_w_buf,
                     ep_min_lidar_buf=_ep_min_lidar_buf,
+                    ep_gazebo_rtf_buf=_ep_gazebo_rtf_buf,
                     ep_initial_goal_dist=_ep_initial_goal_dist,
                     eval_cut=force_eval_cut,
                 )
@@ -550,11 +682,12 @@ class TrainTQCCurriculum(TrainTQC):
                     csv.writer(_f).writerow([
                         ep_num, t, ep_timesteps,
                         round(ep_total_reward, 4),
-                        round(ep_total_reward / max(ep_timesteps, 1), 4),
                         int(goal_reached), int(collision), int(timeout),
                         int(force_eval_cut),
                         round(final_dist, 4),
                         self._curriculum_stage,
+                        round(float(np.mean(_ep_gazebo_rtf_buf)), 4)
+                        if _ep_gazebo_rtf_buf else float("nan"),
                     ])
 
                 self._total_episodes = ep_num
@@ -621,6 +754,7 @@ class TrainTQCCurriculum(TrainTQC):
                 _ep_v_buf.clear()
                 _ep_w_buf.clear()
                 _ep_min_lidar_buf.clear()
+                _ep_gazebo_rtf_buf.clear()
                 _ep_initial_goal_dist = float(
                     np.asarray(state, dtype=np.float32).ravel()[ENV_DIM]
                 )

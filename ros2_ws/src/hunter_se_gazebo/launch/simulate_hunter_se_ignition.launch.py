@@ -280,7 +280,7 @@ def generate_launch_description():
             "angle_min": -3.14159265,  # full 360°
             "angle_max":  3.14159265,
             "angle_increment": 0.00306796,  # ≈ 2π/2048 ≈ 0.176°
-            "scan_time": 0.1,          # 10 Hz
+            "scan_time": 0.05,         # 20 Hz
             # Match OS1-128 minimum range; farther ranges are still capped to the
             # RL observation horizon below.
             "range_min": 0.3,

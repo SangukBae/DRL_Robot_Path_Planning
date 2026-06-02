@@ -50,7 +50,7 @@ install(
     scripts/policy/test_td7_agent.py
     scripts/policy/test_tqc_agent.py
     scripts/policy/train_a3c_agent.py
-    scripts/policy/train_tqc_agent.py
+    scripts/policy/train_tqc_base.py
     scripts/policy/train_tqc_ieqn_agent.py
     scripts/policy/sb3_sac_agent.py
     scripts/policy/sb3_td3_agent.py
@@ -66,6 +66,10 @@ install(
     scripts/environment/environment_360.py
     scripts/environment/environment_curriculum.py
     scripts/policy/train_tqc_curriculum_agent.py
+    scripts/policy/train_td7_curriculum_agent.py
+    scripts/policy/train_sac_curriculum_agent.py
+    scripts/policy/train_tqc_ieqn_curriculum_agent.py
+    scripts/policy/train_a3c_curriculum_agent.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

@@ -3,15 +3,15 @@ train_settings:
   seed: 0
 
   # 환경/롤아웃
-  max_episode_steps: 300          # 5 Hz(time_delta=0.2)에서 기존 60초 episode 길이 유지
-  max_timesteps: 1000000           # 전체 학습 스텝 수
+  max_episode_steps: 600          # 10 Hz(time_delta=0.1)에서 기존 60초 episode 길이 유지
+  max_timesteps: 2000000           # 10 Hz 전환으로 step당 시간이 절반이므로 2배 보정
 
   # 모델 로드/체크포인트/평가
-  load_model: false                # 기존 모델 이어서 학습할 때 true
+  load_model: true                # 기존 모델 이어서 학습할 때 true
   use_checkpoints: false           # TQC는 기본적으로 step-wise off-policy 업데이트 권장
-  eval_freq: 6000                  # 5 Hz에서 기존 평가 시간 간격에 가깝게 조정
+  eval_freq: 12000                 # 10 Hz에서 기존 평가 시간 간격에 가깝게 조정
   eval_eps: 10                     # 평가 에피소드 수
-  timesteps_before_training: 6000 # 5 Hz에서 워밍업 실시간 길이를 일부 보전
+  timesteps_before_training: 12000 # 10 Hz에서 워밍업 실시간 길이를 일부 보전
 
   # 로그/파일명 접두사
   base_file_name: "tqc_agent"

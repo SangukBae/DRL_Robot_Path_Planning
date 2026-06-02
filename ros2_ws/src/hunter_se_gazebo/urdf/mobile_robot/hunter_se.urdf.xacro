@@ -131,7 +131,7 @@
     <xacro:os1_64 parent="mobile_robot_base"
                   name="ouster"
                   channels="128"
-                  hz="10"
+                  hz="20"
                   samples="2048"
                   min_range="0.3"
                   max_range="120.0"
