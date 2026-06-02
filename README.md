@@ -36,6 +36,9 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 # 3. 소스
 source install/setup.bash
+
+# 4.
+xhost +local:
 ```
 
 ---
