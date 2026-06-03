@@ -275,7 +275,7 @@ class TrainTQCBase(EnvInterface):
         else:
             package_root = self._resolve_drl_agent_source_root()
             base_run_dir = os.path.join(
-                package_root, "runtime", "tqc_state_80_nstactics_5_obstacle_11"
+                package_root, "runtime", "tqc"
             )
 
         self.run_dir             = base_run_dir

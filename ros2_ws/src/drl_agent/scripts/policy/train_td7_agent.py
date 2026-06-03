@@ -158,7 +158,7 @@ class TrainTD7(EnvInterface):
             base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
         else:
             package_root = self._resolve_drl_agent_source_root()
-            base_run_dir = os.path.join(package_root, "runtime", "td7_state_80_nstactics_5_obstacle_11")
+            base_run_dir = os.path.join(package_root, "runtime", "td7")
 
         self.run_dir = base_run_dir
         self.pytorch_models_dir = os.path.join(self.run_dir, "pytorch_models")

@@ -27,7 +27,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py
 | `<run_dir>/final_models/` | 학습 종료 시 최종 모델 |
 | `<run_dir>/results/` | 평가 결과 (.npy) |
 
-> `run_dir` 기본값: `runtime/tqc_state_80_nstactics_5_obstacle_11`
+> `run_dir` 기본값: `runtime/tqc`
 
 ### TensorBoard 모니터링
 

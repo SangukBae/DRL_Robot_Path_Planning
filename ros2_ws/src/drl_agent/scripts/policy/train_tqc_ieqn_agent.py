@@ -220,7 +220,8 @@ class TrainTQC_IEQN(EnvInterface):
         elif os.environ.get("DRL_AGENT_RUN_DIR", "").strip():
             base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
         else:
-            base_run_dir = os.path.join(os.path.expanduser("~"), ".ros", "drl_agent", "temp_tqc_ieqn_avel_314_state_60_nstactics_5")
+            package_root = self._resolve_drl_agent_source_root()
+            base_run_dir = os.path.join(package_root, "runtime", "tqc_ieqn")
 
         self.run_dir = base_run_dir
 

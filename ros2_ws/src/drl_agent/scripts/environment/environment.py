@@ -1309,7 +1309,7 @@ class Environment(Node):
             base_run_dir = os.path.join(
                 package_root,
                 "runtime",
-                "tqc_state_80_nstactics_5_obstacle_11",
+                "tqc",
             )
         self._env_log_dir = os.path.join(base_run_dir, "logs")
         os.makedirs(self._env_log_dir, exist_ok=True)
