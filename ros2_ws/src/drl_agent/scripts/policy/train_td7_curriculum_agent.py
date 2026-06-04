@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from train_td7_agent import TrainTD7
 from file_manager import load_yaml
+from episode_metrics import EpisodeMetrics, PaperMetricsCSV
 
 
 class TrainTD7Curriculum(TrainTD7):
@@ -57,7 +58,8 @@ class TrainTD7Curriculum(TrainTD7):
                           "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m"]
         driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
                           "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
-                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut"]
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
+                          "mean_gazebo_rtf"]
         step_header    = ["episode", "global_t", "episode_step", "action_source",
                           "action_0_norm", "action_1_norm",
                           "goal_dist_before_m", "goal_dist_after_m",
@@ -120,10 +122,25 @@ class TrainTD7Curriculum(TrainTD7):
                 "episode", "global_t", "steps",
                 "total_reward", "mean_reward",
                 "goal_reached", "collision", "timeout", "eval_cut",
-                "final_goal_dist_m", "curriculum_stage",
+                "final_goal_dist_m", "curriculum_stage", "mean_gazebo_rtf",
             ])
         self.get_logger().info(
             f"[Curriculum] Episode log (with stage): {self._curriculum_reward_csv}"
+        )
+
+        # Paper metrics (SPL, path length, CTE, jerk, ...) → episode + eval CSVs
+        self.declare_parameter("near_collision_dist_m", 0.5)
+        self.declare_parameter("metric_time_delta", 0.1)
+        _ncd = self.get_parameter("near_collision_dist_m").get_parameter_value().double_value
+        _mdt = self.get_parameter("metric_time_delta").get_parameter_value().double_value
+        self._em = EpisodeMetrics(
+            self.environment_dim,
+            time_delta=_mdt if _mdt > 0 else 0.1,
+            near_collision_dist_m=_ncd if _ncd > 0 else 0.5,
+        )
+        self._paper = PaperMetricsCSV(self.log_dir, self._csv_run_tag)
+        self.get_logger().info(
+            f"[Metrics] Paper CSVs: {self._paper.episode_path} | {self._paper.eval_path}"
         )
         self.get_logger().info(
             f"[Curriculum] Trainer ready — "
@@ -312,12 +329,14 @@ class TrainTD7Curriculum(TrainTD7):
         ENV_DIM = self.environment_dim
         rewards, final_dists = [], []
         success_count = collision_count = timeout_count = 0
+        per_ep_metrics = []
 
         for _ in range(self.eval_eps):
             state    = self.reset()
             done     = False
             ep_steps = 0
             ep_rew   = 0.0
+            self._em.reset(state)
 
             while not done and ep_steps < self.max_episode_steps:
                 action = self.rl_agent.select_action(
@@ -326,12 +345,14 @@ class TrainTD7Curriculum(TrainTD7):
                     use_exploration=False,
                 )
                 state, reward, done, info = self.step(action)
+                self._em.update(state, action)
                 ep_rew   += reward
                 ep_steps += 1
 
             s = np.asarray(state, dtype=np.float32).ravel()
             final_dists.append(float(s[ENV_DIM]))
             rewards.append(ep_rew)
+            per_ep_metrics.append(self._em.compute(bool(done and info)))
 
             if done and info:
                 success_count   += 1
@@ -349,6 +370,14 @@ class TrainTD7Curriculum(TrainTD7):
             "timeout_rate":   timeout_count   / n,
             "mean_goal_dist": float(np.mean(final_dists)),
         }
+        # Aggregate paper metrics (SPL, CTE, jerk, ...) over the eval episodes
+        _agg = PaperMetricsCSV.aggregate(per_ep_metrics)
+        metrics.update(_agg)
+        self._paper.write_eval(
+            epoch=epoch, global_t=self._last_global_t,
+            stage=self._curriculum_stage, eval_eps=n,
+            base=metrics, metrics_mean=_agg,
+        )
 
         self.get_logger().info(
             f"Eval {n} eps | "
@@ -356,7 +385,8 @@ class TrainTD7Curriculum(TrainTD7):
             f"Success {metrics['success_rate']*100:.1f}% | "
             f"Collision {metrics['collision_rate']*100:.1f}% | "
             f"Timeout {metrics['timeout_rate']*100:.1f}% | "
-            f"GoalDist {metrics['mean_goal_dist']:.3f}m"
+            f"GoalDist {metrics['mean_goal_dist']:.3f}m | "
+            f"SPL {metrics['spl']:.3f} | CTE {metrics['mean_cross_track_error_m']:.3f}m"
         )
 
         evals.append(metrics["mean_reward"])
@@ -433,6 +463,8 @@ class TrainTD7Curriculum(TrainTD7):
 
         for t in range(self._resume_global_t + 1, self.max_timesteps + 1):
             self._last_global_t = t
+            if ep_timesteps == 0:
+                self._em.reset(state)   # new episode → reset paper-metric tracker
             train_ready = t >= self.timesteps_before_training
             use_policy  = t >  self.timesteps_before_training
             if train_ready and not training_enabled_logged:
@@ -463,6 +495,7 @@ class TrainTD7Curriculum(TrainTD7):
             self.rl_agent.replay_buffer.add(state, action, next_state, reward, done)
 
             state            = next_state
+            self._em.update(state, action)
             ep_total_reward += reward
             ep_timesteps    += 1
             self._partial_ep_timesteps = ep_timesteps
@@ -498,6 +531,13 @@ class TrainTD7Curriculum(TrainTD7):
                 goal_reached = bool(ep_finished and info) and not force_eval_cut
                 collision    = bool(ep_finished and not goal_reached) and not force_eval_cut
                 timeout      = bool(episode_limit and not ep_finished) and not force_eval_cut
+                if not force_eval_cut:   # skip partial (eval-interrupted) episodes
+                    self._paper.write_episode(
+                        episode=ep_num, global_t=t, stage=self._curriculum_stage,
+                        success=goal_reached, collision=collision, timeout=timeout,
+                        total_reward=ep_total_reward, steps=ep_timesteps,
+                        metrics=self._em.compute(goal_reached),
+                    )
 
                 if goal_reached:
                     result = "GOAL"
@@ -529,6 +569,7 @@ class TrainTD7Curriculum(TrainTD7):
                             round(float(np.min(_ep_min_lidar_buf)), 4),
                             round(float(np.mean(_ep_min_lidar_buf)), 4),
                             int(goal_reached), int(force_eval_cut),
+                            float("nan"),  # mean_gazebo_rtf: not tracked by TD7
                         ])
 
                 with open(self._curriculum_reward_csv, "a", newline="") as _f:
@@ -540,6 +581,7 @@ class TrainTD7Curriculum(TrainTD7):
                         int(force_eval_cut),
                         round(final_dist, 4),
                         self._curriculum_stage,
+                        float("nan"),  # mean_gazebo_rtf: not tracked by TD7
                     ])
 
                 if not force_eval_cut:

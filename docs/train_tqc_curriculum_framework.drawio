@@ -1,0 +1,212 @@
+<mxfile host="app.diagrams.net" version="24.0.0" type="device">
+  <diagram id="tqc_curriculum_framework" name="TQC Curriculum Framework">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1520" pageHeight="1180" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- ===================== BIG BLOCKS ===================== -->
+        <mxCell id="L" value="Simulation / ROS2 Environment" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;verticalAlign=top;fontSize=15;fontStyle=1;arcSize=3;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="300" height="990" as="geometry"/>
+        </mxCell>
+        <mxCell id="M" value="Recommended Auxiliary Prediction Insertion (proposed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;dashed=1;verticalAlign=top;fontSize=14;fontStyle=1;arcSize=3;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="440" y="80" width="300" height="990" as="geometry"/>
+        </mxCell>
+        <mxCell id="R" value="TQC Reinforcement Learning Model&#10;(train_tqc_curriculum_agent.py + tqc_agent.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontSize=15;fontStyle=1;arcSize=2;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="840" y="80" width="590" height="990" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== TQC: LEARNING REGION GUIDES ===================== -->
+        <mxCell id="critic_region" value="Critic Learning Region" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf3e7;fillOpacity=35;strokeColor=#5b7a3a;dashed=1;strokeWidth=2;verticalAlign=top;align=left;fontSize=12;fontStyle=1;spacingTop=8;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="860" y="520" width="540" height="190" as="geometry"/>
+        </mxCell>
+        <mxCell id="actor_region" value="Actor Learning Region" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;fillOpacity=25;strokeColor=#b85450;dashed=1;strokeWidth=2;verticalAlign=top;align=left;fontSize=12;fontStyle=1;spacingTop=8;spacingLeft=8;" vertex="1" parent="1">
+          <mxGeometry x="860" y="710" width="290" height="165" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== LEFT SUB-BLOCKS ===================== -->
+        <mxCell id="L1" value="Curriculum Stage Control" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="150" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="L2" value="Reset Episode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="290" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="L3" value="Step Simulation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="440" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="L4" value="Return Observation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="600" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="L5" value="Episode / Eval Signals&#10;(success / collision / timeout)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="70" y="780" width="240" height="56" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== MIDDLE SUB-BLOCKS ===================== -->
+        <mxCell id="M1" value="Temporal / State Feature Input" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="470" y="150" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="M2" value="Shared Encoder" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="470" y="300" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="M3" value="Auxiliary Prediction Head&#10;(future motion of humans / obstacles)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="470" y="450" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="M4" value="Auxiliary Loss" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="470" y="780" width="240" height="56" as="geometry"/>
+        </mxCell>
+        <mxCell id="M5" value="Future Labels from Simulation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="470" y="600" width="240" height="56" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== TQC: SECTION LABELS ===================== -->
+        <mxCell id="sec1" value="1) Rollout / action selection" style="text;html=1;align=left;fontSize=10;fontStyle=2;fontColor=#5b7a3a;" vertex="1" parent="1">
+          <mxGeometry x="856" y="112" width="240" height="16" as="geometry"/>
+        </mxCell>
+        <mxCell id="sec2" value="2) Critic learning (distributional / truncated)" style="text;html=1;align=left;fontSize=10;fontStyle=2;fontColor=#5b7a3a;" vertex="1" parent="1">
+          <mxGeometry x="856" y="536" width="320" height="16" as="geometry"/>
+        </mxCell>
+        <mxCell id="sec3" value="3) Actor learning" style="text;html=1;align=left;fontSize=10;fontStyle=2;fontColor=#5b7a3a;" vertex="1" parent="1">
+          <mxGeometry x="856" y="706" width="240" height="16" as="geometry"/>
+        </mxCell>
+        <mxCell id="sec4" value="4) Temperature &amp; target sync" style="text;html=1;align=left;fontSize=10;fontStyle=2;fontColor=#5b7a3a;" vertex="1" parent="1">
+          <mxGeometry x="856" y="870" width="240" height="16" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== TQC: MAIN COLUMN ===================== -->
+        <mxCell id="q_state" value="State Input  (s_t)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="880" y="130" width="250" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_actor" value="Actor  &#960;_&#966;  (Gaussian policy)&#10;MLP 3&#215;256 (ReLU) &#8594; mean, log_std heads" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="880" y="192" width="250" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_reparam" value="Reparameterize + tanh squash&#10;a = tanh(&#956; + &#963;&#8857;&#949;)    (eval: a = tanh &#956;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="270" width="250" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_action" value="Action Output  (a_t &#8712; [-1, 1])" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="880" y="340" width="250" height="44" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_buffer" value="LAP Replay Buffer&#10;store  (s, a, r, s&#8242;, done)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="880" y="410" width="250" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_sample" value="Sample minibatch  (B = 256)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="880" y="480" width="250" height="40" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_critic" value="Critic  Z_&#968;(s, a)&#10;2 quantile nets &#215; 25 quantiles (ELU)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="880" y="556" width="250" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_closs" value="Quantile Huber Loss&#10;&#8594; Critic update (Adam)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="636" width="250" height="52" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_actorq" value="Q(s, &#960;_&#966;(s)) = mean over&#10;quantiles &amp; critics  (no truncation)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="726" width="250" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_aloss" value="Actor loss = E[ &#945;&#183;log &#960; &#8722; Q ]&#10;&#8594; Actor update (Adam)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="802" width="250" height="56" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== TQC: TARGET-CRITIC BRANCH ===================== -->
+        <mxCell id="t_napi" value="Next action  a&#8242; ~ &#960;_&#966;(s&#8242;)&#10;+ log &#960;(a&#8242;|s&#8242;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf3e7;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="408" width="200" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_tcritic" value="Target Critic  Z_&#968;&#8315;&#10;2 nets &#215; 25 quantiles" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf3e7;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="486" width="200" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_sort" value="Pool 2&#215;25 quantiles &#8594; sort&#10;&#8594; drop top-k per net (truncate)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf3e7;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="556" width="200" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="t_target" value="Target  y =&#10;r + &#947;(1&#8722;d)[ Z_trunc &#8722; &#945;&#183;log &#960;(a&#8242;|s&#8242;) ]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#eaf3e7;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1180" y="632" width="200" height="66" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== TQC: TEMPERATURE / TARGET SYNC ===================== -->
+        <mxCell id="q_alpha" value="Temperature  &#945;  (auto)&#10;loss = &#8722;log &#945; &#183; (log &#960; + H_target),    H_target = &#8722;dim(a)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="890" width="500" height="54" as="geometry"/>
+        </mxCell>
+        <mxCell id="q_polyak" value="Polyak target sync   &#968;&#8315; &#8592; &#964; &#968; + (1&#8722;&#964;) &#968;&#8315;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="880" y="962" width="500" height="46" as="geometry"/>
+        </mxCell>
+
+        <!-- ===================== LEFT INTERNAL FLOW ===================== -->
+        <mxCell id="eL12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L1" target="L2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="eL23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L2" target="L3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="eL34" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L3" target="L4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="eL45" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#6c8ebf;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="L4" target="L5"><mxGeometry relative="1" as="geometry"/></mxCell>
+
+        <!-- ===================== MIDDLE INTERNAL FLOW ===================== -->
+        <mxCell id="eM12" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="M1" target="M2"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="eM23" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="M2" target="M3"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="eM34" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="M3" target="M4"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="590" y="730"/></Array></mxGeometry></mxCell>
+        <mxCell id="eM54" value="labels" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#d79b00;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=10;" edge="1" parent="1" source="M5" target="M4"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="eM_fb" value="gradient" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#b85450;exitX=0;exitY=0.5;entryX=0;entryY=0.5;fontSize=10;" edge="1" parent="1" source="M4" target="M2">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="452" y="808"/><mxPoint x="452" y="328"/></Array></mxGeometry>
+        </mxCell>
+
+        <!-- ===================== TQC INTERNAL FLOW ===================== -->
+        <mxCell id="i1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="q_state" target="q_actor"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="q_actor" target="q_reparam"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="q_reparam" target="q_action"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i4" value="rollout (s,a,r,s&#8242;)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=9;" edge="1" parent="1" source="q_action" target="q_buffer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i5" value="minibatch B" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=9;" edge="1" parent="1" source="q_buffer" target="q_sample"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i6" value="s, a" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=9;" edge="1" parent="1" source="q_sample" target="q_critic"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i7" value="s&#8242;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=9;" edge="1" parent="1" source="q_sample" target="t_napi">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1155" y="500"/><mxPoint x="1155" y="435"/></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="i8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="t_napi" target="t_tcritic"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i9" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="t_tcritic" target="t_sort"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i10" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="t_sort" target="t_target"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i11" value="target y" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#444444;exitX=0;exitY=0.5;entryX=1;entryY=0.5;fontSize=9;" edge="1" parent="1" source="t_target" target="q_closs">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1155" y="665"/><mxPoint x="1155" y="662"/></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="i12" value="Z(s,a)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=9;" edge="1" parent="1" source="q_critic" target="q_closs"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i13" value="Q(s,&#183;)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0;exitY=0.6;entryX=0;entryY=0.5;fontSize=9;" edge="1" parent="1" source="q_critic" target="q_actorq">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="868" y="588"/><mxPoint x="868" y="751"/></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="i14" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#82b366;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="q_actorq" target="q_aloss"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i15" value="&#8711;&#966; update" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#b85450;exitX=0;exitY=0.5;entryX=0;entryY=0.5;fontSize=9;" edge="1" parent="1" source="q_aloss" target="q_actor">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="856" y="830"/><mxPoint x="856" y="221"/></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="i16" value="&#945;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#9673a6;exitX=0.54;exitY=0;entryX=1;entryY=0.5;fontSize=9;" edge="1" parent="1" source="q_alpha" target="q_closs">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1150" y="890"/><mxPoint x="1150" y="662"/></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="i17" value="&#945;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#9673a6;exitX=0.25;exitY=0;entryX=0.5;entryY=1;fontSize=9;" edge="1" parent="1" source="q_alpha" target="q_aloss"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="i18" value="&#968;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#999999;exitX=1;exitY=0.5;entryX=1;entryY=0.5;fontSize=9;" edge="1" parent="1" source="q_critic" target="q_polyak">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1410" y="583"/><mxPoint x="1410" y="985"/></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="i19" value="Polyak &#964;" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#999999;exitX=0.96;exitY=0;entryX=1;entryY=0.5;fontSize=9;" edge="1" parent="1" source="q_polyak" target="t_tcritic">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1398" y="962"/><mxPoint x="1398" y="511"/></Array></mxGeometry>
+        </mxCell>
+
+        <!-- ===================== CROSS-BLOCK FLOW ===================== -->
+        <!-- observation -> Auxiliary -->
+        <mxCell id="e_obs_tmp" value="obs" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#444444;exitX=1;exitY=0.4;entryX=0;entryY=0.5;fontSize=10;" edge="1" parent="1" source="L4" target="M1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="415" y="622"/><mxPoint x="415" y="178"/></Array></mxGeometry>
+        </mxCell>
+        <!-- observation -> TQC State Input (top lane) -->
+        <mxCell id="e_obs_state" value="direct obs path" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;strokeColor=#b3b3b3;exitX=1;exitY=0.7;entryX=0.1;entryY=0;fontSize=10;fontColor=#7f7f7f;" edge="1" parent="1" source="L4" target="q_state">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="400" y="639"/><mxPoint x="400" y="50"/><mxPoint x="905" y="50"/></Array></mxGeometry>
+        </mxCell>
+        <!-- future label -> Auxiliary future labels -->
+        <mxCell id="e_future" value="future label" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#444444;exitX=1;exitY=0.4;entryX=0;entryY=0.5;fontSize=10;" edge="1" parent="1" source="L5" target="M5">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="415" y="802"/><mxPoint x="415" y="628"/></Array></mxGeometry>
+        </mxCell>
+        <!-- transition -> Replay Buffer (bottom lane) -->
+        <mxCell id="e_trans" value="transition (s,a,r,s&#8242;,done)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#444444;exitX=1;exitY=0.55;entryX=0;entryY=0.5;fontSize=10;" edge="1" parent="1" source="L4" target="q_buffer">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="430" y="628"/><mxPoint x="430" y="1120"/><mxPoint x="848" y="1120"/><mxPoint x="848" y="435"/></Array></mxGeometry>
+        </mxCell>
+        <!-- action -> Step Simulation (bottom lane) -->
+        <mxCell id="e_action" value="action" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#444444;exitX=0;exitY=0.5;entryX=0.1;entryY=1;fontSize=10;" edge="1" parent="1" source="q_action" target="L3">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="820" y="362"/><mxPoint x="820" y="1090"/><mxPoint x="194" y="1090"/></Array></mxGeometry>
+        </mxCell>
+        <!-- shared encoder -> Actor -->
+        <mxCell id="e_enc_actor" value="recommended shared features" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;strokeWidth=2;exitX=1;exitY=0.4;entryX=0;entryY=0.5;fontSize=10;" edge="1" parent="1" source="M2" target="q_actor">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="788" y="328"/><mxPoint x="788" y="221"/></Array></mxGeometry>
+        </mxCell>
+        <!-- shared encoder -> Critic -->
+        <mxCell id="e_enc_critic" value="recommended shared features" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#9673a6;strokeWidth=2;exitX=1;exitY=0.7;entryX=0;entryY=0.5;fontSize=10;" edge="1" parent="1" source="M2" target="q_critic">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="803" y="338"/><mxPoint x="803" y="583"/></Array></mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

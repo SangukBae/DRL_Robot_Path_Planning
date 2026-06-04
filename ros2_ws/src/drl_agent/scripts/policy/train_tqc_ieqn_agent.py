@@ -35,6 +35,8 @@ class TrainTQC_IEQN(EnvInterface):
 
         train_settings = load_yaml(train_cfg_path)["train_settings"]
         self.seed = train_settings["seed"]
+        # Multi-seed sweep override (paper protocol): -p seed:=N or DRL_AGENT_SEED=N
+        self.seed = self._resolve_seed_override(self.seed)
         self.max_episode_steps = train_settings["max_episode_steps"]
         self.load_model = train_settings["load_model"]
         self.max_timesteps = train_settings["max_timesteps"]
@@ -221,7 +223,8 @@ class TrainTQC_IEQN(EnvInterface):
             base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
         else:
             package_root = self._resolve_drl_agent_source_root()
-            base_run_dir = os.path.join(package_root, "runtime", "tqc_ieqn")
+            # Per-seed isolation: each seed gets its own models/logs/curriculum_state
+            base_run_dir = os.path.join(package_root, "runtime", "tqc_ieqn", f"seed_{self.seed}")
 
         self.run_dir = base_run_dir
 

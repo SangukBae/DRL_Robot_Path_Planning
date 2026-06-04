@@ -42,6 +42,9 @@ environment:
   human_pause_duration: 1.0
   human_heading_jitter_deg: 15.0
   human_retarget_prob_per_sec: 0.02
+  human_heading_jitter_on_retarget_only: true
+  human_min_retarget_interval: 1.5
+  human_desired_yaw_rate_limit: 1.2
   human_scan_dropout_prob: 0.04   # final-stage value; overridden per stage
   human_scan_noise_std: 0.06      # final-stage value; overridden per stage
   human_max_accel: 20.0

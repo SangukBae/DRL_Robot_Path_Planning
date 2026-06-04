@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Curriculum-learning subclass of TrainTQC_IEQN.
+"""Curriculum-learning subclass of TrainSB3SAC.
 
-Same curriculum mechanism as train_tqc_curriculum_agent.py:
-  - Loads curriculum_settings from train_tqc_ieqn_curriculum_config.yaml
+Same curriculum mechanism as train_sac_curriculum_agent.py:
+  - Loads curriculum_settings from train_sb3_sac_curriculum_config.yaml
   - evaluate_and_print() returns success/collision/timeout rates (dict)
   - Automatic stage advancement via /gym_node/set_parameters
   - curriculum_stage column in per-episode CSV log
   - curriculum_state.json checkpoint for resume/inspection
 
 Usage:
-  ros2 run drl_agent train_tqc_ieqn_curriculum_agent.py
+  ros2 run drl_agent train_sb3_sac_curriculum_agent.py
 
 The environment must be running environment_curriculum.py.
 """
@@ -34,23 +34,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "environment"))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils"))
 
-from train_tqc_ieqn_agent import TrainTQC_IEQN
+from train_sb3_sac_agent import TrainSB3SAC
 from file_manager import load_yaml
 from episode_metrics import EpisodeMetrics, PaperMetricsCSV
 
 
-class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
-    """TQC_IEQN trainer with automatic curriculum stage advancement.
+class TrainSB3SACCurriculum(TrainSB3SAC):
+    """SB3 SAC trainer with automatic curriculum stage advancement.
 
-    Inherits all setup, training loop, and model I/O from TrainTQC_IEQN.
-    Adds CSV loggers (base omits them), stage advancement, curriculum CSV,
-    and state checkpointing.
+    Inherits all setup, training loop, and model I/O from TrainSB3SAC.
+    Adds stage advancement, curriculum CSV log, and state checkpointing.
     """
 
-    def __init__(self):
-        super().__init__()   # TrainTQC_IEQN.__init__() — no CSV loggers
-
-        # Initialize CSV loggers (base class does not set these up)
+    def _init_csv_loggers(self):
         self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._reward_csv  = os.path.join(self.log_dir, f"episode_rewards_{self._csv_run_tag}.csv")
         self._driving_csv = os.path.join(self.log_dir, f"episode_driving_{self._csv_run_tag}.csv")
@@ -74,22 +70,25 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                              (self._step_csv, step_header)]:
             with open(path, "w", newline="") as f:
                 csv.writer(f).writerow(header)
+
         self.get_logger().info(f"Episode rewards CSV : {self._reward_csv}")
         self.get_logger().info(f"Episode driving CSV : {self._driving_csv}")
         self.get_logger().info(f"Policy step CSV     : {self._step_csv}")
 
-        # Load curriculum settings
-        cur_cfg_path = self._find_config_file("train_tqc_ieqn_curriculum_config.yaml")
+    def __init__(self):
+        super().__init__()
+
+        cur_cfg_path = self._find_config_file("train_sb3_sac_curriculum_config.yaml")
         if cur_cfg_path:
             cur = load_yaml(cur_cfg_path).get("curriculum_settings", {})
         else:
             self.get_logger().warn(
-                "[Curriculum] train_tqc_ieqn_curriculum_config.yaml not found — using defaults."
+                "[Curriculum] train_sb3_sac_curriculum_config.yaml not found — using defaults."
             )
             cur = {}
 
         self.cur_enabled         = bool(cur.get("enabled", True))
-        self.cur_min_stage_steps = int(cur.get("min_stage_steps", 10000))
+        self.cur_min_stage_steps = int(cur.get("min_stage_steps", 30000))
         self.cur_min_stage_eps   = int(cur.get("min_stage_episodes", 20))
         self.cur_pass_sr         = list(cur.get("pass_eval_success_rate",
                                                 [0.90, 0.85, 0.75, 0.70]))
@@ -148,11 +147,12 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
             f"min_eps={self.cur_min_stage_eps} "
             f"consec={self.cur_consec_passes}"
         )
+
         if self.load_model:
             self._load_curriculum_state()
 
     # ------------------------------------------------------------------ #
-    #  Stage control helpers (identical to train_tqc_curriculum_agent.py)  #
+    #  Stage control helpers                                                #
     # ------------------------------------------------------------------ #
 
     def _set_curriculum_stage(self, stage: int) -> bool:
@@ -202,15 +202,13 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                     "ep_timesteps":           self._partial_ep_timesteps,
                     "ep_total_reward":        self._partial_ep_reward,
                 },
-                f,
-                indent=2,
+                f, indent=2,
             )
         try:
             with open(os.path.join(self.log_dir, "rng_state.pkl"), "wb") as f:
                 pickle.dump(
                     {"numpy": np.random.get_state(), "python": random.getstate()},
-                    f,
-                    protocol=pickle.HIGHEST_PROTOCOL,
+                    f, protocol=pickle.HIGHEST_PROTOCOL,
                 )
             torch.save(torch.get_rng_state(), os.path.join(self.log_dir, "rng_torch.pt"))
             if torch.cuda.is_available():
@@ -338,11 +336,7 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
             self._em.reset(state)
 
             while not done and ep_steps < self.max_episode_steps:
-                action = self.rl_agent.select_action(
-                    state,
-                    use_checkpoint=self.use_checkpoints,
-                    use_exploration=False,
-                )
+                action = self.rl_agent.select_action(state, use_exploration=False)
                 state, reward, done, info = self.step(action)
                 self._em.update(state, action)
                 ep_rew   += reward
@@ -410,8 +404,6 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
         epoch = len(evals) + 1
 
         if self.eval_freq > 0:
-            # Align first eval boundary to the first eval_freq grid point after warmup.
-            # This prevents an immediate force_eval_cut when warmup ends mid-episode.
             next_eval_t = ((self.timesteps_before_training // self.eval_freq) + 1) * self.eval_freq
         else:
             next_eval_t = None
@@ -568,7 +560,7 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                             round(float(np.min(_ep_min_lidar_buf)), 4),
                             round(float(np.mean(_ep_min_lidar_buf)), 4),
                             int(goal_reached), int(force_eval_cut),
-                            float("nan"),  # mean_gazebo_rtf: not tracked by TQC+IEQN
+                            float("nan"),  # mean_gazebo_rtf: not tracked by SB3-SAC
                         ])
 
                 with open(self._curriculum_reward_csv, "a", newline="") as _f:
@@ -580,7 +572,7 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                         int(force_eval_cut),
                         round(final_dist, 4),
                         self._curriculum_stage,
-                        float("nan"),  # mean_gazebo_rtf: not tracked by TQC+IEQN
+                        float("nan"),  # mean_gazebo_rtf: not tracked by SB3
                     ])
 
                 if not force_eval_cut:
@@ -593,9 +585,6 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                     f"Reward:{ep_total_reward:.3f} | {result} | "
                     f"Stage:{self._curriculum_stage}"
                 )
-
-                if self.use_checkpoints and train_ready:
-                    self.rl_agent.train_and_checkpoint(ep_timesteps, ep_total_reward)
 
                 if eval_due:
                     self.save_models(self.pytorch_models_dir, self.file_name)
@@ -638,7 +627,6 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                         self._consecutive_pass_count = 0
 
                 elif next_eval_t is not None and t >= next_eval_t:
-                    # warmup 중 next_eval_t를 진행시켜 학습 시작 직후 즉시 평가 방지
                     while next_eval_t <= t:
                         next_eval_t += self.eval_freq
 
@@ -668,7 +656,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = None
     try:
-        node = TrainTQCIEQNCurriculum()
+        node = TrainSB3SACCurriculum()
         node.train_online()
         while rclpy.ok() and not node.done_training:
             rclpy.spin_once(node, timeout_sec=0.1)

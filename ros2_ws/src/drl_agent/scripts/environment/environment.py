@@ -248,6 +248,18 @@ class Environment(Node):
         self.human_max_yaw_rate      = float(self.environment_config.get("human_max_yaw_rate",       0.9))
         self.human_max_yaw_accel     = float(self.environment_config.get("human_max_yaw_accel",      1.5))
         self.human_k_yaw             = float(self.environment_config.get("human_k_yaw",              2.0))
+        # Human heading smoothing. These reduce sudden "snap" turns by
+        # persisting heading jitter for the whole waypoint segment, enforcing
+        # a minimum retarget interval, and rate-limiting desired-yaw changes.
+        self.human_heading_jitter_on_retarget_only = bool(
+            self.environment_config.get("human_heading_jitter_on_retarget_only", True)
+        )
+        self.human_min_retarget_interval = float(
+            self.environment_config.get("human_min_retarget_interval", 1.5)
+        )
+        self.human_desired_yaw_rate_limit = float(
+            self.environment_config.get("human_desired_yaw_rate_limit", 1.2)
+        )
 
         # General dynamic obstacle motion parameters. Defaults intentionally
         # mirror the pedestrian controller so non-human dynamic obstacles move
@@ -2730,15 +2742,43 @@ class Environment(Node):
                 x <= arena_lower + wall_buffer or x >= arena_upper - wall_buffer or
                 y <= arena_lower + wall_buffer or y >= arena_upper - wall_buffer
             )
-            if dist_to_target < 0.5 or near_wall or np.random.rand() < retarget_prob_tick:
+            retarget_cooldown = max(0.0, float(state.get("retarget_cooldown", 0.0)) - dt)
+            state["retarget_cooldown"] = retarget_cooldown
+            do_prob_retarget = (
+                retarget_cooldown <= 0.0 and np.random.rand() < retarget_prob_tick
+            )
+            if dist_to_target < 0.5 or near_wall or do_prob_retarget:
                 tx, ty = self._sample_human_waypoint()
                 state["target_x"] = tx
                 state["target_y"] = ty
+                state["retarget_cooldown"] = self.human_min_retarget_interval
+                if self.human_heading_jitter_on_retarget_only:
+                    state["heading_jitter"] = np.random.uniform(
+                        -self.human_heading_jitter, self.human_heading_jitter
+                    )
 
             dx_t, dy_t = tx - x, ty - y
-            desired_yaw = math.atan2(dy_t, dx_t)
-            jitter = np.random.uniform(-self.human_heading_jitter, self.human_heading_jitter)
-            desired_yaw += jitter
+            desired_yaw_raw = math.atan2(dy_t, dx_t)
+            if self.human_heading_jitter_on_retarget_only:
+                desired_yaw_raw += float(state.get("heading_jitter", 0.0))
+            else:
+                desired_yaw_raw += np.random.uniform(
+                    -self.human_heading_jitter, self.human_heading_jitter
+                )
+            desired_yaw_raw = (desired_yaw_raw + math.pi) % (2.0 * math.pi) - math.pi
+
+            prev_desired_yaw = float(state.get("desired_yaw", yaw))
+            desired_yaw_delta = (
+                (desired_yaw_raw - prev_desired_yaw + math.pi) % (2.0 * math.pi)
+            ) - math.pi
+            max_desired_yaw_delta = max(1e-3, self.human_desired_yaw_rate_limit) * dt
+            desired_yaw = prev_desired_yaw + float(np.clip(
+                desired_yaw_delta,
+                -max_desired_yaw_delta,
+                max_desired_yaw_delta,
+            ))
+            desired_yaw = (desired_yaw + math.pi) % (2.0 * math.pi) - math.pi
+            state["desired_yaw"] = desired_yaw
 
             yaw_error = (desired_yaw - yaw + math.pi) % (2.0 * math.pi) - math.pi
             w_cmd = float(np.clip(
@@ -3044,6 +3084,11 @@ class Environment(Node):
                         tx, ty = self._sample_human_waypoint()
                         speed = np.random.uniform(entry["speed_min"], entry["speed_max"])
                         name_p_torso = entry["p_torso"]
+                        heading_jitter = np.random.uniform(
+                            -self.human_heading_jitter, self.human_heading_jitter
+                        )
+                        desired_yaw = math.atan2(ty - y, tx - x) + heading_jitter
+                        desired_yaw = (desired_yaw + math.pi) % (2.0 * math.pi) - math.pi
                         state = {
                             "visual_torso":      entry["v_torso"],
                             "visual_left_leg":   entry["v_ll"],
@@ -3058,6 +3103,9 @@ class Environment(Node):
                             "speed":             speed,
                             "v": 0.0, "w": 0.0,
                             "target_x": tx, "target_y": ty,
+                            "heading_jitter":    heading_jitter if self.human_heading_jitter_on_retarget_only else 0.0,
+                            "desired_yaw":       desired_yaw,
+                            "retarget_cooldown": self.human_min_retarget_interval,
                             "pause_left": 0.0,
                             "stopping": False,
                             "gait_phase":        np.random.uniform(0.0, 2.0 * math.pi),
@@ -3195,6 +3243,11 @@ class Environment(Node):
                         float(entry.get("speed_min", 0.3)),
                         float(entry.get("speed_max", 0.8)),
                     )
+                    heading_jitter = np.random.uniform(
+                        -self.human_heading_jitter, self.human_heading_jitter
+                    )
+                    desired_yaw = math.atan2(ty - y, tx - x) + heading_jitter
+                    desired_yaw = (desired_yaw + math.pi) % (2.0 * math.pi) - math.pi
                     state = {
                         "visual_torso":      names["v_torso"],
                         "visual_left_leg":   names["v_ll"],
@@ -3209,6 +3262,9 @@ class Environment(Node):
                         "speed":             speed,
                         "v": 0.0, "w": 0.0,
                         "target_x": tx, "target_y": ty,
+                        "heading_jitter":    heading_jitter if self.human_heading_jitter_on_retarget_only else 0.0,
+                        "desired_yaw":       desired_yaw,
+                        "retarget_cooldown": self.human_min_retarget_interval,
                         "pause_left": 0.0,
                         "stopping": False,
                         "gait_phase":        np.random.uniform(0.0, 2.0 * math.pi),

@@ -7,7 +7,8 @@ train_settings:
   max_timesteps: 2000000           # 10 Hz 전환으로 step당 시간이 절반이므로 2배 보정
 
   # 모델 로드/체크포인트/평가
-  load_model: true                # 기존 모델 이어서 학습할 때 true
+  load_model: false               # 공정 비교: 모든 baseline과 동일하게 fresh start.
+                                  #          특정 run을 이어서 학습할 때만 true로.
   use_checkpoints: false           # TQC는 기본적으로 step-wise off-policy 업데이트 권장
   eval_freq: 12000                 # 10 Hz에서 기존 평가 시간 간격에 가깝게 조정
   eval_eps: 10                     # 평가 에피소드 수

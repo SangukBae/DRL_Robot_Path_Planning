@@ -41,6 +41,7 @@ sys.path.insert(
 
 from train_tqc_base import TrainTQCBase
 from file_manager import load_yaml
+from episode_metrics import EpisodeMetrics, PaperMetricsCSV
 
 
 class TrainTQCCurriculum(TrainTQCBase):
@@ -55,24 +56,34 @@ class TrainTQCCurriculum(TrainTQCBase):
     """
 
     def _init_csv_loggers(self):
-        """Create only the reduced CSV logs used by curriculum training."""
+        """Create CSV logs for curriculum training (step-level log disabled)."""
         self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._reward_csv = None
-        self._step_csv = None
+        self._step_csv    = None  # step-level debug log disabled for curriculum
+        self._reward_csv  = os.path.join(
+            self.log_dir, f"episode_rewards_{self._csv_run_tag}.csv"
+        )
         self._driving_csv = os.path.join(
             self.log_dir, f"episode_driving_{self._csv_run_tag}.csv"
         )
 
-        driving_header = [
-            "episode", "global_t", "steps",
-            "mean_v_norm", "mean_abs_w_norm",
-            "initial_goal_dist_m",
-            "min_lidar_m", "mean_min_lidar_m", "mean_gazebo_rtf",
+        reward_header = [
+            "episode", "global_t", "steps", "total_reward", "mean_reward",
+            "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m",
         ]
-        with open(self._driving_csv, "w", newline="") as f:
-            csv.writer(f).writerow(driving_header)
+        driving_header = [
+            "episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
+            "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
+            "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
+            "mean_gazebo_rtf",
+        ]
+        for path, header in [
+            (self._reward_csv,  reward_header),
+            (self._driving_csv, driving_header),
+        ]:
+            with open(path, "w", newline="") as f:
+                csv.writer(f).writerow(header)
 
-        self.get_logger().info("Episode rewards CSV: disabled")
+        self.get_logger().info(f"Episode rewards CSV: {self._reward_csv}")
         self.get_logger().info(f"Episode driving CSV: {self._driving_csv}")
         self.get_logger().info("Policy step CSV: disabled")
 
@@ -132,12 +143,27 @@ class TrainTQCCurriculum(TrainTQCBase):
         with open(self._curriculum_reward_csv, "w", newline="") as f:
             csv.writer(f).writerow([
                 "episode", "global_t", "steps",
-                "total_reward",
+                "total_reward", "mean_reward",
                 "goal_reached", "collision", "timeout", "eval_cut",
                 "final_goal_dist_m", "curriculum_stage", "mean_gazebo_rtf",
             ])
         self.get_logger().info(
             f"[Curriculum] Episode log (with stage): {self._curriculum_reward_csv}"
+        )
+
+        # Paper metrics (SPL, path length, CTE, jerk, ...) → episode + eval CSVs
+        self.declare_parameter("near_collision_dist_m", 0.5)
+        self.declare_parameter("metric_time_delta", 0.1)
+        _ncd = self.get_parameter("near_collision_dist_m").get_parameter_value().double_value
+        _mdt = self.get_parameter("metric_time_delta").get_parameter_value().double_value
+        self._em = EpisodeMetrics(
+            self.environment_dim,
+            time_delta=_mdt if _mdt > 0 else 0.1,
+            near_collision_dist_m=_ncd if _ncd > 0 else 0.5,
+        )
+        self._paper = PaperMetricsCSV(self.log_dir, self._csv_run_tag)
+        self.get_logger().info(
+            f"[Metrics] Paper CSVs: {self._paper.episode_path} | {self._paper.eval_path}"
         )
 
         self.get_logger().info(
@@ -408,51 +434,6 @@ class TrainTQCCurriculum(TrainTQCBase):
             and metrics.get("collision_rate", 1.0) <= required_cr
         )
 
-    def _write_episode_logs(
-        self,
-        ep_num: int,
-        global_t: int,
-        ep_timesteps: int,
-        ep_total_reward: float,
-        state,
-        info,
-        episode_done: bool,
-        episode_limit: bool,
-        ep_v_buf: list,
-        ep_w_buf: list,
-        ep_min_lidar_buf: list,
-        ep_gazebo_rtf_buf: list,
-        ep_initial_goal_dist: float,
-        eval_cut: bool = False,
-    ):
-        """Write the reduced episode-driving log and return the result label."""
-        goal_reached = bool(episode_done and info) and not eval_cut
-        collision = bool(episode_done and (not goal_reached)) and not eval_cut
-
-        if goal_reached:
-            result = "GOAL"
-        elif collision:
-            result = "COLLISION"
-        elif eval_cut:
-            result = "EVAL_CUT"
-        else:
-            result = "TIMEOUT"
-
-        if ep_v_buf:
-            with open(self._driving_csv, "a", newline="") as _f:
-                csv.writer(_f).writerow([
-                    ep_num, global_t, ep_timesteps,
-                    round(float(np.mean(ep_v_buf)), 4),
-                    round(float(np.mean(np.abs(ep_w_buf))), 4),
-                    round(ep_initial_goal_dist, 4),
-                    round(float(np.min(ep_min_lidar_buf)), 4),
-                    round(float(np.mean(ep_min_lidar_buf)), 4),
-                    round(float(np.mean(ep_gazebo_rtf_buf)), 4)
-                    if ep_gazebo_rtf_buf else float("nan"),
-                ])
-
-        return result
-
     # ------------------------------------------------------------------ #
     #  Override: evaluate_and_print → returns dict of metrics              #
     # ------------------------------------------------------------------ #
@@ -469,24 +450,28 @@ class TrainTQCCurriculum(TrainTQCBase):
         ENV_DIM = self.environment_dim
         rewards, final_dists = [], []
         success_count = collision_count = timeout_count = 0
+        per_ep_metrics = []
 
         for _ in range(self.eval_eps):
             state    = self.reset()
             done     = False
             ep_steps = 0
             ep_rew   = 0.0
+            self._em.reset(state)
 
             while not done and ep_steps < self.max_episode_steps:
                 action = self.rl_agent.select_action(
                     state, use_checkpoint=False, use_exploration=False
                 )
                 state, reward, done, info = self.step(action)
+                self._em.update(state, action)
                 ep_rew   += reward
                 ep_steps += 1
 
             s = np.asarray(state, dtype=np.float32).ravel()
             final_dists.append(float(s[ENV_DIM]))
             rewards.append(ep_rew)
+            per_ep_metrics.append(self._em.compute(bool(done and info)))
 
             if done and info:
                 success_count   += 1
@@ -504,6 +489,14 @@ class TrainTQCCurriculum(TrainTQCBase):
             "timeout_rate":   timeout_count   / n,
             "mean_goal_dist": float(np.mean(final_dists)),
         }
+        # Aggregate paper metrics (SPL, CTE, jerk, ...) over the eval episodes
+        _agg = PaperMetricsCSV.aggregate(per_ep_metrics)
+        metrics.update(_agg)
+        self._paper.write_eval(
+            epoch=epoch, global_t=self._last_global_t,
+            stage=self._curriculum_stage, eval_eps=n,
+            base=metrics, metrics_mean=_agg,
+        )
 
         self.get_logger().info(
             f"Eval {n} eps | "
@@ -511,7 +504,8 @@ class TrainTQCCurriculum(TrainTQCBase):
             f"Success {metrics['success_rate']*100:.1f}% | "
             f"Collision {metrics['collision_rate']*100:.1f}% | "
             f"Timeout {metrics['timeout_rate']*100:.1f}% | "
-            f"GoalDist {metrics['mean_goal_dist']:.3f}m"
+            f"GoalDist {metrics['mean_goal_dist']:.3f}m | "
+            f"SPL {metrics['spl']:.3f} | CTE {metrics['mean_cross_track_error_m']:.3f}m"
         )
 
         evals.append(metrics["mean_reward"])
@@ -615,6 +609,8 @@ class TrainTQCCurriculum(TrainTQCBase):
 
         for t in range(self._resume_global_t + 1, self.max_timesteps + 1):
             self._last_global_t = t
+            if ep_timesteps == 0:
+                self._em.reset(state)   # new episode → reset paper-metric tracker
             train_ready = t >= self.timesteps_before_training
             use_policy  = t >  self.timesteps_before_training
             if train_ready and not training_enabled_logged:
@@ -639,6 +635,7 @@ class TrainTQCCurriculum(TrainTQCBase):
             self.rl_agent.replay_buffer.add(state, action, next_state, reward, done)
 
             state            = next_state
+            self._em.update(state, action)
             ep_total_reward += reward
             ep_timesteps    += 1
             # Mirror to instance vars so Ctrl+C saves correct partial state
@@ -678,10 +675,18 @@ class TrainTQCCurriculum(TrainTQCBase):
                 goal_reached = bool(ep_finished and info) and not force_eval_cut
                 collision    = bool(ep_finished and not goal_reached) and not force_eval_cut
                 timeout      = bool(episode_limit and not ep_finished) and not force_eval_cut
+                if not force_eval_cut:   # skip partial (eval-interrupted) episodes
+                    self._paper.write_episode(
+                        episode=ep_num, global_t=t, stage=self._curriculum_stage,
+                        success=goal_reached, collision=collision, timeout=timeout,
+                        total_reward=ep_total_reward, steps=ep_timesteps,
+                        metrics=self._em.compute(goal_reached),
+                    )
                 with open(self._curriculum_reward_csv, "a", newline="") as _f:
                     csv.writer(_f).writerow([
                         ep_num, t, ep_timesteps,
                         round(ep_total_reward, 4),
+                        round(ep_total_reward / max(ep_timesteps, 1), 4),
                         int(goal_reached), int(collision), int(timeout),
                         int(force_eval_cut),
                         round(final_dist, 4),

@@ -28,6 +28,12 @@ class TrainSAC(EnvInterface):
 
         train_settings = load_yaml(train_cfg_path)["train_settings"]
         self.seed = train_settings["seed"]
+        # --- Multi-seed sweep override (paper protocol) ---------------------
+        # Default = YAML seed; override per run WITHOUT editing the config via
+        #   ros2 run drl_agent <trainer>.py --ros-args -p seed:=1
+        #   DRL_AGENT_SEED=1 ros2 run drl_agent <trainer>.py
+        self.seed = self._resolve_seed_override(self.seed)
+        # --------------------------------------------------------------------
         self.max_episode_steps = train_settings["max_episode_steps"]
         self.load_model = train_settings["load_model"]
         self.max_timesteps = train_settings["max_timesteps"]
@@ -158,7 +164,8 @@ class TrainSAC(EnvInterface):
             base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
         else:
             package_root = self._resolve_drl_agent_source_root()
-            base_run_dir = os.path.join(package_root, "runtime", "sac")
+            # Per-seed isolation: each seed gets its own models/logs/curriculum_state
+            base_run_dir = os.path.join(package_root, "runtime", "sac", f"seed_{self.seed}")
 
         self.run_dir = base_run_dir
         self.pytorch_models_dir = os.path.join(self.run_dir, "pytorch_models")
@@ -197,10 +204,11 @@ class TrainSAC(EnvInterface):
         self._step_csv    = os.path.join(self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv")
 
         reward_header  = ["episode", "global_t", "steps", "total_reward", "mean_reward",
-                          "goal_reached", "collision", "timeout", "final_goal_dist_m"]
+                          "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m"]
         driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
                           "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
-                          "min_lidar_m", "mean_min_lidar_m", "goal_reached"]
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
+                          "mean_gazebo_rtf"]
         step_header    = ["episode", "global_t", "episode_step", "action_source",
                           "action_0_norm", "action_1_norm",
                           "goal_dist_before_m", "goal_dist_after_m",
@@ -319,6 +327,7 @@ class TrainSAC(EnvInterface):
                         round(ep_total_reward, 4),
                         round(ep_total_reward / max(ep_timesteps, 1), 4),
                         int(_goal_reached), int(_collision), int(_timeout),
+                        0,  # eval_cut: single-stage never cuts mid-episode for eval
                         round(_final_goal_dist, 4),
                     ])
                 if _ep_v_buf:
@@ -332,7 +341,8 @@ class TrainSAC(EnvInterface):
                             round(_ep_initial_goal_dist - _final_goal_dist, 4),
                             round(float(np.min(_ep_min_lidar_buf)), 4),
                             round(float(np.mean(_ep_min_lidar_buf)), 4),
-                            int(_goal_reached),
+                            int(_goal_reached), 0,  # eval_cut: single-stage
+                            float("nan"),  # mean_gazebo_rtf: not tracked
                         ])
 
                 if self.use_checkpoints and allow_train:

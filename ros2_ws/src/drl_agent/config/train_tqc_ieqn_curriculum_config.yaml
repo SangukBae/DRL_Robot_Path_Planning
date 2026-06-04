@@ -7,7 +7,7 @@ curriculum_settings:
 
   # Minimum steps/episodes spent in a stage before advancement is considered.
   # Prevents premature promotion if eval happens to hit a lucky streak early.
-  min_stage_steps: 15000
+  min_stage_steps: 30000        # 공통값으로 통일 (was 15000)
   min_stage_episodes: 20
 
   # Per-stage success / collision thresholds (list index = stage index).

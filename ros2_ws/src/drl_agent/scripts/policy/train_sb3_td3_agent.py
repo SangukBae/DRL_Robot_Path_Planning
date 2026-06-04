@@ -37,6 +37,8 @@ class TrainSB3TD3(EnvInterface):
 
         train_settings = load_yaml(train_cfg_path)["train_settings"]
         self.seed = train_settings["seed"]
+        # Multi-seed sweep override (paper protocol): -p seed:=N or DRL_AGENT_SEED=N
+        self.seed = self._resolve_seed_override(self.seed)
         self.max_episode_steps = train_settings["max_episode_steps"]
         self.load_model = train_settings["load_model"]
         self.max_timesteps = train_settings["max_timesteps"]
@@ -224,7 +226,8 @@ class TrainSB3TD3(EnvInterface):
             base_run_dir = os.path.expanduser(os.environ["DRL_AGENT_RUN_DIR"])
         else:
             package_root = self._resolve_drl_agent_source_root()
-            base_run_dir = os.path.join(package_root, "runtime", "sb3_td3")
+            # Per-seed isolation: each seed gets its own models/logs/curriculum_state
+            base_run_dir = os.path.join(package_root, "runtime", "sb3_td3", f"seed_{self.seed}")
 
         self.run_dir = base_run_dir
 
@@ -284,10 +287,11 @@ class TrainSB3TD3(EnvInterface):
             self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv"
         )
         reward_header  = ["episode", "global_t", "steps", "total_reward", "mean_reward",
-                          "goal_reached", "collision", "timeout", "final_goal_dist_m"]
+                          "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m"]
         driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
                           "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
-                          "min_lidar_m", "mean_min_lidar_m", "goal_reached"]
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
+                          "mean_gazebo_rtf"]
         step_header = ["episode", "global_t", "episode_step", "action_source",
                        "action_0_norm", "action_1_norm",
                        "goal_dist_before_m", "goal_dist_after_m",
@@ -433,6 +437,7 @@ class TrainSB3TD3(EnvInterface):
                         round(ep_total_reward, 4),
                         round(ep_total_reward / max(ep_timesteps, 1), 4),
                         int(_goal_reached), int(_collision), int(_timeout),
+                        0,  # eval_cut: always 0 in non-curriculum mode
                         round(_final_goal_dist, 4),
                     ])
                 if _ep_v_buf:
@@ -447,6 +452,8 @@ class TrainSB3TD3(EnvInterface):
                             round(float(np.min(_ep_min_lidar_buf)), 4),
                             round(float(np.mean(_ep_min_lidar_buf)), 4),
                             int(_goal_reached),
+                            0,           # eval_cut: always 0 in non-curriculum mode
+                            float("nan"),  # mean_gazebo_rtf: not tracked by SB3
                         ])
 
                 # Evaluation
@@ -481,38 +488,60 @@ class TrainSB3TD3(EnvInterface):
         self.done_training = True
 
     def evaluate_and_print(self, evals, epoch, start_time):
-        """Evaluate agent performance"""
-        self.get_logger().info("=" * 50)
+        """Evaluate agent performance; returns metrics dict."""
+        self.get_logger().info("=" * 55)
         self.get_logger().info(f"Evaluating Epoch {epoch}")
-        self.get_logger().info(f"Time elapsed: {time.time() - start_time:.2f}s")
-        self.get_logger().info("=" * 50)
+        self.get_logger().info(f"Elapsed: {time.time() - start_time:.1f}s")
+        self.get_logger().info("=" * 55)
 
-        total_reward = np.zeros(self.eval_eps)
+        ENV_DIM = self.environment_dim
+        rewards, final_dists = [], []
+        success_count = collision_count = timeout_count = 0
 
-        for ep in range(self.eval_eps):
-            state = self.reset()
-            done = False
-            ep_timesteps = 0
+        for _ in range(self.eval_eps):
+            state    = self.reset()
+            done     = False
+            ep_steps = 0
+            ep_rew   = 0.0
 
-            while not done and ep_timesteps < self.max_episode_steps:
-                # Deterministic evaluation (no exploration noise)
+            while not done and ep_steps < self.max_episode_steps:
                 action = self.rl_agent.select_action(state, use_exploration=False)
-                state, reward, done, _ = self.step(action)
-                total_reward[ep] += reward
-                ep_timesteps += 1
+                state, reward, done, info = self.step(action)
+                ep_rew   += reward
+                ep_steps += 1
 
-        mean_reward = np.mean(total_reward)
-        std_reward  = np.std(total_reward)
+            s = np.asarray(state, dtype=np.float32).ravel()
+            rewards.append(ep_rew)
+            final_dists.append(float(s[ENV_DIM]))
+            if done and info:
+                success_count   += 1
+            elif done:
+                collision_count += 1
+            else:
+                timeout_count   += 1
+
+        n = self.eval_eps
+        metrics = {
+            "mean_reward":    float(np.mean(rewards)),
+            "std_reward":     float(np.std(rewards)),
+            "success_rate":   success_count   / n,
+            "collision_rate": collision_count / n,
+            "timeout_rate":   timeout_count   / n,
+            "mean_goal_dist": float(np.mean(final_dists)),
+        }
 
         self.get_logger().info(
-            f"Evaluation over {self.eval_eps} episodes: "
-            f"{mean_reward:.3f} ± {std_reward:.3f}"
+            f"Eval {n} eps | "
+            f"Reward {metrics['mean_reward']:.3f}±{metrics['std_reward']:.3f} | "
+            f"Success {metrics['success_rate']*100:.1f}% | "
+            f"Collision {metrics['collision_rate']*100:.1f}% | "
+            f"Timeout {metrics['timeout_rate']*100:.1f}% | "
+            f"GoalDist {metrics['mean_goal_dist']:.3f}m"
         )
 
-        evals.append(mean_reward)
+        evals.append(metrics["mean_reward"])
         np.save(f"{self.results_dir}/{self.file_name}", evals)
-
-        return mean_reward
+        return metrics
 
 
 def main(args=None):

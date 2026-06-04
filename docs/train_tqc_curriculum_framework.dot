@@ -1,0 +1,340 @@
+digraph TrainTQCCurriculumFramework {
+  rankdir=LR;
+  newrank=true;
+  splines=polyline;
+  compound=true;
+  nodesep=0.45;
+  ranksep=0.8;
+  pad=0.2;
+  bgcolor="white";
+  labelloc="t";
+  label="train_tqc_curriculum_agent.py Training Framework";
+  fontname="Helvetica";
+
+  graph [fontname="Helvetica"];
+  node [
+    shape=box,
+    style="rounded,filled",
+    fontname="Helvetica",
+    fontsize=11,
+    color="#475569",
+    fillcolor="white",
+    margin="0.12,0.08"
+  ];
+  edge [
+    fontname="Helvetica",
+    fontsize=10,
+    color="#64748b",
+    arrowsize=0.8
+  ];
+
+  subgraph cluster_sim {
+    label="Simulation / ROS2 Environment";
+    color="#67e8f9";
+    style="rounded";
+    penwidth=1.5;
+    fillcolor="#ecfeff";
+
+    sim_env [
+      label="environment_curriculum.py\nCurriculum stage control",
+      fillcolor="#ecfeff"
+    ];
+
+    sim_reset [
+      label="Reset Episode\n- place robot\n- place humans/obstacles\n- apply stage",
+      fillcolor="#f0fdfa"
+    ];
+
+    sim_step [
+      label="Step Simulation\n- action -> waypoint/controller\n- propagate Gazebo\n- reward / done / target",
+      fillcolor="#f0fdfa"
+    ];
+
+    sim_state [
+      label="Return Observation\nLiDAR + goal + robot state",
+      fillcolor="#f0fdfa"
+    ];
+
+    sim_metrics [
+      label="Episode / Eval Signals\nsuccess, collision, timeout\ncurriculum promotion stats",
+      fillcolor="#f0fdfa"
+    ];
+
+    sim_pad [
+      label="",
+      shape=box,
+      width=0.01,
+      height=5.3,
+      fixedsize=true,
+      style=invis
+    ];
+
+    {
+      rank=same;
+      sim_env;
+      sim_reset;
+      sim_step;
+      sim_state;
+      sim_metrics;
+    }
+
+    sim_env -> sim_reset -> sim_step -> sim_state -> sim_metrics [
+      style=invis,
+      weight=100
+    ];
+
+    sim_env:s -> sim_reset:n [constraint=false];
+    sim_env:s -> sim_step:n [constraint=false];
+    sim_reset:s -> sim_state:n [constraint=false];
+    sim_step:s -> sim_state:n [constraint=false];
+    sim_step:s -> sim_metrics:n [constraint=false];
+    sim_metrics -> sim_pad [style=invis, weight=20];
+  }
+
+  subgraph cluster_loop {
+    label="train_tqc_curriculum_agent.py Main Loop";
+    color="#cbd5e1";
+    style="rounded";
+    penwidth=1.4;
+
+    loop_driver [
+      label="train_online()\n- warmup / policy phase\n- episode loop\n- eval_freq check",
+      fillcolor="#f8fafc"
+    ];
+
+    loop_select [
+      label="Select Action\nwarmup: random\nafter warmup: TQC actor",
+      fillcolor="#f8fafc"
+    ];
+
+    loop_store [
+      label="Store Transition\n(state, action, next_state,\nreward, done)",
+      fillcolor="#f8fafc"
+    ];
+
+    loop_log [
+      label="Episode Logging\nCSV / state save / TensorBoard",
+      fillcolor="#f8fafc"
+    ];
+
+    loop_eval [
+      label="Evaluation + Curriculum\n- evaluate episodes\n- promote stage if passed",
+      fillcolor="#f8fafc"
+    ];
+
+    loop_pad [
+      label="",
+      shape=box,
+      width=0.01,
+      height=5.3,
+      fixedsize=true,
+      style=invis
+    ];
+
+    {
+      rank=same;
+      loop_driver;
+      loop_select;
+      loop_store;
+      loop_log;
+      loop_eval;
+    }
+
+    loop_driver -> loop_select -> loop_store -> loop_log -> loop_eval [
+      style=invis,
+      weight=100
+    ];
+
+    loop_driver:s -> loop_select:n [constraint=false];
+    loop_store:s -> loop_log:n [constraint=false];
+    loop_log:s -> loop_eval:n [label="if eval_due", constraint=false];
+    loop_eval:n -> loop_driver:s [label="next episode", constraint=false];
+    loop_log:n -> loop_driver:s [label="next episode", constraint=false];
+    loop_eval -> loop_pad [style=invis, weight=20];
+  }
+
+  subgraph cluster_tqc {
+    label="TQC Reinforcement Learning Model";
+    color="#a78bfa";
+    style="rounded";
+    penwidth=1.6;
+    fillcolor="#f5f3ff";
+
+    replay [
+      label="Replay Buffer",
+      fillcolor="#faf5ff"
+    ];
+
+    tqc_pad [
+      label="",
+      shape=box,
+      width=0.01,
+      height=5.3,
+      fixedsize=true,
+      style=invis
+    ];
+
+    subgraph cluster_actor {
+      label="Actor Branch";
+      color="#c4b5fd";
+      style="rounded";
+
+      actor_in [
+        label="State Input",
+        fillcolor="#f5f3ff"
+      ];
+
+      actor_mlp [
+        label="Actor MLP\nGaussian policy",
+        fillcolor="#ede9fe"
+      ];
+
+      actor_out [
+        label="Action\nselect_action()",
+        fillcolor="#ede9fe"
+      ];
+
+      {
+        rank=same;
+        actor_in;
+        actor_mlp;
+        actor_out;
+      }
+
+      actor_in -> actor_mlp -> actor_out [
+        style=invis,
+        weight=100
+      ];
+
+      actor_in:s -> actor_mlp:n [constraint=false];
+      actor_mlp:s -> actor_out:n [constraint=false];
+    }
+
+    subgraph cluster_critic {
+      label="Critic Branch";
+      color="#c4b5fd";
+      style="rounded";
+
+      critic_in [
+        label="State + Action",
+        fillcolor="#f5f3ff"
+      ];
+
+      critic_ens [
+        label="Quantile Critics\nensemble outputs",
+        fillcolor="#ede9fe"
+      ];
+
+      critic_target [
+        label="Target Critic\nsort + truncate\n top quantiles",
+        fillcolor="#ede9fe"
+      ];
+
+      critic_loss [
+        label="Critic / Actor / Alpha Loss\nbackprop + target update",
+        fillcolor="#ede9fe"
+      ];
+
+      {
+        rank=same;
+        critic_in;
+        critic_ens;
+        critic_target;
+        critic_loss;
+      }
+
+      critic_in -> critic_ens -> critic_target -> critic_loss [
+        style=invis,
+        weight=100
+      ];
+
+      critic_in:s -> critic_ens:n [constraint=false];
+      critic_ens:s -> critic_target:n [constraint=false];
+      critic_target:s -> critic_loss:n [constraint=false];
+    }
+
+    subgraph cluster_aux {
+      label="Recommended Auxiliary Prediction Insertion";
+      color="#f59e0b";
+      style="rounded,dashed";
+      penwidth=1.6;
+
+      aux_encoder [
+        label="NEW: Shared Temporal Encoder\nframe stacking / scan difference\n(optional recurrent encoder)",
+        fillcolor="#fff7ed",
+        color="#f59e0b"
+      ];
+
+      aux_head [
+        label="NEW: Auxiliary Prediction Head\n- future min clearance\n- collision within H steps\n- future occupancy / LiDAR summary",
+        fillcolor="#fff7ed",
+        color="#f59e0b"
+      ];
+
+      aux_labels [
+        label="NEW: Future Labels\nfrom simulation rollout",
+        fillcolor="#fff7ed",
+        color="#f59e0b"
+      ];
+
+      aux_loss [
+        label="NEW: Auxiliary Loss\nadded to training loss",
+        fillcolor="#fff7ed",
+        color="#f59e0b"
+      ];
+
+      {
+        rank=same;
+        aux_encoder;
+        aux_head;
+        aux_labels;
+        aux_loss;
+      }
+
+      aux_encoder -> aux_head -> aux_labels -> aux_loss [
+        style=invis,
+        weight=100
+      ];
+
+      aux_encoder:s -> aux_head:n [constraint=false];
+      aux_head:s -> aux_loss:n [constraint=false];
+      aux_labels:s -> aux_loss:n [constraint=false];
+    }
+
+    replay:e -> critic_in:w [label="sample batch", penwidth=1.5];
+    actor_out -> critic_in [style=dashed, label="policy action"];
+    actor_mlp -> critic_loss [style=dashed, label="actor loss path"];
+    aux_loss -> critic_loss [color="#f59e0b", penwidth=1.4, label="joint training"];
+    critic_loss -> tqc_pad [style=invis, weight=20];
+  }
+
+  note [
+    shape=note,
+    label="Recommended insertion point:\nReplace direct state input with a shared temporal encoder,\nthen feed its features to both Actor and Critic.\nAttach Auxiliary Prediction Head to the same encoder.",
+    fillcolor="#fff7ed",
+    color="#f59e0b",
+    fontname="Helvetica",
+    fontsize=10
+  ];
+
+  sim_state:e -> loop_driver:w [ltail=cluster_sim, lhead=cluster_loop, label="initial / next state"];
+  loop_select:e -> actor_in:w [ltail=cluster_loop, lhead=cluster_tqc, label="state"];
+  actor_out:w -> sim_step:e [ltail=cluster_tqc, lhead=cluster_sim, label="action"];
+  sim_metrics:e -> loop_log:w [ltail=cluster_sim, lhead=cluster_loop, label="episode result"];
+  loop_store -> replay [
+    ltail=cluster_loop,
+    lhead=cluster_tqc,
+    label="transition",
+    penwidth=1.7,
+    color="#7c3aed",
+    tailport=e,
+    headport=w
+  ];
+  sim_reset:e -> loop_driver:w [ltail=cluster_sim, lhead=cluster_loop, label="new episode"];
+
+  loop_store -> aux_labels [ltail=cluster_loop, lhead=cluster_tqc, style=dashed, color="#f59e0b", label="future supervision"];
+  aux_encoder:e -> actor_mlp:w [color="#f59e0b", penwidth=1.5, label="recommended replacement"];
+  aux_encoder:e -> critic_in:w [color="#f59e0b", penwidth=1.5];
+  { rank=sink; note; }
+  note -> aux_encoder [style=dashed, color="#f59e0b"];
+}

@@ -61,6 +61,7 @@ install(
     scripts/utils/buffer.py
     scripts/utils/point_cloud2.py
     scripts/utils/file_manager.py
+    scripts/utils/episode_metrics.py
     scripts/environment/environment_interface.py
     scripts/environment/environment.py
     scripts/environment/environment_360.py
@@ -70,6 +71,10 @@ install(
     scripts/policy/train_sac_curriculum_agent.py
     scripts/policy/train_tqc_ieqn_curriculum_agent.py
     scripts/policy/train_a3c_curriculum_agent.py
+    scripts/policy/train_sb3_sac_curriculum_agent.py
+    scripts/policy/train_sb3_td3_curriculum_agent.py
+    scripts/policy/generalization_eval.py
+    scripts/utils/aggregate_results.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

@@ -1,17 +1,17 @@
 train_settings:
-  # === 재현성 ===
+  # === 재현성 — TQC와 동일한 seed로 공정 비교 ===
   seed: 0
 
-  # === 환경/롤아웃 ===
-  max_episode_steps: 500        # 환경에 맞게 조정
-  max_timesteps: 1000000
+  # === 환경/롤아웃 — TQC 기준 통일 (10 Hz, 60초 episode) ===
+  max_episode_steps: 600        # 공통 protocol (was 500)
+  max_timesteps: 2000000        # 공통 protocol (was 1000000)
 
   # === 모델 로드/체크포인트/평가 ===
   load_model: false
-  use_checkpoints: true
-  eval_freq: 5000
+  use_checkpoints: false        # 공통 protocol: step-wise off-policy 업데이트 (was true)
+  eval_freq: 12000              # TQC와 동일 (was 5000)
   eval_eps: 10
-  timesteps_before_training: 25000  # 워밍업(랜덤 정책) 후 학습 시작
+  timesteps_before_training: 12000  # TQC와 동일 (was 25000)
 
   # === 로그/파일명 접두사 ===
   base_file_name: "tqc_ieqn_agent"

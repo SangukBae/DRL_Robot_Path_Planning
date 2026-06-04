@@ -57,7 +57,8 @@ class TrainA3CCurriculum(TrainA3C):
                           "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m"]
         driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
                           "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
-                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut"]
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
+                          "mean_gazebo_rtf"]
         step_header    = ["episode", "global_t", "episode_step", "action_source",
                           "action_0_norm", "action_1_norm",
                           "goal_dist_before_m", "goal_dist_after_m",
@@ -120,7 +121,7 @@ class TrainA3CCurriculum(TrainA3C):
                 "episode", "global_t", "steps",
                 "total_reward", "mean_reward",
                 "goal_reached", "collision", "timeout", "eval_cut",
-                "final_goal_dist_m", "curriculum_stage",
+                "final_goal_dist_m", "curriculum_stage", "mean_gazebo_rtf",
             ])
         self.get_logger().info(
             f"[Curriculum] Episode log (with stage): {self._curriculum_reward_csv}"
@@ -530,6 +531,7 @@ class TrainA3CCurriculum(TrainA3C):
                             round(float(np.min(_ep_min_lidar_buf)), 4),
                             round(float(np.mean(_ep_min_lidar_buf)), 4),
                             int(goal_reached), int(force_eval_cut),
+                            float("nan"),  # mean_gazebo_rtf: not tracked by A3C
                         ])
 
                 with open(self._curriculum_reward_csv, "a", newline="") as _f:
@@ -541,6 +543,7 @@ class TrainA3CCurriculum(TrainA3C):
                         int(force_eval_cut),
                         round(final_dist, 4),
                         self._curriculum_stage,
+                        float("nan"),  # mean_gazebo_rtf: not tracked by A3C
                     ])
 
                 if not force_eval_cut:

@@ -197,10 +197,11 @@ class TrainA3C(EnvInterface):
         self._step_csv    = os.path.join(self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv")
 
         reward_header  = ["episode", "global_t", "steps", "total_reward", "mean_reward",
-                          "goal_reached", "collision", "timeout", "final_goal_dist_m"]
+                          "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m"]
         driving_header = ["episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
                           "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
-                          "min_lidar_m", "mean_min_lidar_m", "goal_reached"]
+                          "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
+                          "mean_gazebo_rtf"]
         step_header    = ["episode", "global_t", "episode_step", "action_source",
                           "action_0_norm", "action_1_norm",
                           "goal_dist_before_m", "goal_dist_after_m",
@@ -320,6 +321,7 @@ class TrainA3C(EnvInterface):
                         round(ep_total_reward, 4),
                         round(ep_total_reward / max(ep_timesteps, 1), 4),
                         int(_goal_reached), int(_collision), int(_timeout),
+                        0,  # eval_cut: single-stage never cuts mid-episode for eval
                         round(_final_goal_dist, 4),
                     ])
                 if _ep_v_buf:
@@ -333,7 +335,8 @@ class TrainA3C(EnvInterface):
                             round(_ep_initial_goal_dist - _final_goal_dist, 4),
                             round(float(np.min(_ep_min_lidar_buf)), 4),
                             round(float(np.mean(_ep_min_lidar_buf)), 4),
-                            int(_goal_reached),
+                            int(_goal_reached), 0,  # eval_cut: single-stage
+                            float("nan"),  # mean_gazebo_rtf: not tracked
                         ])
 
                 if self.use_checkpoints and allow_train:

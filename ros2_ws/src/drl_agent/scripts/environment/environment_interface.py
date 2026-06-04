@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -80,6 +81,29 @@ class EnvInterface(Node):
         except Exception as e:
             self.get_logger().error(f"Service call /action_space_sample failed: {e}")
         return np.array(future.result().action)
+
+    def _resolve_seed_override(self, default_seed: int) -> int:
+        """Return the seed to use, allowing a per-run override for multi-seed sweeps.
+
+        Priority: ROS2 parameter ``seed`` (>=0) > env var ``DRL_AGENT_SEED`` >
+        ``default_seed`` (the value read from the YAML config). This lets the same
+        config file be swept across seeds without editing it — required for the
+        paper protocol (>=3 seeds, mean ± std):
+
+            ros2 run drl_agent <trainer>.py --ros-args -p seed:=1
+            DRL_AGENT_SEED=1 ros2 run drl_agent <trainer>.py
+        """
+        seed = int(default_seed)
+        if not self.has_parameter("seed"):
+            self.declare_parameter("seed", -1)
+        ovr = self.get_parameter("seed").get_parameter_value().integer_value
+        if ovr is None or ovr < 0:
+            env_seed = os.environ.get("DRL_AGENT_SEED", "").strip()
+            ovr = int(env_seed) if env_seed.lstrip("-").isdigit() else -1
+        if ovr is not None and ovr >= 0 and int(ovr) != seed:
+            seed = int(ovr)
+            self.get_logger().info(f"[Seed] Config seed overridden → {seed}")
+        return seed
 
     def set_env_seed(self, seed):
         """Set the seed of the environment"""

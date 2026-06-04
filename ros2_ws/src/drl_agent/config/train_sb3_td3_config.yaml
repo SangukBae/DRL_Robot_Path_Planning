@@ -1,10 +1,17 @@
 train_settings:
-  seed: 40
-  use_checkpoints: false
+  # 재현성 — TQC와 동일한 seed로 공정 비교
+  seed: 0
+
+  # 환경/롤아웃 — TQC 기준 통일 (10 Hz, 60초 episode)
+  max_episode_steps: 600
+  max_timesteps: 2000000
+
+  # 모델 로드/체크포인트/평가
   load_model: false
-  timesteps_before_training: 25000
-  eval_freq: 5000
+  use_checkpoints: false
+  eval_freq: 12000                  # TQC와 동일
   eval_eps: 10
-  max_timesteps: 1000000
-  max_episode_steps: 500
+  timesteps_before_training: 12000  # TQC와 동일
+
+  # 로그/파일명 접두사
   base_file_name: "sb3_td3_agent"

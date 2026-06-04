@@ -40,6 +40,9 @@ environment:
   human_pause_duration: 1.0      # seconds to stay stopped after a random stop
   human_heading_jitter_deg: 15.0 # max random heading perturbation applied to desired yaw [deg]
   human_retarget_prob_per_sec: 0.02  # probability per second of picking a new random waypoint
+  human_heading_jitter_on_retarget_only: true  # keep one jitter per waypoint segment to avoid per-tick snap turns
+  human_min_retarget_interval: 1.5   # minimum seconds before probabilistic retargeting can happen again
+  human_desired_yaw_rate_limit: 1.2  # max desired-heading change rate [rad/s]
   human_scan_dropout_prob: 0.03  # probability each LiDAR bin from a human is zeroed
   human_scan_noise_std: 0.05     # gaussian noise std added to human LiDAR returns [m]
   # Kinematic motion model limits
