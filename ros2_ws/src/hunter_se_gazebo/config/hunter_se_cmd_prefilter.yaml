@@ -10,8 +10,9 @@ hunter_se_cmd_prefilter:
     # Matches vehicle_steering_limit_deg in environment.yaml (21.58°).
     steering_limit_deg: 21.58
     # Rate limit for steering angle tracking [deg/s].
-    # 315.789 deg/s → full stroke (21.58°) in ~68 ms.
-    steering_rate_deg_s: 315.789
+    # 200 deg/s → full stroke (21.58°) in ~108 ms. Lowered from 315.789 (~68 ms)
+    # to reduce aggressive front-steering back-and-forth (RViz chatter).
+    steering_rate_deg_s: 200.0
     min_speed_for_steering_mps: 0.15
     speed_lag_tau_sec: 0.05
     accel_limit_mps2: 6.0

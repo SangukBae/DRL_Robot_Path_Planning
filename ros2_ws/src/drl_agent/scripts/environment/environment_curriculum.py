@@ -20,6 +20,8 @@ in sync with the actual number of stages in the config that was passed here.
 
 import os
 import sys
+import math
+import copy
 
 # Make sure the environment directory is on the path so we can import Environment.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +64,46 @@ class EnvironmentCurriculum(Environment):
     and what motion parameters are used — no pool rebuild ever happens.
     """
 
+    # ------------------------------------------------------------------ #
+    #  Auxiliary-Prediction-friendly pedestrian motion                      #
+    # ------------------------------------------------------------------ #
+    # Goal: humans must be PREDICTABLE over short horizons (≈ constant
+    # velocity) yet not fully static, with uncertainty injected only at the
+    # *mode* level — i.e. a new waypoint every few seconds — and they must
+    # NOT react to the robot (reactive pedestrians are for final evaluation
+    # only). The predictable profile (low accel / low yaw rate / bounded
+    # waypoint distance / segment timeout / retarget-only jitter / weak
+    # stop-go) lives in the YAML `environment:` block so it applies to BOTH
+    # the curriculum AND the plain environment.py (non-curriculum) path.
+    #
+    # The keys below are the human-motion knobs a stage MAY override; if a
+    # stage omits a key it simply inherits the base YAML value. So a stage can
+    # e.g. lengthen segments or add pauses without redefining the whole profile.
+    HUMAN_MOTION_OVERRIDE_KEYS = (
+        "human_max_accel",
+        "human_max_yaw_rate",
+        "human_max_yaw_accel",
+        "human_desired_yaw_rate_limit",
+        "human_min_retarget_interval",
+        "human_retarget_prob_per_sec",
+        "human_stop_prob_per_sec",
+        "human_pause_duration",
+        "human_waypoint_dist_min",
+        "human_waypoint_dist_max",
+        "human_max_segment_sec",
+        # Falcon-lite goal-driven + weak social avoidance (scalar knobs only; the
+        # on/off toggles human_goal_driven_enabled / human_social_avoid_enabled
+        # stay global in the YAML). A harder stage can e.g. widen the goal span or
+        # strengthen avoidance; an omitted key inherits the base value.
+        "human_goal_reach_threshold",
+        "human_goal_pause_duration",
+        "human_local_step_m",
+        "human_goal_span_multiplier",
+        "human_goal_min_span_m",
+        "human_social_avoid_radius",
+        "human_social_avoid_strength",
+    )
+
     def __init__(self):
         # Prefer the curriculum config by default. The base Environment loader
         # checks the explicit ROS parameter first, so a user-provided
@@ -89,6 +131,11 @@ class EnvironmentCurriculum(Environment):
         self.add_on_set_parameters_callback(self._on_set_parameters)
         self._current_stage = self.curriculum_initial_stage
         self._last_stage_apply_logged = None
+        # Snapshot the base human-motion knobs (loaded from the YAML by the base
+        # Environment) BEFORE any stage is applied. Every stage is then computed
+        # as base + its own overrides, so omitting a key inherits the base value
+        # instead of leaking the previous stage's value.
+        self._snapshot_human_base()
         self._apply_curriculum_stage(self._current_stage)
         self.get_logger().info(
             f"[Curriculum] Ready — stage {self._current_stage} "
@@ -132,8 +179,87 @@ class EnvironmentCurriculum(Environment):
     #  Stage application                                                    #
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _deep_merge(dst: dict, src: dict) -> dict:
+        """Recursively merge src INTO a copy of dst and return it.
+
+        Dict values are merged key-by-key (recursing into nested dicts); every
+        other type (scalars, lists) is replaced wholesale. Used for per-stage
+        `localization:` overrides so a stage can change a single nested value
+        (e.g. map_type_multipliers.corridor.sigma_xy) without clobbering the
+        sibling map-type entries. dst is not mutated."""
+        out = copy.deepcopy(dst) if isinstance(dst, dict) else {}
+        for k, v in (src or {}).items():
+            if isinstance(v, dict) and isinstance(out.get(k), dict):
+                out[k] = EnvironmentCurriculum._deep_merge(out[k], v)
+            else:
+                out[k] = copy.deepcopy(v)
+        return out
+
+    def _resolve_noise_override(self, stage: dict, *, profile_key: str,
+                                inline_key: str, catalog_key: str) -> dict:
+        """Resolve a stage's noise override as (named profile) + (inline block).
+
+        Pure SELECTOR — no noise maths. Returns the merged override dict to be
+        deep-merged onto the (already restored) base:
+          • stage[profile_key] = <name>  → looks <name> up in self.config[catalog_key]
+          • stage[inline_key]  = {...}    → inline override, applied ON TOP of the
+                                            named profile (legacy path; still works)
+        Returns {} when the stage selects neither (→ inherit base). An unknown
+        profile name is warned about and ignored (falls back to inline/base)."""
+        out = {}
+        name = stage.get(profile_key)
+        if name:
+            catalog = self.config.get(catalog_key, {}) or {}
+            prof = catalog.get(name)
+            if isinstance(prof, dict):
+                out = self._deep_merge(out, prof)
+            else:
+                self.get_logger().warn(
+                    f"[Curriculum] unknown {profile_key}='{name}' "
+                    f"(not in {catalog_key}); using inline/base only."
+                )
+        inline = stage.get(inline_key)
+        if isinstance(inline, dict):
+            out = self._deep_merge(out, inline)
+        return out
+
+    def _snapshot_human_base(self):
+        """Capture the YAML-loaded base values of every stage-overridable human
+        knob, so each stage is applied as (base + that stage's overrides) and
+        omitting a key inherits the base value (no cross-stage leakage)."""
+        self._human_base = {k: getattr(self, k) for k in self.HUMAN_MOTION_OVERRIDE_KEYS}
+        self._human_base.update({
+            "human_heading_jitter":    self.human_heading_jitter,
+            # Falcon-lite avoidance cap is stored in radians; a stage overrides it
+            # via the _deg key (handled specially below), so snapshot the radians.
+            "human_social_avoid_max_heading_offset": self.human_social_avoid_max_heading_offset,
+            "human_scan_noise_std":    self.human_scan_noise_std,
+            "human_scan_dropout_prob": self.human_scan_dropout_prob,
+            "human_placement_mode":    getattr(self, "human_placement_mode", "quadrants"),
+            "human_mode_weights":      dict(self.human_mode_weights),
+            "human_mode_params":       copy.deepcopy(self.human_mode_params),
+            # Structured map curriculum (docs/map_curriculum_plan.md §8): base
+            # map-sampling config so a stage that omits a field inherits the YAML
+            # base instead of leaking the previous stage's map setting.
+            "allowed_map_types":       list(getattr(self, "allowed_map_types", [])),
+            "map_type_probs":          list(getattr(self, "map_type_probs", [])),
+            "allowed_static_groups":   list(getattr(self, "allowed_static_groups", [])),
+            "eval_map_types":          list(getattr(self, "eval_map_types", [])),
+            # Base active counts (YAML maximums) so a stage omitting active_static /
+            # active_humans inherits the base instead of the previous stage's count.
+            "num_of_static_obstacles": self.num_of_static_obstacles,
+            "num_of_humans":           self.num_of_humans,
+            # Base goal-obs (localization-uncertainty) + proprio noise configs.
+            # The curriculum only SELECTS/merges a noise profile per stage; the
+            # noise maths lives entirely in environment.py. Deep-restored each
+            # stage so a partial override never leaks across stages.
+            "loc_noise":               copy.deepcopy(self.loc_noise),
+            "proprio_noise":           copy.deepcopy(self.proprio_noise),
+        })
+
     def _apply_curriculum_stage(self, idx: int):
-        """Override active obstacle counts and motion parameters for stage idx.
+        """Apply stage idx as (base human knobs) + (this stage's overrides).
 
         Pool sizes are fixed at startup (from yaml obstacle_pool_*_size).
         This method only changes the *active* subset; inactive pool slots
@@ -144,43 +270,141 @@ class EnvironmentCurriculum(Environment):
         idx = max(0, min(idx, len(self.curriculum_stages) - 1))
         stage = self.curriculum_stages[idx]
 
-        # Active counts — never exceed pre-allocated pool sizes
+        # Restore every stage-overridable human knob to its base (YAML) value
+        # first, so a stage that omits a key inherits the base — not whatever the
+        # previously-applied stage left behind.
+        b = self._human_base
+        for key in self.HUMAN_MOTION_OVERRIDE_KEYS:
+            setattr(self, key, b[key])
+        self.human_heading_jitter    = b["human_heading_jitter"]
+        self.human_social_avoid_max_heading_offset = b["human_social_avoid_max_heading_offset"]
+        self.human_scan_noise_std    = b["human_scan_noise_std"]
+        self.human_scan_dropout_prob = b["human_scan_dropout_prob"]
+        self.human_placement_mode    = b["human_placement_mode"]
+        self.human_mode_weights      = dict(b["human_mode_weights"])
+        self.human_mode_params       = copy.deepcopy(b["human_mode_params"])
+        self.num_of_static_obstacles = b["num_of_static_obstacles"]
+        self.num_of_humans           = b["num_of_humans"]
+        self.loc_noise               = copy.deepcopy(b["loc_noise"])
+        self.proprio_noise           = copy.deepcopy(b["proprio_noise"])
+        # Structured map curriculum: restore base map-sampling config before
+        # applying this stage's overrides (no cross-stage leakage).
+        self.allowed_map_types       = list(b["allowed_map_types"])
+        self.map_type_probs          = list(b["map_type_probs"])
+        self.allowed_static_groups   = list(b["allowed_static_groups"])
+        self.eval_map_types          = list(b["eval_map_types"])
+
+        # Active counts — never exceed pre-allocated pool sizes. Base values were
+        # just restored above, so a stage that omits a key inherits the base.
+        # Dynamic obstacles are removed: only static obstacles and humans remain.
         self.num_of_static_obstacles = min(
             int(stage.get("active_static",  self.num_of_static_obstacles)),
             self.obstacle_pool_static_size,
-        )
-        self.num_of_dynamic_obstacles = min(
-            int(stage.get("active_dynamic", self.num_of_dynamic_obstacles)),
-            self.obstacle_pool_dynamic_size,
         )
         self.num_of_humans = min(
             int(stage.get("active_humans",  self.num_of_humans)),
             self.obstacle_pool_human_size,
         )
 
-        # Dynamic obstacle speed range
-        if "dynamic_speed_min" in stage:
-            self.dynamic_speed_min = float(stage["dynamic_speed_min"])
-        if "dynamic_speed_max" in stage:
-            self.dynamic_speed_max = float(stage["dynamic_speed_max"])
-
         # Human sensor noise / dropout (domain randomisation intensity)
         if "human_scan_noise_std" in stage:
             self.human_scan_noise_std = float(stage["human_scan_noise_std"])
         if "human_scan_dropout_prob" in stage:
             self.human_scan_dropout_prob = float(stage["human_scan_dropout_prob"])
-        self.human_placement_mode = str(stage.get("human_placement_mode", "quadrants"))
+        if "human_placement_mode" in stage:
+            self.human_placement_mode = str(stage["human_placement_mode"])
+
+        # Per-stage overrides of the scalar human-motion knobs (base already
+        # restored above; a stage only lists the keys it wants to change).
+        for key in self.HUMAN_MOTION_OVERRIDE_KEYS:
+            if key in stage:
+                setattr(self, key, float(stage[key]))
+        if "human_heading_jitter_deg" in stage:
+            self.human_heading_jitter = math.radians(float(stage["human_heading_jitter_deg"]))
+        # Falcon-lite avoidance cap (degrees -> radians), stage-overridable so a
+        # harder stage can let humans bend a bit more to dodge each other.
+        if "human_social_avoid_max_heading_offset_deg" in stage:
+            self.human_social_avoid_max_heading_offset = math.radians(
+                float(stage["human_social_avoid_max_heading_offset_deg"]))
+        # Keep heading changes confined to retarget instants so motion between
+        # waypoints stays (near-)constant heading — ideal for prediction.
+        self.human_heading_jitter_on_retarget_only = True
+
+        # Per-stage pedestrian behaviour-mode controls (crossing / along_path /
+        # waiting / slow_turn):
+        #   • human_mode_weights → replaces the mix (a mix is atomic)
+        #   • human_mode_params  → deep-merged per mode, so a stage can retune a
+        #     few modes while keeping the base tuning of the others.
+        if "human_mode_weights" in stage:
+            self.human_mode_weights = dict(stage["human_mode_weights"])
+        if "human_mode_params" in stage:
+            for mode, params in (stage["human_mode_params"] or {}).items():
+                self.human_mode_params.setdefault(mode, {}).update(params or {})
+
+        # ── Per-stage NOISE PROFILE selection (curriculum's only noise role) ──
+        # The stage picks a goal-obs (localization-uncertainty) noise profile and
+        # an optional proprio-noise profile; environment.py owns the maths. Both
+        # are DEEP-merged onto the deep-restored base, so a partial override never
+        # drops sibling/other keys and never leaks across stages.
+        #
+        # Two equivalent ways to set the goal-obs profile (selector only):
+        #   1. localization_profile: <name>   → looks up `localization_profiles`
+        #   2. localization: {...}            → inline override (legacy; still works)
+        # If both are given, the named profile is applied first, then the inline
+        # block on top. Resolution order: base → named profile → inline.
+        loc_override = self._resolve_noise_override(
+            stage, profile_key="localization_profile",
+            inline_key="localization", catalog_key="localization_profiles")
+        if loc_override:
+            self.loc_noise = self._deep_merge(self.loc_noise, loc_override)
+
+        # Proprioception observation noise — a SEPARATE axis (speed / yaw-rate /
+        # steering corruption). Same profile-or-inline selection.
+        pp_override = self._resolve_noise_override(
+            stage, profile_key="proprio_noise_profile",
+            inline_key="proprio_noise", catalog_key="proprio_noise_profiles")
+        if pp_override:
+            self.proprio_noise = self._deep_merge(self.proprio_noise, pp_override)
+
+        # Structured map curriculum per-stage overrides (base restored above).
+        # A stage that omits these inherits the YAML base. map_type_probs is kept
+        # only when it matches allowed_map_types length (else uniform downstream).
+        if "allowed_map_types" in stage:
+            self.allowed_map_types = [
+                m for m in (stage["allowed_map_types"] or []) if isinstance(m, str)
+            ] or self.allowed_map_types
+        if "map_type_probs" in stage:
+            self.map_type_probs = [float(p) for p in (stage["map_type_probs"] or [])]
+        if "allowed_static_groups" in stage:
+            self.allowed_static_groups = [
+                str(g) for g in (stage["allowed_static_groups"] or [])
+            ]
+        if "eval_map_types" in stage:
+            self.eval_map_types = [
+                m for m in (stage["eval_map_types"] or []) if isinstance(m, str)
+            ]
 
         if self._last_stage_apply_logged != idx:
             self.get_logger().info(
                 f"[Curriculum] Stage {idx} '{self._stage_name(idx)}' applied — "
                 f"static={self.num_of_static_obstacles} "
-                f"dynamic={self.num_of_dynamic_obstacles} "
                 f"humans={self.num_of_humans} "
                 f"human_place={self.human_placement_mode} "
-                f"dyn_spd=[{self.dynamic_speed_min:.2f}, {self.dynamic_speed_max:.2f}] "
                 f"noise={self.human_scan_noise_std:.3f} "
-                f"dropout={self.human_scan_dropout_prob:.3f}"
+                f"dropout={self.human_scan_dropout_prob:.3f} | "
+                f"motion(acc={self.human_max_accel:.2f} "
+                f"yaw_rate={self.human_max_yaw_rate:.2f} "
+                f"retarget_int={self.human_min_retarget_interval:.1f}s "
+                f"retarget_p={self.human_retarget_prob_per_sec:.3f} "
+                f"stop_p={self.human_stop_prob_per_sec:.3f}) "
+                f"mode_mix={self.human_mode_weights or 'uniform'} | "
+                f"maps={self.allowed_map_types}"
+                f"{('p=' + str(self.map_type_probs)) if self.map_type_probs else ''} "
+                f"groups={self.allowed_static_groups or 'all'} | "
+                f"loc(on={self.loc_noise['enabled']} "
+                f"sig_xy={self.loc_noise['sigma_xy_m']:.2f} "
+                f"delay={self.loc_noise['delay_steps']} "
+                f"gt_rew={self.loc_noise['use_gt_for_reward']})"
             )
             self._last_stage_apply_logged = idx
 
@@ -207,7 +431,7 @@ class EnvironmentCurriculum(Environment):
                 f"{stage} ('{self._stage_name(stage)}')"
             )
             self._current_stage = stage
-        # Always re-apply so dynamic_speed_* and noise settings take effect
+        # Always re-apply so per-stage counts and noise settings take effect
         # even on the very first call or after a parameter write.
         self._apply_curriculum_stage(self._current_stage)
 

@@ -62,6 +62,9 @@ install(
     scripts/utils/point_cloud2.py
     scripts/utils/file_manager.py
     scripts/utils/episode_metrics.py
+    scripts/utils/pure_pursuit.py
+    scripts/utils/sim_validation.py            # SIM_VALIDATION
+    scripts/utils/sim_validation_summary.py    # SIM_VALIDATION
     scripts/environment/environment_interface.py
     scripts/environment/environment.py
     scripts/environment/environment_360.py
@@ -74,7 +77,16 @@ install(
     scripts/policy/train_sb3_sac_curriculum_agent.py
     scripts/policy/train_sb3_td3_curriculum_agent.py
     scripts/policy/generalization_eval.py
+    scripts/policy/real_policy_runner.py
+    scripts/policy/sim_validation_runner.py    # SIM_VALIDATION
     scripts/utils/aggregate_results.py
+    scripts/policy/aux_prediction.py            # AUX_PRED
+    scripts/policy/aux_prediction_losses.py     # AUX_PRED
+    scripts/policy/aux_prediction_temporal.py   # AUX_PRED
+    scripts/environment/aux_prediction_labels.py # AUX_PRED
+    scripts/utils/aux_ablation_logging.py       # AUX_ABLATION
+    scripts/utils/aux_ablation_summary.py       # AUX_ABLATION
+    scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics
   DESTINATION
     lib/${PROJECT_NAME}
 )

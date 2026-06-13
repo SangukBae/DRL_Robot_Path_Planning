@@ -35,6 +35,8 @@ import math
 import numpy as np
 
 # Canonical column order for the paper metrics (header == row guaranteed).
+# NOTE: append-only — new metrics go at the END so existing positional readers of
+# the older columns keep working (stl / psc were added for the aux experiments).
 METRIC_COLUMNS = [
     "path_length_m",
     "spl",
@@ -45,6 +47,12 @@ METRIC_COLUMNS = [
     "near_collision_count",
     "travel_time_s",
     "mean_speed_mps",
+    "stl",                   # Success weighted by (normalized) Time Length
+    "lidar_clearance_rate",  # fraction of steps with min-LiDAR >= clearance radius
+                             # (generic obstacle-clearance PROXY — NOT human PSC;
+                             #  cannot tell a human from a wall/furniture. True
+                             #  human PSC is computed from privileged labels in
+                             #  the trainer, see docs/aux_metric_schema.md)
 ]
 
 
@@ -52,10 +60,19 @@ class EpisodeMetrics:
     """Accumulate one episode's paper metrics from the (state, action) stream."""
 
     def __init__(self, env_dim: int, time_delta: float = 0.1,
-                 near_collision_dist_m: float = 0.5):
+                 near_collision_dist_m: float = 0.5,
+                 stl_ref_speed_mps: float = 1.0,
+                 lidar_clearance_radius_m: float = 0.5):
         self.env_dim = int(env_dim)
         self.dt = float(time_delta)
         self.near_dist = float(near_collision_dist_m)
+        # STL reference speed: optimal time = shortest_path / ref_speed.
+        # lidar_clearance_radius: a step is a "clearance intrusion" when min LiDAR
+        # < this. This is a generic obstacle-clearance PROXY (cannot tell a human
+        # from a wall/furniture) — NOT the human personal-space PSC, which the
+        # trainer computes from privileged human-distance labels.
+        self.stl_ref_speed = max(float(stl_ref_speed_mps), 1e-6)
+        self.clearance_radius = float(lidar_clearance_radius_m)
         self.reset(np.zeros(self.env_dim + 7, dtype=np.float32))
 
     # -- helpers ------------------------------------------------------------
@@ -77,6 +94,7 @@ class EpisodeMetrics:
         self._head_err, self._speeds, self._cte = [], [], []
         self._jerks, self._steer_changes = [], []
         self._near = 0
+        self._clearance_intrusions = 0   # steps with min LiDAR < clearance_radius
         self._prev_action = None
         self._prev_steer = None
         self._steps = 0
@@ -109,6 +127,8 @@ class EpisodeMetrics:
         self._speeds.append(abs(v))
         if min_lidar < self.near_dist:
             self._near += 1
+        if min_lidar < self.clearance_radius:
+            self._clearance_intrusions += 1
 
         a = np.asarray(action, dtype=np.float32).ravel()
         if self._prev_action is not None:
@@ -130,6 +150,18 @@ class EpisodeMetrics:
         def _mean(xs):
             return float(np.mean(xs)) if xs else 0.0
 
+        # STL: success weighted by normalized time length (analogue of SPL on
+        # time). optimal_time = shortest_path / ref_speed.
+        travel_time = self._steps * self.dt
+        if self._d0 > 1e-6:
+            t_opt = self._d0 / self.stl_ref_speed
+            stl = (1.0 if success else 0.0) * (t_opt / max(travel_time, t_opt)) if travel_time > 1e-6 else (1.0 if success else 0.0)
+        else:
+            stl = 1.0 if success else 0.0
+        # LiDAR clearance compliance: fraction of steps that kept min-LiDAR above
+        # the clearance radius (generic obstacle proxy, NOT human PSC).
+        clearance = 1.0 - (self._clearance_intrusions / self._steps) if self._steps > 0 else 1.0
+
         return {
             "path_length_m":            round(path, 4),
             "spl":                      round(float(spl), 4),
@@ -138,8 +170,10 @@ class EpisodeMetrics:
             "mean_action_jerk":         round(_mean(self._jerks), 4),
             "mean_steering_change_rad": round(_mean(self._steer_changes), 4),
             "near_collision_count":     int(self._near),
-            "travel_time_s":            round(self._steps * self.dt, 3),
+            "travel_time_s":            round(travel_time, 3),
             "mean_speed_mps":           round(_mean(self._speeds), 4),
+            "stl":                      round(float(stl), 4),
+            "lidar_clearance_rate":     round(float(clearance), 4),
         }
 
     @staticmethod

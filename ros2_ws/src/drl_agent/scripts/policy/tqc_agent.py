@@ -8,6 +8,15 @@ import os, time, json
 
 import buffer
 
+# AUX_PRED: auxiliary prediction network (shared encoder + future-risk head).
+# All auxiliary logic lives in these modules; with aux_prediction.enabled=false
+# the SharedEncoder is a parameter-free identity passthrough and the baseline
+# TQC behaviour is reproduced exactly.
+from aux_prediction import (
+    AuxPredConfig, SharedEncoder, AuxiliaryHead, ActionConditionedAuxHead,
+)
+from aux_prediction_losses import compute_aux_loss
+
 
 def quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False, kappa=1.0):
     """
@@ -189,25 +198,77 @@ class Agent(object):
         self.max_action = float(max_action)
 
         # ----------------------------
+        # AUX_PRED: Shared encoder (E_psi)
+        # ----------------------------
+        # The encoder sits between the raw 87-D state and the actor/critic.
+        # When disabled it is an identity passthrough (out_dim == state_dim), so
+        # actor/critic see the raw state exactly as in baseline TQC.  When
+        # enabled it maps 87 -> hidden -> latent (ELU) and the actor consumes a
+        # DETACHED latent so the actor loss never updates the encoder.
+        self.aux_cfg = AuxPredConfig(self.hyperparameters.get("aux_prediction", {}))
+        self.aux_enabled = self.aux_cfg.enabled
+        self.aux_beta = self.aux_cfg.loss_weight
+        # AUX_PRED: action-conditioned variant (predict the same future-risk
+        # target from z_t AND the upcoming action sequence).  Only valid when aux
+        # is enabled; fail-fast on a contradictory config.
+        self.aux_action_conditioned = bool(
+            self.aux_enabled and self.aux_cfg.action_conditioned_aux
+        )
+        if self.aux_cfg.action_conditioned_aux and not self.aux_enabled:
+            raise RuntimeError(
+                "aux_prediction.action_conditioned_aux=true requires "
+                "aux_prediction.enabled=true."
+            )
+        if self.aux_action_conditioned and self.aux_cfg.action_conditioned_steps < 1:
+            raise RuntimeError(
+                "aux_prediction.action_conditioned_steps must be >= 1 "
+                f"(got {self.aux_cfg.action_conditioned_steps})."
+            )
+
+        self.encoder = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
+        self.encoder_target = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
+        self.encoder_target.load_state_dict(self.encoder.state_dict())
+        self.checkpoint_encoder = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
+        self.checkpoint_encoder.load_state_dict(self.encoder.state_dict())
+        latent_dim = self.encoder.out_dim
+
+        # AUX_PRED: training-only auxiliary head (dropped at inference).  The
+        # action-conditioned head adds an action-sequence GRU; both emit the same
+        # output dict so the loss (compute_aux_loss) is identical.
+        if not self.aux_enabled:
+            self.aux_head = None
+        elif self.aux_action_conditioned:
+            self.aux_head = ActionConditionedAuxHead(
+                latent_dim, action_dim, self.aux_cfg).to(self.device)
+        else:
+            self.aux_head = AuxiliaryHead(latent_dim, self.aux_cfg).to(self.device)
+
+        # ----------------------------
         # Networks & Optimizers
         # ----------------------------
-        self.actor = Actor(state_dim, action_dim, self.actor_hdim, self.actor_activ).to(self.device)
+        # NOTE: actor/critic are now sized by the encoder latent dim.  With aux
+        # disabled latent_dim == state_dim, so these are identical to baseline.
+        self.actor = Actor(latent_dim, action_dim, self.actor_hdim, self.actor_activ).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
 
         self.critic = Critic(
-            state_dim, action_dim, self.critic_hdim, self.critic_activ,
+            latent_dim, action_dim, self.critic_hdim, self.critic_activ,
             self.n_quantiles, self.n_critics
         ).to(self.device)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=self.critic_lr)
+
+        # AUX_PRED: a single optimizer updates critic + encoder + aux head from
+        # (critic_loss + beta_aux * aux_loss).  With aux disabled it reduces to
+        # the critic's parameters only (encoder has none), matching baseline.
+        self.critic_optimizer = self._make_critic_optimizer()
 
         self.critic_target = Critic(
-            state_dim, action_dim, self.critic_hdim, self.critic_activ,
+            latent_dim, action_dim, self.critic_hdim, self.critic_activ,
             self.n_quantiles, self.n_critics
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
         # Checkpoint actor (평가 시 use_checkpoint=True 경로)
-        self.checkpoint_actor = Actor(state_dim, action_dim, self.actor_hdim, self.actor_activ).to(self.device)
+        self.checkpoint_actor = Actor(latent_dim, action_dim, self.actor_hdim, self.actor_activ).to(self.device)
 
         # Temperature (α): auto / fixed
         if isinstance(self.ent_coef, str) and self.ent_coef.startswith("auto"):
@@ -235,12 +296,19 @@ class Agent(object):
             # action space [-1, 1]. Keep replay-buffer actions unchanged.
             normalize_actions=False,
             prioritized=self.prioritized,
+            # AUX_PRED: store the future-risk label alongside each transition.
+            aux_dim=(self.aux_cfg.label_dim if self.aux_enabled else 0),
+            # AUX_PRED: track episode boundaries only for the action-conditioned
+            # aux (so future-action lookups never cross episodes).
+            track_traj=self.aux_action_conditioned,
         )
 
         # ----------------------------
         # Book-keeping
         # ----------------------------
         self.training_steps = 0
+        # AUX_ABLATION: run seed for JSON metric stamping (set by the trainer).
+        self.run_seed = None
         self.eps_since_update = 0
         self.timesteps_since_update = 0
         self.max_eps_before_update = 1
@@ -272,6 +340,13 @@ class Agent(object):
             return
     
         rec = {"step": int(step), "time": float(time.time())}
+        # AUX_ABLATION: stamp run identity on every record so tqc_metrics.json can
+        # be grouped by seed / aux on-off without a separate join.  aux_enabled /
+        # aux_version are always present (null-safe); seed only when known.
+        if getattr(self, "run_seed", None) is not None:
+            rec["seed"] = int(self.run_seed)
+        rec["aux_enabled"] = int(bool(getattr(self, "aux_enabled", False)))
+        rec["aux_version"] = int(getattr(self.aux_cfg, "version", 0)) if getattr(self, "aux_cfg", None) else 0
         for k, v in metrics.items():
             try:
                 val = float(v)
@@ -324,6 +399,18 @@ class Agent(object):
 
         return hp
 
+    def _make_critic_optimizer(self):
+        """AUX_PRED: build the Adam optimizer over the shared trunk (critic +
+        encoder + aux head).  Used at construction AND to reset the moments when
+        an aux-head architecture change on resume makes the saved moments stale.
+        """
+        trunk_params = list(self.critic.parameters())
+        if self.encoder.has_params():
+            trunk_params += list(self.encoder.parameters())
+        if self.aux_head is not None:
+            trunk_params += list(self.aux_head.parameters())
+        return torch.optim.Adam(trunk_params, lr=self.critic_lr)
+
     def select_action(self, state, use_checkpoint=False, use_exploration=True):
         """상태로부터 정규화 action [-1, 1] 선택"""
         with torch.no_grad():
@@ -331,28 +418,96 @@ class Agent(object):
             state_np = np.asarray(state, dtype=np.float32).reshape(1, -1)
             state_t  = torch.from_numpy(state_np).to(self.device)
 
-            actor_to_use = self.checkpoint_actor if use_checkpoint else self.actor
-            action = actor_to_use(state_t, deterministic=not use_exploration)
+            # AUX_PRED: encode the raw state first, then run the policy on the
+            # latent.  At inference NO privileged info / aux head is used.
+            if use_checkpoint:
+                z = self.checkpoint_encoder(state_t)
+                action = self.checkpoint_actor(z, deterministic=not use_exploration)
+            else:
+                z = self.encoder(state_t)
+                action = self.actor(z, deterministic=not use_exploration)
 
             # Keep the policy output in normalized action space [-1, 1].
             # environment.py._map_action_to_twist() converts this into
             # physical [v, w] commands using actions_low/high.
             action = action.clamp(-1, 1)
             return action.cpu().numpy().flatten()
-    
+
+    # ------------------------------------------------------------------ #
+    #  AUX_PRED: read-only auxiliary-head inference for FORMAL evaluation   #
+    #  (used by the trainer's eval loop; never touches the training path). #
+    # ------------------------------------------------------------------ #
+    @property
+    def aux_eval_enabled(self) -> bool:
+        """True when an auxiliary head exists and can be queried for eval."""
+        return bool(self.aux_enabled and self.aux_head is not None)
+
+    def aux_predict_eval(self, states, future_actions=None, valid_len=None):
+        """Run encoder + aux head on a batch of states (no grad) and return the
+        prediction as NumPy, for the formal aux eval metrics.
+
+        Parameters
+        ----------
+        states        : array-like [N, state_dim]
+        future_actions: array-like [N, K, action_dim] or None.  Required (and
+                        only used) when the head is action-conditioned; the same
+                        boundary-safe alignment used in training applies — pass
+                        only in-episode actions, zero-padded past the episode end.
+        valid_len     : array-like [N] (long) in [1, K], number of leading
+                        in-episode actions.  Required for action-conditioned.
+
+        Returns
+        -------
+        dict with keys "risk_map" [N, H*K] and (if the head emits it) "min_dist"
+        [N, H], all float32 NumPy; or None when aux is disabled / no head.
+        """
+        if not self.aux_eval_enabled:
+            return None
+        with torch.no_grad():
+            s_np = np.asarray(states, dtype=np.float32)
+            if s_np.ndim == 1:
+                s_np = s_np[None, :]
+            s_np = s_np.reshape(s_np.shape[0], -1)
+            s_t = torch.from_numpy(s_np).to(self.device)
+            z = self.encoder(s_t)
+            if self.aux_action_conditioned:
+                if future_actions is None or valid_len is None:
+                    return None
+                fa = torch.from_numpy(
+                    np.asarray(future_actions, dtype=np.float32)
+                ).to(self.device)
+                vl = torch.from_numpy(
+                    np.asarray(valid_len, dtype=np.int64)
+                ).to(self.device)
+                out = self.aux_head(z, fa, vl)
+            else:
+                out = self.aux_head(z)
+            res = {"risk_map": out["risk_map"].cpu().numpy().astype(np.float32)}
+            if "min_dist" in out:
+                res["min_dist"] = out["min_dist"].cpu().numpy().astype(np.float32)
+            return res
+
     def train(self):
         """Train the agent for one step"""
         self.training_steps += 1
         
         # Sample batch from replay buffer
         state, action, next_state, reward, not_done = self.replay_buffer.sample()
-        
+        # AUX_PRED: matching auxiliary targets for this batch (None if disabled).
+        aux_target = self.replay_buffer.get_last_aux()
+
+        # AUX_PRED: encode once.  `z` keeps the graph (critic + aux back-prop
+        # into the encoder); `z_actor` is detached so the actor / temperature
+        # updates never flow gradients into the encoder.
+        z = self.encoder(state)
+        z_actor = z.detach()
+
         """******************************************
         ** Entropy Coefficient Update (if auto)
         ******************************************"""
         if self.ent_coef_auto:
             with torch.no_grad():
-                _, log_prob = self.actor.action_log_prob(state)
+                _, log_prob = self.actor.action_log_prob(z_actor)
             
             ent_coef = torch.exp(self.log_ent_coef.detach())
             ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
@@ -367,12 +522,14 @@ class Agent(object):
         ** Critic Update
         ******************************************"""
         with torch.no_grad():
+            # AUX_PRED: target path runs through the target encoder.
+            z_next = self.encoder_target(next_state)
             # Sample actions for next states
-            next_actions, next_log_prob = self.actor.action_log_prob(next_state)
-            
+            next_actions, next_log_prob = self.actor.action_log_prob(z_next)
+
             # Get target quantiles
-            next_quantiles = self.critic_target(next_state, next_actions)  # [B, n_critics, n_quantiles]
-            
+            next_quantiles = self.critic_target(z_next, next_actions)  # [B, n_critics, n_quantiles]
+
             # Sort and truncate quantiles
             batch_size = state.shape[0]
             next_quantiles_flat = next_quantiles.reshape(batch_size, -1)
@@ -388,24 +545,51 @@ class Agent(object):
             )
             target_quantiles = target_quantiles.unsqueeze(1)  # [B, 1, n_target_quantiles]
         
-        # Get current quantiles
-        current_quantiles = self.critic(state, action)  # [B, n_critics, n_quantiles]
-        
+        # Get current quantiles (encoder latent keeps its graph here)
+        current_quantiles = self.critic(z, action)  # [B, n_critics, n_quantiles]
+
         # Compute critic loss
         critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False)
-        
+
+        # AUX_PRED: future-risk prediction loss; gradients flow into the shared
+        # encoder together with the critic loss (encoder = critic + beta*aux).
+        aux_loss_val = 0.0
+        aux_logs = {}
+        total_trunk_loss = critic_loss
+        if self.aux_enabled and self.aux_head is not None and aux_target is not None:
+            if self.aux_action_conditioned:
+                # Same target L_i (future risk from s_i), but conditioned on the
+                # upcoming in-episode action sequence [a_i, .., a_{i+K-1}].
+                fa = self.replay_buffer.get_last_future_actions(
+                    self.aux_cfg.action_conditioned_steps)
+                aux_pred = None
+                if fa is not None:
+                    future_actions, valid_len = fa
+                    aux_pred = self.aux_head(z, future_actions, valid_len)
+                    aux_logs["aux/valid_len_mean"] = float(valid_len.float().mean().item())
+            else:
+                aux_pred = self.aux_head(z)
+
+            if aux_pred is not None:
+                aux_loss, _logs = compute_aux_loss(
+                    aux_pred, aux_target, self.aux_cfg, self.device
+                )
+                aux_logs.update(_logs)
+                total_trunk_loss = critic_loss + self.aux_beta * aux_loss
+                aux_loss_val = float(aux_loss.detach().item())
+
         self.critic_optimizer.zero_grad()
-        critic_loss.backward()
+        total_trunk_loss.backward()
         self.critic_optimizer.step()
-        
+
         """******************************************
         ** Actor Update
         ******************************************"""
-        # Sample new actions
-        actions_pi, log_prob = self.actor.action_log_prob(state)
-        
+        # Sample new actions (on the DETACHED latent: actor never updates encoder)
+        actions_pi, log_prob = self.actor.action_log_prob(z_actor)
+
         # Get Q-values for policy actions
-        qf_pi = self.critic(state, actions_pi)
+        qf_pi = self.critic(z_actor, actions_pi)
         # Average over quantiles and critics
         qf_pi = qf_pi.mean(dim=2).mean(dim=1, keepdim=True)
         
@@ -434,7 +618,14 @@ class Agent(object):
             # Polyak averaging
             for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
                 target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-            
+
+            # AUX_PRED: keep the target encoder in lock-step with the encoder.
+            if self.encoder.has_params():
+                for param, target_param in zip(
+                    self.encoder.parameters(), self.encoder_target.parameters()
+                ):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
             if self.prioritized:
                 self.replay_buffer.reset_max_priority()
         
@@ -449,6 +640,10 @@ class Agent(object):
             if self.ent_coef_auto:
                 self.writer.add_scalar("values/ent_coef", float(ent_coef.item()), self.training_steps)
                 self.writer.add_scalar("loss/ent_coef", float(ent_coef_loss.item()), self.training_steps)
+            # AUX_PRED: log auxiliary loss terms when active.
+            if self.aux_enabled and aux_logs:
+                for _k, _v in aux_logs.items():
+                    self.writer.add_scalar(_k, float(_v), self.training_steps)
 
         # === JSON 동시 기록 ===
         self._json_log(
@@ -459,7 +654,9 @@ class Agent(object):
                 "values/Q":     float(qf_pi.mean().item()),
                 "values/Q_max": float(current_quantiles.max().item()),
                 **({"values/ent_coef": float(ent_coef.item()),
-                    "loss/ent_coef":   float(ent_coef_loss.item())} if self.ent_coef_auto else {})
+                    "loss/ent_coef":   float(ent_coef_loss.item())} if self.ent_coef_auto else {}),
+                # AUX_PRED: persist auxiliary metrics to the JSONL log too.
+                **(aux_logs if (self.aux_enabled and aux_logs) else {})
             }
         )
     
@@ -480,6 +677,8 @@ class Agent(object):
             self.train_and_reset()
             # Keep the checkpoint policy aligned with the freshly trained actor.
             self.checkpoint_actor.load_state_dict(self.actor.state_dict())
+            # AUX_PRED: the checkpoint policy reads through its own encoder copy.
+            self.checkpoint_encoder.load_state_dict(self.encoder.state_dict())
     
     def train_and_reset(self):
         """Batch training and reset counters"""
@@ -509,7 +708,17 @@ class Agent(object):
         
         # Checkpoint
         torch.save(self.checkpoint_actor.state_dict(), f"{directory}/{filename}_checkpoint_actor.pth")
-        
+
+        # AUX_PRED: shared encoder + auxiliary head (training-only).  Saved only
+        # when the encoder actually has parameters (aux enabled); inference does
+        # not require the aux head.
+        if self.encoder.has_params():
+            torch.save(self.encoder.state_dict(), f"{directory}/{filename}_encoder.pth")
+            torch.save(self.encoder_target.state_dict(), f"{directory}/{filename}_encoder_target.pth")
+            torch.save(self.checkpoint_encoder.state_dict(), f"{directory}/{filename}_checkpoint_encoder.pth")
+            if self.aux_head is not None:
+                torch.save(self.aux_head.state_dict(), f"{directory}/{filename}_aux_head.pth")
+
         # Entropy coefficient
         if self.ent_coef_auto:
             torch.save(self.log_ent_coef, f"{directory}/{filename}_log_ent_coef.pth")
@@ -558,12 +767,71 @@ class Agent(object):
         if load_optimizer_state:
             p = f"{directory}/{filename}_critic_optimizer.pth"
             if os.path.exists(p):
-                self.critic_optimizer.load_state_dict(_torch_load(p))
+                # AUX_PRED: critic_optimizer also owns the encoder + aux-head
+                # params, so its param-group size changes when the aux head
+                # architecture changes (single-step <-> action-conditioned).  On
+                # such a mismatch keep fresh optimizer moments (the critic /
+                # encoder WEIGHTS already loaded above) instead of aborting.
+                # Even when this load "succeeds", a later aux-head state-dict
+                # mismatch can still invalidate the loaded moments if only the
+                # param COUNT matched while shapes / semantics changed; that
+                # later path rebuilds this optimizer unconditionally.
+                try:
+                    self.critic_optimizer.load_state_dict(_torch_load(p))
+                except (ValueError, RuntimeError, KeyError) as e:
+                    print(
+                        "[AUX_PRED] critic optimizer state is incompatible with "
+                        "the current aux config (the aux head changed the trunk "
+                        "param group); keeping fresh optimizer moments. "
+                        f"Details: {e}"
+                    )
 
         # Checkpoint actor
         p = f"{directory}/{filename}_checkpoint_actor.pth"
         if os.path.exists(p):
             self.checkpoint_actor.load_state_dict(_torch_load(p))
+
+        # AUX_PRED: shared encoder + auxiliary head (only when this run uses aux
+        # AND the checkpoint carries them; baseline checkpoints lack these files
+        # and are loaded unchanged).
+        if self.encoder.has_params():
+            p = f"{directory}/{filename}_encoder.pth"
+            if os.path.exists(p):
+                self.encoder.load_state_dict(_torch_load(p))
+            p = f"{directory}/{filename}_encoder_target.pth"
+            if os.path.exists(p):
+                self.encoder_target.load_state_dict(_torch_load(p))
+            p = f"{directory}/{filename}_checkpoint_encoder.pth"
+            if os.path.exists(p):
+                self.checkpoint_encoder.load_state_dict(_torch_load(p))
+            p = f"{directory}/{filename}_aux_head.pth"
+            if self.aux_head is not None and os.path.exists(p):
+                # AUX_PRED: the aux head is TRAINING-ONLY.  Its architecture
+                # changes between the single-step AuxiliaryHead and the
+                # ActionConditionedAuxHead (and with min-dist / distributional
+                # options), so a strict load fails when upgrading / switching an
+                # ablation.  Try a strict load; on a state-dict mismatch keep the
+                # freshly-initialised head (it retrains) and warn, rather than
+                # aborting the whole resume -- the encoder/actor/critic, which
+                # actually drive the policy, still load above.
+                try:
+                    self.aux_head.load_state_dict(_torch_load(p))
+                except (RuntimeError, KeyError) as e:
+                    # The aux head changed architecture.  The critic_optimizer
+                    # (loaded earlier) owns the aux-head params in the SAME param
+                    # group, so its moments are now stale -- and the load above
+                    # may have "succeeded" if only the param COUNT matched while
+                    # shapes/semantics differ, leaving wrong moments that would
+                    # crash or silently corrupt the next step().  Rebuild the
+                    # optimizer fresh to guarantee no stale moment survives.
+                    self.critic_optimizer = self._make_critic_optimizer()
+                    print(
+                        "[AUX_PRED] aux-head checkpoint is incompatible with the "
+                        "current aux config (e.g. single-step <-> action-"
+                        "conditioned, or changed heads); keeping a freshly-"
+                        "initialised aux head AND fresh critic-optimizer moments "
+                        f"(both will retrain). Details: {e}"
+                    )
 
         # Entropy coefficient
         if self.ent_coef_auto:
@@ -587,3 +855,45 @@ class Agent(object):
             buf_path = f"{directory}/{filename}_replay_buffer"
             if os.path.isfile(buf_path + ".npz"):
                 self.replay_buffer.load(buf_path)
+
+    def load_encoder_for_inference(self, actor_path):
+        """AUX_PRED: restore the shared encoder for an actor-only inference path.
+
+        Inference runs state -> encoder -> actor, so an aux-enabled checkpoint
+        MUST load the encoder alongside the actor; otherwise the actor receives
+        a randomly-initialised latent and the policy is broken.  The matching
+        encoder file is derived from the actor checkpoint path
+        (``<prefix>_actor.pth`` -> ``<prefix>_encoder.pth``).
+
+        Returns
+        -------
+        bool
+            True  -> encoder ready (loaded, or not needed for a baseline /
+                     identity encoder, i.e. aux disabled).
+            False -> an aux encoder is REQUIRED but its file is missing; the
+                     caller should treat this as a fatal inference error.
+        """
+        import os, torch
+
+        # Baseline (aux disabled): encoder is a parameter-free identity, so the
+        # actor consumes the raw state and there is nothing to restore.
+        if not self.encoder.has_params():
+            return True
+
+        if actor_path.endswith("_actor.pth"):
+            enc_path = actor_path[: -len("_actor.pth")] + "_encoder.pth"
+        else:
+            enc_path = os.path.join(os.path.dirname(actor_path), "encoder.pth")
+        if not os.path.isfile(enc_path):
+            return False
+
+        try:
+            sd = torch.load(enc_path, map_location=self.device, weights_only=True)
+        except TypeError:
+            sd = torch.load(enc_path, map_location=self.device)
+        self.encoder.load_state_dict(sd)
+        self.encoder.eval()
+        if getattr(self, "checkpoint_encoder", None) is not None:
+            self.checkpoint_encoder.load_state_dict(sd)
+            self.checkpoint_encoder.eval()
+        return True

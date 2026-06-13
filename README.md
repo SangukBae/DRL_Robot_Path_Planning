@@ -19,7 +19,7 @@ TQC 커리큘럼 학습을 주축으로, **SAC · TD7 · SB3-SAC · SB3-TD3 · T
 | CUDA | 11.8 |
 | Python | 3.10 |
 
-> RGL LiDAR 플러그인 설치 필요 → [Installation](docs/installation.md#rgl-lidar-plugin)
+> RGL LiDAR 플러그인 설치 필요 → [Installation](docs/guides/installation.md#rgl-lidar-plugin)
 
 ---
 
@@ -38,13 +38,28 @@ colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
 # 3. 소스
 source install/setup.bash
 
-# 4.
+# 4. (GUI를 띄울 때만) 로컬 X11 클라이언트의 디스플레이 접근 허용.
+#    Gazebo GUI / RViz를 보거나 Docker 컨테이너에서 GUI를 띄울 때 필요하다.
+#    X11 전제이며, headless 학습(rviz:=false + GUI 미사용)이면 생략 가능하다.
+#    Wayland 세션이면 XWayland 또는 QT_QPA_PLATFORM 설정이 추가로 필요할 수 있다.
 xhost +local:
 ```
 
 ---
 
 ## Quick Start
+
+> 기본 커리큘럼 설정(`environment_curriculum.yaml`)에는 **structured map curriculum**
+> (lobby/corridor/intersection/clutter 4종, stage별 맵·장애물 증가),
+> **localization noise emulation**(상관 노이즈 + drift + map-type별 강도),
+> **auxiliary future-risk prediction**(공유 인코더 + aux head, env 라벨)이 **기본 활성화**되어 있다.
+> 단, localization noise는 base가 off이고 **stage 2부터 per-stage로 ramp-up**된다
+> (전체 비활성화는 각 stage의 `localization:` 블록을 제거하거나 `enabled: false`로).
+> map curriculum은 `environment_curriculum.yaml`의 `map_layout_enabled`,
+> aux prediction은 `hyperparameters_tqc.yaml`의 `aux_prediction.enabled`를 false로 두면 꺼진다.
+> 설계·지표는 [Map Curriculum](docs/design/map_curriculum_design.md) ·
+> [Aux Prediction Design](docs/design/aux_prediction_design.md) ·
+> [Aux Metric Schema](docs/reference/metrics_reference.md) 참고.
 
 ```bash
 # [터미널 1] Gazebo 시뮬레이션
@@ -79,22 +94,33 @@ ros2 run drl_agent generalization_eval.py --ros-args \
   -p world:=aws_hospital -p eval_eps_override:=20
 ```
 
-> 프로토콜·지표·CSV 스키마 상세는 [Experiment Protocol](docs/experiment_protocol.md) 참고.
+> 프로토콜·지표·CSV 스키마 상세는 [Experiment Protocol](docs/experiments/experiment_protocol.md) 참고.
 
 ---
 
 ## Documentation
 
+> 전체 문서 인덱스·독자별 추천 경로는 **[Documentation Hub](docs/README.md)** 참고.
+
 | 문서 | 내용 |
 |------|------|
-| [Paper Preparation Guide](docs/README.md) | 논문 방향, 수정 포인트, 평가 지표 다섯 축 정리 |
-| [Experiment Protocol](docs/experiment_protocol.md) | baseline 비교 프로토콜, 다중 seed, 지표/CSV 스키마, 집계·일반화 |
-| [Installation](docs/installation.md) | 상세 빌드, Docker, RGL LiDAR 설치 |
-| [Training](docs/training.md) | 커리큘럼 학습, 재개 방법 |
-| [Architecture](docs/architecture.md) | 서비스 인터페이스, 상태/액션 공간, 파이프라인 |
-| [Algorithms](docs/algorithms.md) | TQC, TD7, SAC, A3C 알고리즘 설명 |
-| [Configuration](docs/configuration.md) | config 파일별 파라미터 레퍼런스 |
-| [Troubleshooting](docs/troubleshooting.md) | 환경 변수, 디버깅, 흔한 오류 |
+| [Documentation Hub](docs/README.md) | 문서 인덱스 + 독자별 추천 읽기 순서 |
+| [System Overview](docs/overview/system_overview.md) | 시스템 전체가 무엇인지 (처음 보는 사람용) |
+| [Training Pipeline](docs/overview/training_pipeline.md) | reset→state→action→step→train→eval 흐름 |
+| [Paper Preparation Guide](docs/experiments/paper_preparation_guide.md) | 논문 방향, 수정 포인트, 평가 지표 다섯 축 정리 |
+| [Experiment Protocol](docs/experiments/experiment_protocol.md) | baseline 비교 프로토콜, 다중 seed, 지표/CSV 스키마, 집계·일반화 |
+| [Installation](docs/guides/installation.md) | 상세 빌드, Docker, RGL LiDAR 설치 |
+| [Training](docs/guides/training.md) | 커리큘럼 학습, 재개 방법 |
+| [Architecture](docs/design/environment_design.md) | 서비스 인터페이스, 상태/액션 공간, 파이프라인 |
+| [Algorithms](docs/overview/repository_map.md) | TQC, TD7, SAC, A3C 알고리즘 설명 |
+| [Configuration](docs/reference/config_reference.md) | config 파일별 파라미터 레퍼런스 |
+| [Map Curriculum](docs/design/map_curriculum_design.md) | structured map(lobby/corridor/intersection/clutter) 커리큘럼 설계·구현 |
+| [Aux Prediction Design](docs/design/aux_prediction_design.md) | 공유 인코더 + future-risk auxiliary head 설계 (single-step / action-conditioned) |
+| [Aux Ablation Logging](docs/experiments/aux_ablation_logging.md) | aux on/off 비교용 run-identity / eval-summary / manifest 로깅 |
+| [Aux Metric Schema](docs/reference/metrics_reference.md) | 학습 모니터링 vs 논문용 평가 지표, 저장 위치(CSV/TB/콘솔) |
+| [Simulation Validation](docs/experiments/simulation_validation.md) | reset→step 일관성 등 시뮬레이션 검증 절차 |
+| [Real Robot Deployment](docs/guides/real_robot_deployment.md) | 학습 정책의 실로봇 배포 가이드 |
+| [Troubleshooting](docs/guides/troubleshooting.md) | 환경 변수, 디버깅, 흔한 오류 |
 
 ## Paper Work Note
 
@@ -103,7 +129,13 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 - **6개 알고리즘 공통**(TQC, TQC+IEQN, SAC, TD7, SB3-SAC, SB3-TD3): 동일 학습/평가 프로토콜, episode/eval-level CSV 로깅, 다중 seed 실행·격리, 결과 집계(`aggregate_results.py`).
 - **현재 TQC 기준**: 일반화 평가 하니스(`generalization_eval.py`)는 TQC 모델용이며, 다른 알고리즘은 해당 agent 클래스로 동일 패턴 확장이 필요하다.
 
-앞으로의 `TQC` 내부 method 변경(risk-aware actor, adaptive truncation, auxiliary prediction 등)은 **사용자가 직접 진행**한다. 범위와 절차는 [Paper Preparation Guide](docs/README.md)와 [Experiment Protocol](docs/experiment_protocol.md)를 따른다.
+**이미 구현되어 기본 설정에 포함된 TQC 확장**(별도 작업 불필요, config 플래그로 on/off):
+
+- **Auxiliary future-risk prediction**: 공유 인코더 + aux head로 미래 충돌 위험을 예측하는 보조 과제. **single-step** 및 **action-conditioned**(`[a_t..a_{t+K-1}]`로 조건화) 두 형태 모두 구현. env가 privileged future-risk 라벨을 생성하고, 평가 루프가 `aux_risk_rmse / aux_min_dist_mae_m / aux_peak_sector_acc / aux_near_event_f1`를 산출한다. 끄면(`aux_prediction.enabled=false`) baseline TQC와 byte-단위 동일하게 동작한다. → [Aux Prediction Design](docs/design/aux_prediction_design.md), [Aux Metric Schema](docs/reference/metrics_reference.md)
+- **Structured map curriculum**: lobby/corridor/intersection/clutter 4종 맵을 stage별로 샘플링. → [Map Curriculum](docs/design/map_curriculum_design.md)
+- **Localization-noise emulation**: 상관(OU) 노이즈 + drift + latency + map-type별 강도(+ corridor 이방성) + 드문 jump.
+
+추가로 검토 중인 `TQC` 내부 method 변경(risk-aware actor, adaptive truncation 등)은 위 인프라 위에서 진행하며, 범위와 절차는 [Paper Preparation Guide](docs/experiments/paper_preparation_guide.md)와 [Experiment Protocol](docs/experiments/experiment_protocol.md)를 따른다.
 
 ---
 

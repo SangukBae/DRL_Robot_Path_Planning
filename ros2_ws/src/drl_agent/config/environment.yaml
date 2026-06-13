@@ -6,11 +6,24 @@ environment:
   # Walls are centered at +/-9.5 m; this keeps a 0.85 m margin to the inside face.
   goal_obstacle_lower: -8.5
   goal_obstacle_upper: 8.5
-  num_of_dynamic_obstacles: 7
+  # Dynamic obstacles removed from the code. To avoid silently changing the
+  # non-curriculum baseline, this default stays static-only (num_of_humans: 0,
+  # exactly as before minus the dynamic obstacles). Enable humans explicitly
+  # (set num_of_humans > 0) only when a moving-obstacle scenario is intended.
   num_of_static_obstacles: 3
-  num_of_humans: 0    # disable human obstacles for standard environment training
+  num_of_humans: 0               # static-only default (humans opt-in)
   environment_state_dim: 80
   agent_state_dim: 7
+
+  # AUX_PRED: privileged future-risk label generation (env side, training-only).
+  # Disabled on this baseline config; see environment_curriculum.yaml for the
+  # full description.  Keep num_sectors / horizons_sec in sync with the agent.
+  aux_prediction:
+    enabled: true
+    num_sectors: 16
+    horizons_sec: [0.5, 1.0, 1.5]
+    risk_distance_scale: 3.0
+    min_speed_for_motion: 0.05
   action_dim: 2
   agent_name: "hunter_se"
   max_action: 1.0
@@ -34,35 +47,66 @@ environment:
   # Obstacle catalog (relative to the config directory)
   obstacle_catalog: "drl_obstacle_assets"
 
-  # Human proxy motion parameters (domain randomization)
+  # Human proxy motion parameters (domain randomization).
+  # Prediction-friendly profile: predictable over short horizons (~constant
+  # velocity), mode changes only every few seconds, no reaction to the robot.
+  # SOURCE OF TRUTH (scope):
+  #   • The scalar base motion knobs below (accel, yaw rate/accel, retarget
+  #     interval/prob, stop/pause, segment sec, jitter) and the behaviour-mode
+  #     MIX (human_mode_weights) are read from here by environment.py.
+  #   • The PER-MODE kinematics that DOMINATE actual human motion (waypoint
+  #     distance, dir spread, stop/pause, speed scale, init wait per mode) live
+  #     in code: Environment._HUMAN_MODE_DEFAULTS, overridable via human_mode_params.
+  #     (human_waypoint_dist_* below is only a fallback for mode-less sampling.)
   human_update_rate: 20.0        # Hz — independent ROS timer rate for pedestrian kinematics
-  human_stop_prob_per_sec: 0.02  # probability per second of random stop (converted to per-tick internally)
+  human_stop_prob_per_sec: 0.02  # weak stop/go
   human_pause_duration: 1.0      # seconds to stay stopped after a random stop
-  human_heading_jitter_deg: 15.0 # max random heading perturbation applied to desired yaw [deg]
-  human_retarget_prob_per_sec: 0.02  # probability per second of picking a new random waypoint
-  human_heading_jitter_on_retarget_only: true  # keep one jitter per waypoint segment to avoid per-tick snap turns
-  human_min_retarget_interval: 1.5   # minimum seconds before probabilistic retargeting can happen again
-  human_desired_yaw_rate_limit: 1.2  # max desired-heading change rate [rad/s]
+  human_heading_jitter_deg: 12.0 # heading perturbation, applied only at retarget [deg]
+  human_retarget_prob_per_sec: 0.01  # rare spontaneous retarget
+  human_heading_jitter_on_retarget_only: true  # one jitter per segment → no per-tick snap turns
+  human_min_retarget_interval: 3.0   # min seconds between retargets (waypoint held ~2-4 s)
+  human_desired_yaw_rate_limit: 0.7  # slow desired-heading change rate [rad/s]
   human_scan_dropout_prob: 0.03  # probability each LiDAR bin from a human is zeroed
   human_scan_noise_std: 0.05     # gaussian noise std added to human LiDAR returns [m]
-  # Kinematic motion model limits
-  human_max_accel: 20.0          # max linear acceleration [m/s²]
-  human_max_yaw_rate: 10.0       # max angular velocity [rad/s]
-  human_max_yaw_accel: 20.0      # max angular acceleration [rad/s²]
-  human_k_yaw: 5.0               # proportional gain for yaw error → yaw rate command
-
-  # General dynamic obstacle motion parameters
-  dynamic_update_rate: 20.0          # Hz — independent ROS timer rate for dynamic obstacle kinematics
-  dynamic_speed_min: 0.25            # minimum nominal speed [m/s]
-  dynamic_speed_max: 0.90            # maximum nominal speed [m/s]
-  dynamic_stop_prob_per_sec: 0.03    # probability per second of random stop
-  dynamic_pause_duration: 1.5        # seconds to stay stopped after a random stop
-  dynamic_heading_jitter_deg: 12.0   # max random heading perturbation [deg]
-  dynamic_retarget_prob_per_sec: 0.02 # probability per second of picking a new waypoint
-  dynamic_max_accel: 0.6             # max linear acceleration [m/s²]
-  dynamic_max_yaw_rate: 0.9          # max angular velocity [rad/s]
-  dynamic_max_yaw_accel: 1.5         # max angular acceleration [rad/s²]
-  dynamic_k_yaw: 2.0                 # proportional gain for yaw error → yaw rate command
+  # Kinematic motion model limits (smooth, walking-scale → no teleport-like jerks)
+  human_max_accel: 0.6           # max linear acceleration [m/s²]
+  human_max_yaw_rate: 0.8        # max angular velocity [rad/s] (~46°/s)
+  human_max_yaw_accel: 1.5       # max angular acceleration [rad/s²]
+  human_k_yaw: 2.0               # proportional gain for yaw error → yaw rate command
+  # Mode-transition control. human_waypoint_dist_* is a FALLBACK only — each
+  # pedestrian uses its mode's per-mode wp_dist_* (Environment._HUMAN_MODE_DEFAULTS,
+  # overridable via human_mode_params); these globals apply only to a waypoint
+  # sampled without a mode. max_segment_sec force-retargets after that many
+  # active-motion seconds (excludes pause/stop).
+  human_waypoint_dist_min: 1.5   # m  (fallback; per-mode wp_dist_* governs humans)
+  human_waypoint_dist_max: 3.5   # m  (fallback)
+  human_max_segment_sec: 4.0     # s  (active-motion bound per segment; excludes pause/stop)
+  # Falcon-lite goal-driven pedestrian motion (used only when num_of_humans > 0).
+  # Each human walks toward an episode GOAL (decomposed into short local steps
+  # along the goal direction), rests on arrival, then picks a new goal. The
+  # travel style (mode above) sets the goal span/direction. Humans still NEVER
+  # react to the robot, and motion stays near-constant-velocity between goals so
+  # the constant-velocity aux labels remain valid. false -> legacy random walk.
+  human_goal_driven_enabled: true
+  human_goal_reach_threshold: 0.6   # m  within this of the goal -> rest + new goal
+  human_goal_pause_duration: 2.0    # s  rest at a reached goal
+  human_local_step_m: 2.0           # m  local step length toward the goal
+  human_goal_span_multiplier: 2.0   # goal distance = (mode wp_dist_max) * this
+  human_goal_min_span_m: 4.0        # m  floor on a newly sampled goal distance
+  # Weak human-human local avoidance (lightweight, NOT full ORCA; robot ignored).
+  # Nearby humans nudge each other's desired heading by a small capped amount so
+  # they overlap less, without sharp turns (keeps motion aux-friendly).
+  human_social_avoid_enabled: true
+  human_social_avoid_radius: 1.5    # m  neighbour influence radius
+  human_social_avoid_strength: 0.6  # blend weight of repulsion vs goal heading
+  human_social_avoid_max_heading_offset_deg: 25.0  # cap on the avoidance nudge
+  # Episode-level behaviour-mode mix (used only when num_of_humans > 0). Each
+  # human keeps one mode for the episode; weights are normalised internally.
+  human_mode_weights:
+    crossing:   1.0
+    along_path: 1.0
+    waiting:    0.5
+    slow_turn:  1.0
 
   # Start-pose heading/clearance safety (applied in _sample_train_start_pose)
   start_edge_heading_margin_m: 1.0   # wall proximity band where heading-toward-wall is rejected
@@ -77,9 +121,8 @@ environment:
 
   # Obstacle pool — pre-spawn once, teleport per episode (no delete/create per reset)
   use_obstacle_pool: true
-  obstacle_pool_dynamic_size: 12   # total dynamic slots; >= num_of_dynamic_obstacles
   obstacle_pool_static_size: 3     # total static slots;  >= num_of_static_obstacles
-  obstacle_pool_human_size: 8      # human proxy pool (visual+proxy pairs)
+  obstacle_pool_human_size: 8      # human proxy pool (visual+proxy pairs); >= num_of_humans
   # Parking slots: outside the 19 x 19 m walls but still on the floor plane.
   # Pool obstacles are always spawned on the ground, then either activated in
   # the arena or assigned to one of these parking slots via set_pose().
@@ -93,6 +136,27 @@ threshold_parameters:
   time_delta: 0.1  # 10 Hz RL/environment step
   inter_entity_distance: 2.5
   lidar_max_range: 50
+
+# ── Localization-error emulation (sim-to-real robustness) ────────────────────
+# The policy's goal observation (goal_distance, heading_error) is computed from
+# the localization-estimate pose with this noise applied; reward and done stay on
+# ground-truth pose by default (use_gt_for_* below) for stable early training.
+# Defaults below are OFF → identical to the original ground-truth behaviour.
+localization:
+  enabled: false              # master switch
+  mode: "off"                 # label only (off/gaussian/drift/full); params drive behaviour
+  sigma_xy_m: 0.0             # per-step Gaussian position noise std [m]
+  sigma_yaw_rad: 0.0          # per-step Gaussian yaw noise std [rad]
+  bias_xy_m: 0.0              # std of per-EPISODE constant position bias [m]
+  bias_yaw_rad: 0.0           # std of per-EPISODE constant yaw bias [rad]
+  random_walk_xy_mps: 0.0     # position drift random-walk rate [m/s]
+  random_walk_yaw_rps: 0.0    # yaw drift random-walk rate [rad/s]
+  delay_steps: 0              # localization latency in RL steps
+  jump_prob: 0.0              # per-step probability of a pose jump
+  jump_xy_m: 0.0              # max position jump magnitude [m]
+  jump_yaw_rad: 0.0           # max yaw jump magnitude [rad]
+  use_gt_for_reward: true     # reward uses ground-truth pose (recommended)
+  use_gt_for_done: true       # goal-reached/done uses ground-truth pose (recommended)
 
 use_zone_collision: false  # zones kept for monitoring; collision+reward both use rectangular region
 zone_angles_deg: [-30, 30,   -50, -30,   30, 50,   -130, -50,  50, 130,  -150, -130, 130, 150,  150, -150]

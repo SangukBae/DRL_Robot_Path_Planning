@@ -37,6 +37,8 @@ sys.path.insert(
 from tqc_agent import Agent
 from environment_interface import EnvInterface
 from file_manager import load_yaml
+# AUX_ABLATION: run-identity / ablation logging helpers.
+import aux_ablation_logging as aux_log
 
 
 def _find_latest_prefix(models_dir: str, base: str, seed: int):
@@ -55,6 +57,13 @@ def _find_latest_prefix(models_dir: str, base: str, seed: int):
 
 class TrainTQCBase(EnvInterface):
     """Shared initialisation and I/O for all TQC training subclasses."""
+
+    # AUX_PRED: auxiliary prediction is only wired into the curriculum trainer
+    # (it needs the env-appended privileged labels and the cur/next label
+    # bookkeeping).  Subclasses that genuinely support an aux-enabled agent set
+    # this True; everything else hard-fails in __init__ instead of silently
+    # training the encoder on missing / unaligned labels.
+    AUX_SUPPORTED = False
 
     def __init__(self):
         super().__init__("train_tqc_node")
@@ -75,6 +84,8 @@ class TrainTQCBase(EnvInterface):
         if not train_cfg_path:
             self.get_logger().error("Could not find 'train_tqc_config.yaml'")
             raise FileNotFoundError("train_tqc_config.yaml not found")
+        # AUX_ABLATION: remember resolved config path for the run manifest.
+        self._train_cfg_path = train_cfg_path
 
         train_settings = load_yaml(train_cfg_path)["train_settings"]
         self.seed                       = train_settings["seed"]
@@ -123,6 +134,8 @@ class TrainTQCBase(EnvInterface):
             self.get_logger().error("Could not find 'hyperparameters_tqc.yaml'")
             raise FileNotFoundError("hyperparameters_tqc.yaml not found")
 
+        # AUX_ABLATION: remember resolved hyperparameter path for the manifest.
+        self._hparams_path = hparams_path
         hyperparameters = load_yaml(hparams_path)["hyperparameters"]
 
         # ----------------------------
@@ -135,6 +148,21 @@ class TrainTQCBase(EnvInterface):
             hyperparameters,
             log_dir=self.log_dir,
         )
+
+        # AUX_ABLATION: let the agent stamp the seed on its JSON metric log.
+        self.rl_agent.run_seed = self.seed
+
+        # AUX_PRED: block aux on any non-supporting (e.g. non-curriculum) path.
+        # type(self).AUX_SUPPORTED is resolved through the MRO, so this fires
+        # even though the subclass __init__ runs super().__init__() first.
+        if getattr(self.rl_agent, "aux_enabled", False) and not type(self).AUX_SUPPORTED:
+            raise RuntimeError(
+                "aux_prediction.enabled=true is only supported by "
+                "train_tqc_curriculum_agent.py (and the aux-aware eval path). "
+                "Set aux_prediction.enabled=false in hyperparameters_tqc.yaml for "
+                f"this trainer ({type(self).__name__})."
+            )
+
         self._skip_warmup_after_load = False
         self._last_sim_clock_sec  = None
         self._last_wall_clock_sec = None
@@ -334,6 +362,11 @@ class TrainTQCBase(EnvInterface):
     #  CSV logging                                                          #
     # ------------------------------------------------------------------ #
 
+    def _aux_log_meta_cols(self):
+        """AUX_ABLATION: [seed, aux_enabled, aux_version] for CSV stamping."""
+        return aux_log.meta_columns(getattr(self, "seed", None),
+                                    getattr(self, "rl_agent", None))
+
     def _init_csv_loggers(self):
         """Create a fresh set of per-run CSV log files."""
         self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -347,16 +380,19 @@ class TrainTQCBase(EnvInterface):
             self.log_dir, f"policy_step_debug_{self._csv_run_tag}.csv"
         )
 
+        # AUX_ABLATION: append [seed, aux_enabled, aux_version] to every per-run
+        # CSV so runs can be grouped without a separate join (header == row).
+        _meta = aux_log.META_COLUMN_NAMES
         reward_header = [
             "episode", "global_t", "steps", "total_reward", "mean_reward",
             "goal_reached", "collision", "timeout", "eval_cut", "final_goal_dist_m",
-        ]
+        ] + _meta
         driving_header = [
             "episode", "global_t", "steps", "mean_v_norm", "mean_abs_w_norm",
             "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
             "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
             "mean_gazebo_rtf",
-        ]
+        ] + _meta
         step_header = [
             "episode", "global_t", "episode_step", "action_source",
             "action_0_norm", "action_1_norm",
@@ -429,6 +465,9 @@ class TrainTQCBase(EnvInterface):
         else:
             result = "TIMEOUT"
 
+        # AUX_ABLATION: run-identity columns appended to each row (header == row).
+        _meta = self._aux_log_meta_cols()
+
         with open(self._reward_csv, "a", newline="") as _f:
             csv.writer(_f).writerow([
                 ep_num, global_t, ep_timesteps,
@@ -436,7 +475,7 @@ class TrainTQCBase(EnvInterface):
                 round(ep_total_reward / max(ep_timesteps, 1), 4),
                 int(goal_reached), int(collision), int(timeout), int(eval_cut),
                 round(final_goal_dist, 4),
-            ])
+            ] + _meta)
 
         if ep_v_buf:
             with open(self._driving_csv, "a", newline="") as _f:
@@ -452,7 +491,7 @@ class TrainTQCBase(EnvInterface):
                     int(goal_reached), int(eval_cut),
                     round(float(np.mean(ep_gazebo_rtf_buf)), 4)
                     if ep_gazebo_rtf_buf else float("nan"),
-                ])
+                ] + _meta)
 
         return result
 

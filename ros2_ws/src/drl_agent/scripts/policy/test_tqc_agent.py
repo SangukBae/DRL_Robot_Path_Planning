@@ -224,6 +224,19 @@ class TestTQC(EnvInterface):
         except Exception as e:
             self.get_logger().error(f"Failed to load actor weights: {e}")
             sys.exit(255)
+
+        # AUX_PRED: when the checkpoint was trained with auxiliary prediction,
+        # inference runs state -> encoder -> actor, so the encoder must be
+        # restored too (else the actor sees a random latent).  No-op for
+        # baseline (aux-disabled) checkpoints.
+        if not self.rl_agent.load_encoder_for_inference(ckpt_path):
+            self.get_logger().error(
+                "Aux-enabled agent but matching '_encoder.pth' not found next to "
+                f"'{ckpt_path}'. The policy would be broken — aborting."
+            )
+            sys.exit(255)
+        if self.rl_agent.encoder.has_params():
+            self.get_logger().info("Loaded ENCODER weights (aux-enabled policy).")
     
         # ----------------------------
         # Odom subscription (for trajectory)

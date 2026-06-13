@@ -2,7 +2,7 @@
 
 ## 커리큘럼 학습 (권장)
 
-5단계 자동 진급 방식. 빈 환경 → 정적 → 동적 → 사람 포함 복합 환경 순서로 난이도를 높인다.
+5단계 자동 진급 방식. 빈 환경 → 정적 장애물 → 보행자(사람) 점진 증가 순서로 난이도를 높인다. (동적 장애물은 제거되어, 움직이는 장애물은 사람뿐이다.)
 
 ### 실행 순서
 
@@ -65,13 +65,16 @@ train_settings:
 
 ## 커리큘럼 스테이지
 
-| 스테이지 | 이름 | 정적 | 동적 | 사람 |
-|---------|------|:----:|:----:|:----:|
-| 0 | empty | 0 | 0 | 0 |
-| 1 | static_only | 3 | 0 | 0 |
-| 2 | slow_dynamic | 2 | 3 | 1 |
-| 3 | mixed_medium | 2 | 4 | 4 |
-| 4 | full_complexity | 3 | 6 | 5 |
+| 스테이지 | 이름 | 정적 | 사람 | 사람 배치 |
+|---------|------|:----:|:----:|:--------:|
+| 0 | empty | 0 | 0 | — |
+| 1 | static_only | 3 | 0 | — |
+| 2 | slow_dynamic | 5 | 1 | quadrants |
+| 3 | mixed_medium | 6 | 4 | quadrants |
+| 4 | full_complexity | 9 | 5 | global_random |
+
+> 동적 장애물은 코드에서 제거되었으므로 표에 별도 열을 두지 않는다. 움직이는 장애물 = 사람뿐.
+> 스테이지 이름(`slow_dynamic`, `mixed_medium`)은 설정 파일의 `name:` 값을 그대로 따른다.
 
 진급 조건 (모두 만족해야 함):
 
@@ -79,7 +82,7 @@ train_settings:
 2. `min_stage_episodes` 이상 에피소드 완료
 3. 위 조건 충족 후, `pass_eval_success_rate` / `pass_eval_collision_rate` 임계값을 `consecutive_eval_passes`회 연속 통과
 
-→ [설정 파라미터](configuration.md#커리큘럼-진급-설정)
+→ [설정 파라미터](../reference/config_reference.md#커리큘럼-진급-설정)
 
 ---
 

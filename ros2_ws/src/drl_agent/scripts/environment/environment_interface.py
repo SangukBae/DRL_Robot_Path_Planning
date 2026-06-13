@@ -4,8 +4,10 @@ import os
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from drl_agent_interfaces.srv import Step, Reset, Seed, GetDimensions, SampleActionSpace
+# AUX_PRED: shared wire-format parser (geometry header + label).  Pure module,
+# no ROS/torch deps; installed alongside this file.
+import aux_prediction_labels as _aux_labels
 
 
 class EnvInterface(Node):
@@ -13,7 +15,6 @@ class EnvInterface(Node):
         super().__init__(node_name)
 
         # Create service clients
-        self.clients_callback_group = MutuallyExclusiveCallbackGroup()
         self.reset_client = self.create_client(Reset, "reset")
         self.step_client = self.create_client(Step, "step")
         self.seed_client = self.create_client(Seed, "seed")
@@ -21,6 +22,43 @@ class EnvInterface(Node):
             SampleActionSpace, "action_space_sample"
         )
         self.dimensions_client = self.create_client(GetDimensions, "get_dimensions")
+
+        # AUX_PRED: when the environment runs with auxiliary prediction enabled,
+        # /reset and /step return a state of length (rl_state_dim + aux_label_dim)
+        # -- the privileged future-risk label is appended after the RL state.
+        # get_dimensions() still reports the true rl_state_dim (87), so this
+        # common layer slices the tail off for EVERY client (trainers, test,
+        # generalization_eval, ...) and stashes it in self.last_aux_label.  When
+        # aux is disabled the returned length equals rl_state_dim and nothing is
+        # stripped, so the baseline behaviour is byte-for-byte identical.
+        self._rl_state_dim = None      # cached by get_dimensions()
+        self.last_aux_label = None     # set on every reset()/step() (label only)
+        self.last_aux_meta = None      # parsed geometry header (or None)
+
+    def _strip_aux_label(self, state):
+        """AUX_PRED: split any appended auxiliary wire-tail off the env state.
+
+        The tail is ``[geometry header][label]`` (see aux_prediction_labels).
+        Returns the RL state (length rl_state_dim); sets self.last_aux_label to
+        the label (header removed) and self.last_aux_meta to the parsed geometry
+        (num_sectors / num_horizons / horizons_sec) so the trainer can verify
+        the STRUCTURE, not just the total length.  Passes the original object
+        through untouched when there is nothing to strip.
+        """
+        if self._rl_state_dim is None:
+            self.last_aux_label = None
+            self.last_aux_meta = None
+            return state
+        arr = np.asarray(state, dtype=np.float32).ravel()
+        if arr.shape[0] > self._rl_state_dim:
+            tail = arr[self._rl_state_dim:]
+            meta, label = _aux_labels.parse_aux_wire(tail)
+            self.last_aux_meta = meta
+            self.last_aux_label = label
+            return arr[: self._rl_state_dim]
+        self.last_aux_label = None
+        self.last_aux_meta = None
+        return state
 
     def reset(self):
         """Resets the environment to its initial state using /reset service"""
@@ -32,7 +70,8 @@ class EnvInterface(Node):
             rclpy.spin_until_future_complete(self, future)
         except Exception as e:
             self.get_logger().error(f"Service call /reset failed: {e}")
-        return future.result().state
+        # AUX_PRED: strip the appended label (no-op when aux disabled).
+        return self._strip_aux_label(future.result().state)
 
     def step(self, action):
         """Takes a step in the environment with the given action and the observed state"""
@@ -51,7 +90,9 @@ class EnvInterface(Node):
         except Exception as e:
             self.get_logger().error(f"Service call /step failed: {e}")
         response = future.result()
-        return response.state, response.reward, response.done, response.target
+        # AUX_PRED: strip the appended label (no-op when aux disabled).
+        state = self._strip_aux_label(response.state)
+        return state, response.reward, response.done, response.target
 
     def get_dimensions(self):
         """Get the dimensions of the environment"""
@@ -66,6 +107,9 @@ class EnvInterface(Node):
         except Exception as e:
             self.get_logger().error(f"Service call /get_dimensions failed: {e}")
         response = future.result()
+        # AUX_PRED: cache the true RL state dim so reset()/step() can slice off
+        # any appended auxiliary label.
+        self._rl_state_dim = int(response.state_dim)
         return response.state_dim, response.action_dim, response.max_action, response.environment_dim, response.agent_dim
 
     def sample_action_space(self):

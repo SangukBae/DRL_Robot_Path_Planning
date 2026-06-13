@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""Legacy Classic Gazebo environment variant.
+
+This file is kept for older 360-degree lidar / Classic Gazebo runs.
+The current main training path uses `environment.py` and
+`environment_curriculum.py`.
+"""
 
 import os
 import sys
@@ -13,13 +19,11 @@ from squaternion import Quaternion
 
 import rclpy
 from rclpy.node import Node
-# from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import PointCloud2
 from visualization_msgs.msg import Marker, MarkerArray
 from gazebo_msgs.msg import EntityState
 
@@ -27,11 +31,10 @@ from std_srvs.srv import Empty
 from gazebo_msgs.srv import SetEntityState
 from drl_agent_interfaces.srv import Step, Reset, Seed, GetDimensions, SampleActionSpace
 
-import point_cloud2 as pc2
 from file_manager import load_yaml
 
 from sensor_msgs.msg import LaserScan
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 
 
 
@@ -63,22 +66,6 @@ class Environment(Node):
         )
         self.get_logger().info(f"Environment run mode: {self.environment_mode}")
 
-        # Load environment config file
-        # drl_agent_src_path_env = "DRL_AGENT_SRC_PATH"
-        # drl_agent_src_path = os.getenv(drl_agent_src_path_env)
-        # if drl_agent_src_path is None:
-        #     self.get_logger().error(
-        #         f"Environment variable: {drl_agent_src_path_env} is not set"
-        #     )
-        #     sys.exit(-1)
-        # env_config_file_name = "environment.yaml"
-        # start_goal_pairs_file = "test_config.yaml"
-        # env_config_file_path = os.path.join(
-        #     drl_agent_src_path, "drl_agent", "config", env_config_file_name
-        # )
-        # start_goal_pairs_file_path = os.path.join(
-        #     drl_agent_src_path, "drl_agent", "config", start_goal_pairs_file
-        # )
         # Load environment config file (robust)
         self.declare_parameter("config_file", "")
         cfg_param = self.get_parameter("config_file").get_parameter_value().string_value.strip()
@@ -241,44 +228,16 @@ class Environment(Node):
             callback_group=self.odom_callback_group,
         )
         self.odom
-        # Velodyne subscription
-        # self.velodyne = self.create_subscription(
-        #     PointCloud2,
-        #     "/velodyne_points",
-        #     self.update_environment_state,
-        #     qos_profile,
-        #     callback_group=self.velodyne_callback_group,
-        # )
         self.velodyne = self.create_subscription(
             LaserScan,
-            "/scanner/scan",                           # ★ 하드코딩
-            self.update_environment_state,             # ★ 아래에서 LaserScan 처리로 바꿔줌
-            qos_best,                   # 센서 QoS (BestEffort/저지연)
+            "/scanner/scan",
+            self.update_environment_state,
+            qos_best,
             callback_group=self.velodyne_callback_group,
         )
         self.velodyne
 
-        # ── [DEBUG] LaserScan 수신 모니터 ──
-        # self._ENABLE_LIDAR_DEBUG = True
-        # self._scan_rx_count = 0
-        # self._scan_last_time = None
-        # self._scan_periods = deque(maxlen=200)
-        # self._scan_first_msg_seen = False
-
-        # self._scan_dbg = {
-        #     "finite": 0, "inf": 0, "nan": 0,
-        #     "min": float("nan"), "max": float("nan"),
-        #     "angle_min": float("nan"), "angle_max": float("nan"),
-        #     "range_min": float("nan"), "range_max": float("nan"),
-        #     "frame": "",
-        # }
-        # if self._ENABLE_LIDAR_DEBUG:
-        #     self._scan_log_timer = self.create_timer(1.0, self._scan_log_status)
-
-        
-        
-        # Define bins for grouping the velodyne_points
-        # 360° 전방위로 environment_dim 등분
+        # Define bins for grouping the 360-degree LaserScan.
         self.bins = []
         width = 2 * np.pi / self.environment_dim
         start = -np.pi
@@ -323,80 +282,6 @@ class Environment(Node):
         self._pose_hist = deque()
         self._hist_window = 1.0    # 최근 1초 창
         self._recent_disp = 1e9    # 초기에는 페널티 안 주도록 크게 세팅
-
-        # self._scan_log_timer = self.create_timer(1.0, self._scan_log_once_per_sec)
-
-
-    '''
-    #########################################################################
-    ###################       /scanner/scan debug code        ###############
-    #########################################################################
-    '''
-    # def _scan_debug_hook(self, scan: LaserScan):
-    #     now = self.get_clock().now()
-    #     if self._scan_last_time is not None:
-    #         dt = (now - self._scan_last_time).nanoseconds * 1e-9
-    #         if dt >= 0:
-    #             self._scan_periods.append(max(dt, 1e-6))
-    #     self._scan_last_time = now
-    #     self._scan_rx_count += 1
-
-    #     rng = np.asarray(scan.ranges, dtype=np.float32)
-    #     finite_mask = np.isfinite(rng)
-    #     self._scan_dbg["finite"] = int(finite_mask.sum())
-    #     self._scan_dbg["inf"] = int(np.isinf(rng).sum())
-    #     self._scan_dbg["nan"] = int(np.isnan(rng).sum())
-    #     if self._scan_dbg["finite"] > 0:
-    #         self._scan_dbg["min"] = float(rng[finite_mask].min())
-    #         self._scan_dbg["max"] = float(rng[finite_mask].max())
-    #     else:
-    #         self._scan_dbg["min"] = float("nan")
-    #         self._scan_dbg["max"] = float("nan")
-
-    #     self._scan_dbg["angle_min"] = float(scan.angle_min)
-    #     self._scan_dbg["angle_max"] = float(scan.angle_max)
-    #     self._scan_dbg["range_min"] = float(scan.range_min)
-    #     self._scan_dbg["range_max"] = float(scan.range_max)
-    #     self._scan_dbg["frame"] = scan.header.frame_id or ""
-
-    #     if not self._scan_first_msg_seen:
-    #         self._scan_first_msg_seen = True
-    #         self.get_logger().info(
-    #             "[LiDAR] First LaserScan on '/scanner/scan' | frame='%s' | angles=[%.3f, %.3f] rad | count=%d | hw_range=[%.3f, %.3f] m"
-    #             % (self._scan_dbg["frame"], self._scan_dbg["angle_min"], self._scan_dbg["angle_max"],
-    #                len(rng), self._scan_dbg["range_min"], self._scan_dbg["range_max"])
-    #         )
-
-    # def _scan_log_status(self):
-    #     if self._scan_rx_count == 0:
-    #         self.get_logger().warn("[LiDAR] No LaserScan received on '/scanner/scan'.")
-    #         return
-    #     if len(self._scan_periods) > 0:
-    #         avg_period = sum(self._scan_periods) / len(self._scan_periods)
-    #         hz = 1.0 / avg_period if avg_period > 0 else 0.0
-    #     else:
-    #         hz = 0.0
-    #     d = self._scan_dbg
-    #     self.get_logger().info(
-    #         "[LiDAR] rx=%d, ~%.1f Hz | finite=%d, inf=%d, nan=%d | min=%.3f, max=%.3f m | angles=[%.3f, %.3f] | frame='%s'"
-    #         % (self._scan_rx_count, hz, d["finite"], d["inf"], d["nan"],
-    #            d["min"], d["max"], d["angle_min"], d["angle_max"], d["frame"])
-    #     )
-
-    # def _scan_log_once_per_sec(self):
-    #     with self.environment_state_lock:
-    #         v = getattr(self, "environment_state", None)
-    #         if v is None:
-    #             return
-    #         vv = np.asarray(v, dtype=np.float32)
-    #     c = vv.size // 2
-    #     left = np.round(vv[c-3:c], 2)
-    #     center = np.round(vv[c], 2)
-    #     right = np.round(vv[c+1:c+4], 2)
-    #     self.get_logger().info(
-    #         f"[scan_state] len={vv.size} min={vv.min():.2f}@{int(vv.argmin())} "
-    #         f"center±3=({left.tolist()} | {center} | {right.tolist()})"
-    #     )
 
 
     def terminate_session(self):
@@ -721,25 +606,6 @@ class Environment(Node):
         else:
             self.goal_x = self.current_pairs["goal"]["x"]
             self.goal_y = self.current_pairs["goal"]["y"]
-
-    # def check_collision(self, laser_data):
-    #     """전방 ±90° 구간만으로 충돌 판정 (원하면 사용)"""
-    #     done, collision = False, False
-
-    #     # 전방 시야 인덱스 범위 계산
-    #     # -pi..pi를 environment_dim으로 균등분할했으므로,
-    #     # -90°(−pi/2) ~ +90°(+pi/2) 범위를 잘라서 min을 구함
-    #     start_idx = int(( -math.pi/2 - self.fov_min) / self.bin_width)
-    #     end_idx   = int((  math.pi/2 - self.fov_min) / self.bin_width)
-    #     start_idx = max(0, min(self.environment_dim-1, start_idx))
-    #     end_idx   = max(0, min(self.environment_dim-1, end_idx))
-    #     if end_idx < start_idx:
-    #         start_idx, end_idx = end_idx, start_idx
-
-    #     min_laser = float(np.min(laser_data[start_idx:end_idx+1]))
-    #     if min_laser < self.collision_threshold:
-    #         done, collision = False, False
-    #     return done, collision, min_laser
 
     def check_collision(self, laser_data):
         min_laser = float(np.nanmin(laser_data))

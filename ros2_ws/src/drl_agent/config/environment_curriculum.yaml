@@ -15,11 +15,26 @@ environment:
   goal_obstacle_upper: 8.5
   # Base counts = final-stage maximums. _apply_curriculum_stage() overrides these
   # each episode, so the yaml values only affect pool allocation at startup.
-  num_of_dynamic_obstacles: 6
-  num_of_static_obstacles: 3
+  # Dynamic obstacles have been removed from the code entirely: the only moving
+  # obstacles are humans; static obstacles stay fixed.
+  num_of_static_obstacles: 9
   num_of_humans: 5
   environment_state_dim: 80
   agent_state_dim: 7
+
+  # AUX_PRED: privileged future-risk label generation (env side, training-only).
+  #   enabled=true  -> step()/reset() append a length (H*K + H) label after the
+  #                    87-D state (risk map over H horizons x K sectors, then H
+  #                    future min-distances).  The TQC trainer slices it off; the
+  #                    87-D RL state is unchanged and inference never needs it.
+  # Set this true together with hyperparameters_tqc.yaml aux_prediction.enabled.
+  # num_sectors / horizons_sec MUST match the agent-side aux block.
+  aux_prediction:
+    enabled: true                   # master switch (env side)
+    num_sectors: 16
+    horizons_sec: [0.5, 1.0, 1.5]
+    risk_distance_scale: 3.0        # D_c [m]: risk = clamp(1 - d/D_c, 0, 1)
+    min_speed_for_motion: 0.05      # below this speed a human is treated static
   action_dim: 2
   agent_name: "hunter_se"
   max_action: 1.0
@@ -38,31 +53,81 @@ environment:
   obstacle_catalog: "drl_obstacle_assets"
 
   human_update_rate: 20.0
-  human_stop_prob_per_sec: 0.02
+  # Prediction-friendly pedestrian motion (Auxiliary Prediction): predictable
+  # over short horizons (~constant velocity), mode changes only every few
+  # seconds, no reaction to the robot. Smooth (low accel/yaw), bounded waypoint
+  # distance + segment timeout bound the mode-transition period, heading jitter
+  # only at retarget, weak stop/go. Applies to both this curriculum config and
+  # the non-curriculum environment.yaml path.
+  #
+  # SOURCE OF TRUTH (scope):
+  #   • The scalar base motion knobs below (accel, yaw rate/accel, retarget
+  #     interval/prob, stop/pause, segment sec, jitter) AND the behaviour-mode
+  #     MIX (human_mode_weights) live here in YAML and are read by environment.py
+  #     for BOTH the curriculum and non-curriculum paths.
+  #   • The PER-MODE kinematics that DOMINATE actual human motion — waypoint
+  #     distance, dir spread, stop/pause, speed scale, init wait for
+  #     crossing/along_path/waiting/slow_turn — live in code:
+  #     Environment._HUMAN_MODE_DEFAULTS. Override them only via human_mode_params
+  #     (base block or per stage), not via the scalar keys here.
+  #     (human_waypoint_dist_* below is only a FALLBACK for waypoints sampled
+  #      without a mode; every human has a mode, so per-mode wp_dist_* wins.)
+  #   • environment_curriculum.py hard-codes NO motion values: each stage is
+  #     applied as (base above) + (that stage's overrides); omitting a key
+  #     inherits the base. So edit base values here; add a key under a stage
+  #     only to deviate for that stage.
+  human_stop_prob_per_sec: 0.02   # weak stop/go
   human_pause_duration: 1.0
-  human_heading_jitter_deg: 15.0
-  human_retarget_prob_per_sec: 0.02
+  human_heading_jitter_deg: 12.0  # applied only at retarget
+  human_retarget_prob_per_sec: 0.01   # rare spontaneous retarget
   human_heading_jitter_on_retarget_only: true
-  human_min_retarget_interval: 1.5
-  human_desired_yaw_rate_limit: 1.2
+  human_min_retarget_interval: 3.0    # waypoint held ~2-4 s
+  human_desired_yaw_rate_limit: 0.7   # slow heading change
   human_scan_dropout_prob: 0.04   # final-stage value; overridden per stage
   human_scan_noise_std: 0.06      # final-stage value; overridden per stage
-  human_max_accel: 20.0
-  human_max_yaw_rate: 10.0
-  human_max_yaw_accel: 20.0
-  human_k_yaw: 5.0
+  human_max_accel: 0.6            # m/s²  (smooth speed changes)
+  human_max_yaw_rate: 0.8         # rad/s (~46°/s walking turn)
+  human_max_yaw_accel: 1.5        # rad/s²
+  human_k_yaw: 2.0                # gentle yaw-error gain
+  # Mode-transition control. human_waypoint_dist_* is a FALLBACK only — each
+  # pedestrian uses its mode's per-mode wp_dist_* (Environment._HUMAN_MODE_DEFAULTS,
+  # overridable via human_mode_params); these globals apply only to a waypoint
+  # sampled without a mode. max_segment_sec force-retargets after that many
+  # active-motion seconds (excludes pause/stop time).
+  human_waypoint_dist_min: 1.5    # m  (fallback; per-mode wp_dist_* governs humans)
+  human_waypoint_dist_max: 3.5    # m  (fallback)
+  human_max_segment_sec: 4.0      # s  (active-motion bound per segment; excludes pause/stop)
 
-  dynamic_update_rate: 20.0
-  dynamic_speed_min: 0.35         # final-stage value; overridden per stage
-  dynamic_speed_max: 1.10         # final-stage value; overridden per stage
-  dynamic_stop_prob_per_sec: 0.03
-  dynamic_pause_duration: 1.5
-  dynamic_heading_jitter_deg: 12.0
-  dynamic_retarget_prob_per_sec: 0.02
-  dynamic_max_accel: 0.6
-  dynamic_max_yaw_rate: 0.9
-  dynamic_max_yaw_accel: 1.5
-  dynamic_k_yaw: 2.0
+  # Falcon-lite goal-driven pedestrian motion: each human travels toward an
+  # episode GOAL (short local steps along the goal direction), rests on arrival,
+  # then picks a new goal. The travel style (mode) sets goal span/direction.
+  # Humans stay NON-reactive to the robot and near-constant-velocity between
+  # goals (constant-velocity aux labels stay valid). The scalar knobs below are
+  # stage-overridable (see HUMAN_MOTION_OVERRIDE_KEYS); the on/off toggles are
+  # global. false -> legacy random waypoint walk.
+  human_goal_driven_enabled: true
+  human_goal_reach_threshold: 0.6   # m  within this of the goal -> rest + new goal
+  human_goal_pause_duration: 2.0    # s  rest at a reached goal
+  human_local_step_m: 2.0           # m  local step length toward the goal
+  human_goal_span_multiplier: 2.0   # goal distance = (mode wp_dist_max) * this
+  human_goal_min_span_m: 4.0        # m  floor on a newly sampled goal distance
+  # Weak human-human local avoidance (lightweight, robot ignored). A capped
+  # heading nudge away from nearby humans -> less overlap, no sharp turns.
+  human_social_avoid_enabled: true
+  human_social_avoid_radius: 1.5    # m  neighbour influence radius (stage-overridable)
+  human_social_avoid_strength: 0.6  # blend weight repulsion vs goal (stage-overridable)
+  human_social_avoid_max_heading_offset_deg: 25.0  # cap on the avoidance nudge
+
+  # Episode-level pedestrian behaviour-mode mix. Each human is assigned ONE mode
+  # at spawn and keeps it for the episode. Weights need not sum to 1 (normalised
+  # internally); empty/absent → uniform. Per-mode kinematics live in code
+  # (Environment._HUMAN_MODE_DEFAULTS) and may be overridden via human_mode_params.
+  # Stages below may override human_mode_weights to reshape the mix.
+  human_mode_weights:
+    crossing:   1.0
+    along_path: 1.0
+    waiting:    0.5
+    slow_turn:  1.0
 
   start_edge_heading_margin_m: 1.0
   start_front_clearance_m: 1.2
@@ -74,12 +139,37 @@ environment:
   obstacle_mutual_margin: 1.2
 
   use_obstacle_pool: true
-  obstacle_pool_dynamic_size: 12  # >= max active_dynamic across all stages (6)
-  obstacle_pool_static_size: 4    # >= max active_static across all stages (3)
-  obstacle_pool_human_size: 8     # >= max active_humans across all stages (5)
-  parking_slot_xs: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
-  parking_slot_ys: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
+  # NOTE (structured map curriculum): when map_layout_enabled=true the env
+  # OVERRIDES obstacle_pool_static_size with the group-aware coverage size so
+  # every (map_type, size_group) has >= map_static_coverage_per_group entries
+  # pre-spawned (see _build_static_pool_coverage). The value below is only the
+  # fallback used when the curriculum is disabled.
+  obstacle_pool_static_size: 24   # fallback; layout coverage usually grows this
+  obstacle_pool_human_size: 5     # >= max active_humans across all stages (5)
+  # Parking slots must sit OUTSIDE the 19x19 arena (walls at +-9.5). Both coords
+  # are >= 11 so every slot is in a far corner band; the env auto-extends this
+  # ring if the (coverage-grown) pool needs more than len(parking_slots) slots.
+  parking_slot_xs: [-17.0, -15.0, -13.0, -11.0, 11.0, 13.0, 15.0, 17.0]
+  parking_slot_ys: [-17.0, -15.0, -13.0, -11.0, 11.0, 13.0, 15.0, 17.0]
   parking_z: 0.0
+
+  # ── Structured map curriculum (docs/map_curriculum_plan.md) ────────────────
+  # "안 B": structured layouts live INSIDE the existing drl_arena.world 19x19
+  # arena (outer walls untouched). Internal walls + per-map obstacle policy +
+  # layout-aware start/goal/human sampling are added in code. To later adopt
+  # "안 A" (world expansion to 25x25) only map_inner_*/parking need to change.
+  map_layout_enabled: true
+  map_inner_lower: -8.5           # inner navigable extent (defaults to goal bounds)
+  map_inner_upper: 8.5
+  map_wall_thickness: 0.30
+  map_wall_height: 1.20
+  map_corridor_width: 3.5
+  map_intersection_width: 3.5
+  map_lobby_open_half_extent: 4.0
+  map_large_footprint_margin: 2.0   # extra lobby open-area keep-out for LARGE items
+                                    # (catalog radius underestimates real footprint)
+  map_wall_clearance: 0.55        # min clearance any sampled pose keeps off a wall
+  map_static_coverage_per_group: 5  # pre-spawn >= this per (map_type, size_group)
 
 threshold_parameters:
   goal_threshold: 0.42
@@ -87,6 +177,173 @@ threshold_parameters:
   time_delta: 0.1
   inter_entity_distance: 2.5
   lidar_max_range: 50
+
+# ── Localization-error emulation (sim-to-real) ───────────────────────────────
+# Base = OFF (identical to ground truth). Curriculum stages ramp it up via a
+# per-stage `localization:` block (see stages below). Reward/done stay on
+# ground-truth pose; only the policy's goal observation is corrupted.
+#
+# Error model (environment.py _loc_emulator_step): bias + time-correlated OU
+# measurement error + per-second drift + latency + rare jumps, scaled per
+# structured-map type. Notes:
+#   • sigma_xy_m / sigma_yaw_rad   = STATIONARY std of the OU measurement error.
+#   • corr_time_xy_s / *_yaw_s     = OU correlation time [s]. 0 → white noise
+#                                    (legacy). ~0.5–1.5 s ≈ filtered AMCL/SLAM.
+#   • random_walk_*_mps / *_rps    = PER-SECOND drift intensity (accumulated std
+#                                    ≈ rate·√t; Brownian √dt scaling).
+#   • map_type_multipliers         = base × multiplier per structured map type.
+#       corridor uses along_axis: x (corridor runs along world-x) so the
+#       ALONG-corridor position + drift get along_extra on top of sigma_xy —
+#       the real aperture-problem failure mode in long corridors.
+#   • big_jump_* / yaw_flip_*      = rare large relocalization / mirror-flip
+#                                    (corridor only); enable on hard stages only.
+# Any omitted key inherits this base; a stage's `localization:` block is merged
+# on top (deep-restored each stage, so no cross-stage leakage).
+localization:
+  enabled: false
+  mode: "off"
+  sigma_xy_m: 0.0
+  sigma_yaw_rad: 0.0
+  corr_time_xy_s: 0.0        # 0 → white noise (backward compatible)
+  corr_time_yaw_s: 0.0
+  bias_xy_m: 0.0
+  bias_yaw_rad: 0.0
+  random_walk_xy_mps: 0.0    # per-second drift intensity (std ≈ rate·√t)
+  random_walk_yaw_rps: 0.0
+  delay_steps: 0
+  jump_prob: 0.0
+  jump_xy_m: 0.0
+  jump_yaw_rad: 0.0
+  big_jump_prob: 0.0         # large relocalization failure (hard stages only)
+  big_jump_xy_m: 0.0
+  big_jump_yaw_rad: 0.0
+  yaw_flip_prob: 0.0         # ±π flip in symmetric maps (corridor)
+  yaw_flip_map_types: ["corridor"]
+  # Per-map-type scaling. corridor localizes worst (long featureless lane) →
+  # larger + anisotropic along the corridor (world-x) axis.
+  map_type_multipliers:
+    corridor:     {sigma_xy: 1.6, sigma_yaw: 2.0, drift: 2.0, jump: 1.5, along_axis: x, along_extra: 1.8}
+    intersection: {sigma_xy: 1.3, sigma_yaw: 1.5, drift: 1.5, jump: 1.2}
+    clutter:      {sigma_xy: 1.1, sigma_yaw: 1.1, drift: 1.1, jump: 1.0}
+    lobby:        {sigma_xy: 1.0, sigma_yaw: 1.0, drift: 1.0, jump: 1.0}
+  use_gt_for_reward: true
+  use_gt_for_done: true
+
+# ── Named goal-obs (localization-uncertainty) noise PROFILES ─────────────────
+# A stage selects one with `localization_profile: <name>` (see stages). The
+# profile is DEEP-merged onto the base `localization:` block above, so it
+# INHERITS map_type_multipliers / use_gt_* and only overrides the listed knobs.
+# Inline per-stage `localization: {...}` still works and is applied ON TOP.
+# Param names are physical and map 1:1 to real localization logs:
+#   sigma_xy_m / sigma_yaw_rad   = OU stationary std (corr_time_*_s = correlation)
+#   drift_xy_mps / drift_yaw_radps = per-second drift intensity (alias: random_walk_*)
+#   bias_xy_m / bias_yaw_rad, jump_prob / jump_xy_m / jump_yaw_rad, delay_steps
+# Train profiles stay conservative; the aggressive failure cases (yaw flip,
+# strong jump/delay) live ONLY in `stress_eval`, which no training stage uses.
+localization_profiles:
+  clean: {enabled: false}
+  weak_goal_noise:            # Stage 2: weak correlated goal-obs noise + 1-step delay
+    enabled: true
+    mode: gaussian
+    sigma_xy_m: 0.05
+    sigma_yaw_rad: 0.02
+    corr_time_xy_s: 0.8
+    corr_time_yaw_s: 0.8
+    delay_steps: 1
+  drift_goal_noise:           # Stage 3: + per-second drift + weak bias + 2-step delay
+    enabled: true
+    mode: drift
+    sigma_xy_m: 0.08
+    sigma_yaw_rad: 0.03
+    corr_time_xy_s: 1.0
+    corr_time_yaw_s: 1.0
+    drift_xy_mps: 0.02
+    drift_yaw_radps: 0.01
+    bias_xy_m: 0.03
+    bias_yaw_rad: 0.01
+    delay_steps: 2
+  robustness_train:           # Stage 4: full + bias + RARE small/big jump (NO flip)
+    enabled: true
+    mode: full
+    sigma_xy_m: 0.10
+    sigma_yaw_rad: 0.04
+    corr_time_xy_s: 1.2
+    corr_time_yaw_s: 1.2
+    bias_xy_m: 0.05
+    bias_yaw_rad: 0.02
+    drift_xy_mps: 0.03
+    drift_yaw_radps: 0.015
+    delay_steps: 3
+    jump_prob: 0.002
+    jump_xy_m: 0.3
+    jump_yaw_rad: 0.1
+    big_jump_prob: 0.0005
+    big_jump_xy_m: 0.8
+    big_jump_yaw_rad: 0.4
+  stress_eval:                # EVALUATION-ONLY stress profile (no training stage uses it):
+    enabled: true             #   stronger jump/delay + ±π yaw flip (corridor).
+    mode: full
+    sigma_xy_m: 0.12
+    sigma_yaw_rad: 0.05
+    corr_time_xy_s: 1.2
+    corr_time_yaw_s: 1.2
+    bias_xy_m: 0.08
+    bias_yaw_rad: 0.03
+    drift_xy_mps: 0.05
+    drift_yaw_radps: 0.02
+    delay_steps: 5
+    jump_prob: 0.01
+    jump_xy_m: 0.5
+    jump_yaw_rad: 0.2
+    big_jump_prob: 0.003
+    big_jump_xy_m: 1.0
+    big_jump_yaw_rad: 0.6
+    noise_flip_enabled: true   # yaw flip ENABLED only here (stress eval)
+    yaw_flip_prob: 0.002
+
+# ── Proprioception observation noise (separate axis; base = OFF) ─────────────
+# Perturbs only the observed speed / yaw-rate / steering slots (state[84:87]).
+# Reward/done/collision use ground truth. Physical-unit params.
+proprio_noise:
+  enabled: false
+  speed_sigma_mps: 0.0
+  speed_bias_mps: 0.0
+  speed_scale_sigma: 0.0
+  yaw_rate_sigma_radps: 0.0
+  yaw_rate_bias_radps: 0.0
+  steer_sigma_rad: 0.0
+  delay_steps: 0
+proprio_noise_profiles:
+  clean: {enabled: false}
+  light:                      # Stage 3: very weak proprio noise
+    enabled: true
+    speed_sigma_mps: 0.02
+    yaw_rate_sigma_radps: 0.02
+    speed_scale_sigma: 0.01
+  medium:                     # Stage 4: slightly stronger + bias + 1-step delay
+    enabled: true
+    speed_sigma_mps: 0.04
+    speed_bias_mps: 0.02
+    yaw_rate_sigma_radps: 0.04
+    yaw_rate_bias_radps: 0.01
+    speed_scale_sigma: 0.02
+    steer_sigma_rad: 0.01
+    delay_steps: 1
+
+# ── Run-level logging / evaluation config (NOT per-stage) ────────────────────
+# Responsibility split: the curriculum only chooses a NOISE PROFILE per stage;
+# WHAT to log and WHICH profile to evaluate with are run-level (constant across
+# stages). Structure + defaults below are an extension point — the trainer can
+# read them later without touching stage logic. Keeping them here (not in
+# stages) guarantees logging columns never change between stages.
+localization_logging:
+  log_gt_goal_metrics: true        # always log ground-truth goal metrics
+  log_noisy_goal_metrics: true     # and the noisy (observed) goal metrics
+  log_localization_error: false    # |loc_est - gt| per step (extension point)
+  log_jump_events: false           # mark jump/flip occurrences (extension point)
+evaluation:
+  eval_use_same_localization_noise: true  # eval with the current stage's profile
+  eval_noise_profile: ""                  # or a named profile (e.g. "stress_eval")
 
 use_zone_collision: false
 zone_angles_deg: [-30, 30,   -50, -30,   30, 50,   -130, -50,  50, 130,  -150, -130, 130, 150,  150, -150]
@@ -110,9 +367,9 @@ safety_region:
 # ──────────────────────────────────────────────────────────────────────────────
 # Curriculum stage definitions
 # Fields overridden per episode by _apply_curriculum_stage():
-#   active_static, active_dynamic, active_humans   → num_of_*_obstacles / num_of_humans
-#   dynamic_speed_min/max                          → self.dynamic_speed_min/max
+#   active_static, active_humans                   → num_of_static_obstacles / num_of_humans
 #   human_scan_noise_std, human_scan_dropout_prob  → self.human_scan_noise_std/dropout
+# (Dynamic obstacles removed: active_dynamic / dynamic_speed_* are no longer used.)
 # Fields absent in a stage inherit the base environment values above.
 # ──────────────────────────────────────────────────────────────────────────────
 curriculum:
@@ -120,55 +377,88 @@ curriculum:
   initial_stage: 0   # node starts here; trainer advances via curriculum_stage parameter
 
   stages:
-    # ── Stage 0: empty map ──────────────────────────────────────────────
+    # ── Stage 0: lobby, empty — basic goal reaching ─────────────────────
+    # map_type per stage: structured map curriculum samples a map each episode
+    # from allowed_map_types (weighted by map_type_probs). allowed_static_groups
+    # is a SIZE filter (small/medium/large). human_placement_mode is derived from
+    # the map structure automatically (lobby->lobby_crossings, etc.).
     - name: empty
       active_static: 0
-      active_dynamic: 0
       active_humans: 0
-      dynamic_speed_min: 0.0
-      dynamic_speed_max: 0.0
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
+      allowed_map_types: ["lobby"]
+      allowed_static_groups: ["small", "medium"]
+      eval_map_types: ["lobby"]
+      localization_profile: clean   # no goal-obs noise yet
 
-    # ── Stage 1: static obstacles only ──────────────────────────────────
+    # ── Stage 1: corridor, static only — wall/lane driving ──────────────
     - name: static_only
       active_static: 3
-      active_dynamic: 0
       active_humans: 0
-      dynamic_speed_min: 0.0
-      dynamic_speed_max: 0.0
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
+      allowed_map_types: ["corridor"]
+      allowed_static_groups: ["small", "medium"]
+      eval_map_types: ["corridor"]
+      localization_profile: clean   # no goal-obs noise yet
 
-    # ── Stage 2: slow dynamic obstacles + 1 human, quadrant placement ──
+    # ── Stage 2: corridor + intersection, 5 static + 1 human ────────────
     - name: slow_dynamic
-      active_static: 2
-      active_dynamic: 3
+      active_static: 5
       active_humans: 1
-      human_placement_mode: quadrants
-      dynamic_speed_min: 0.20
-      dynamic_speed_max: 0.55
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
+      allowed_map_types: ["corridor", "intersection"]
+      map_type_probs: [0.7, 0.3]
+      allowed_static_groups: ["small", "medium"]
+      eval_map_types: ["corridor", "intersection"]
+      # easiest pedestrian: near-straight, highly predictable motion only
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
+      # Falcon-lite: weaker avoidance + shorter goals -> very predictable
+      human_social_avoid_strength: 0.3
+      human_goal_span_multiplier: 1.5
+      # weak correlated goal-obs noise + 1-step latency (filtered-AMCL-like).
+      # base map_type_multipliers still make corridor noisier + anisotropic.
+      localization_profile: weak_goal_noise
 
-    # ── Stage 3: 4 humans, one per quadrant ────────────────────────────
+    # ── Stage 3: corridor+intersection+clutter, 6 static + 4 humans ─────
     - name: mixed_medium
-      active_static: 2
-      active_dynamic: 4
+      active_static: 6
       active_humans: 4
-      human_placement_mode: quadrants
-      dynamic_speed_min: 0.30
-      dynamic_speed_max: 0.75
       human_scan_noise_std: 0.03
       human_scan_dropout_prob: 0.015
+      allowed_map_types: ["corridor", "intersection", "clutter"]
+      map_type_probs: [0.4, 0.3, 0.3]
+      allowed_static_groups: ["small", "medium", "large"]
+      eval_map_types: ["corridor", "intersection", "clutter"]
+      # introduce gentle turns and occasional waiting
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.5, slow_turn: 0.75}
+      # correlated goal-obs noise + per-second drift + weak bias + 2-step latency.
+      localization_profile: drift_goal_noise
+      # turn on a VERY weak proprio-observation noise from this stage.
+      proprio_noise_profile: light
 
-    # ── Stage 4: full complexity, humans placed globally at random ─────
+    # ── Stage 4: all four maps, 9 static + 5 humans — final generalization
     - name: full_complexity
-      active_static: 3
-      active_dynamic: 6
+      active_static: 9
       active_humans: 5
-      human_placement_mode: global_random
-      dynamic_speed_min: 0.35
-      dynamic_speed_max: 1.10
       human_scan_noise_std: 0.06
       human_scan_dropout_prob: 0.04
+      allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
+      map_type_probs: [0.25, 0.25, 0.25, 0.25]
+      allowed_static_groups: ["small", "medium", "large"]
+      eval_map_types: ["lobby", "corridor", "intersection", "clutter"]
+      # full behaviour mix (all four modes)
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 1.0, slow_turn: 1.0}
+      # Falcon-lite: stronger avoidance + longer goal spans -> busier crowd
+      human_social_avoid_strength: 0.8
+      human_social_avoid_radius: 1.8
+      human_social_avoid_max_heading_offset_deg: 35.0
+      human_goal_span_multiplier: 2.5
+      # hardest TRAIN localization: full correlated noise + bias + drift + delay
+      # + RARE small/big relocalization jumps. NO yaw flip in training — the ±π
+      # mirror flip lives only in the `stress_eval` profile (evaluation-only).
+      localization_profile: robustness_train
+      # slightly stronger proprio-observation noise + bias + 1-step delay.
+      proprio_noise_profile: medium

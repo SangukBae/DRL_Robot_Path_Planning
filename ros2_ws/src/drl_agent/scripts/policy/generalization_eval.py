@@ -4,8 +4,8 @@
 Loads a trained TQC model and evaluates it (deterministic policy) under a set of
 *conditions* without any further training, so that the paper can show the policy
 is not over-fit to a single setting. Each condition is a curriculum stage, which
-bundles obstacle density, dynamic-obstacle speed and perception noise — i.e. the
-density-shift / noise-shift axes asked for by the paper guide. The world axis
+bundles static-obstacle density, human (pedestrian) count and perception noise —
+i.e. the density-shift / noise-shift axes asked for by the paper guide. The world axis
 (train world vs unseen test world) is selected at Gazebo launch time; pass a
 ``--world`` label so the output records which world produced the numbers.
 
@@ -48,10 +48,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 
 from train_tqc_base import TrainTQCBase
 from episode_metrics import EpisodeMetrics, PaperMetricsCSV, METRIC_COLUMNS
+# AUX_ABLATION: run-identity columns (seed / aux_enabled / aux_version).
+import aux_ablation_logging as aux_log
 
 
 class GeneralizationEval(TrainTQCBase):
     """Evaluate a fixed trained policy across curriculum conditions + worlds."""
+
+    # AUX_PRED: evaluation of an aux-trained policy is allowed -- it restores the
+    # encoder via Agent.load(...) and never computes the auxiliary loss, so it
+    # only runs the encoder+actor inference path.
+    AUX_SUPPORTED = True
 
     def __init__(self):
         super().__init__()   # builds agent, env interface, dirs, CSV loggers
@@ -96,7 +103,7 @@ class GeneralizationEval(TrainTQCBase):
             "world", "condition_stage", "eval_eps",
             "mean_reward", "std_reward", "success_rate", "collision_rate",
             "timeout_rate", "mean_goal_dist",
-        ] + METRIC_COLUMNS
+        ] + METRIC_COLUMNS + aux_log.META_COLUMN_NAMES   # AUX_ABLATION
         with open(self._out_csv, "w", newline="") as f:
             csv.writer(f).writerow(header)
         self.get_logger().info(f"[Gen] Output: {self._out_csv}")
@@ -178,7 +185,7 @@ class GeneralizationEval(TrainTQCBase):
                 round(base["mean_reward"], 4), round(base["std_reward"], 4),
                 round(base["success_rate"], 4), round(base["collision_rate"], 4),
                 round(base["timeout_rate"], 4), round(base["mean_goal_dist"], 4),
-            ] + [agg[c] for c in METRIC_COLUMNS]
+            ] + [agg[c] for c in METRIC_COLUMNS] + self._aux_log_meta_cols()  # AUX_ABLATION
             with open(self._out_csv, "a", newline="") as f:
                 csv.writer(f).writerow(row)
 

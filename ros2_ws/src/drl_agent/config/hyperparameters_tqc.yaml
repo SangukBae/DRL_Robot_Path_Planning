@@ -36,3 +36,47 @@ hyperparameters:
   prioritized: false                # true로 켜면 아래 alpha/min_priority 사용
   alpha: 0.4
   min_priority: 1.0
+
+  # AUX_PRED: auxiliary prediction network (agent side).
+  #   enabled=false  -> SharedEncoder is an identity passthrough; actor/critic
+  #                     consume the raw 87-D state -> baseline TQC, unchanged.
+  #   enabled=true   -> 87 -> encoder_hidden_dim -> latent_dim (ELU) shared
+  #                     encoder; actor reads z.detach(); critic+aux update the
+  #                     encoder.  To actually train the aux head you must ALSO
+  #                     set environment(_curriculum).yaml aux_prediction.enabled
+  #                     = true so the env appends privileged future-risk labels.
+  # IMPORTANT: num_sectors / horizons_sec MUST match the env-side aux block.
+  # The curriculum trainer fail-fasts at startup (raises) if the env-appended
+  # label length disagrees with these values, so a mismatch aborts the run
+  # instead of training on the wrong target.  Also: aux is ONLY usable from
+  # train_tqc_curriculum_agent.py -- enabling it on any other TQC trainer raises.
+  aux_prediction:
+    enabled: true                   # master switch (agent side)
+    version: 1                      # 1 = single-step risk-map (primary path)
+    # --- shared encoder ---
+    encoder_hidden_dim: 256
+    latent_dim: 128
+    # --- label geometry (keep in sync with env) ---
+    num_sectors: 16
+    horizons_sec: [0.5, 1.0, 1.5]
+    # --- v1 loss ---
+    loss_weight: 0.1                # beta_aux on the risk-map MSE
+    # --- v2 options (off by default) ---
+    min_distance_loss_weight: 0.0   # >0 enables the future min-distance head
+    use_distributional_aux: false   # quantile (pinball) risk prediction
+    distributional_quantiles: [0.1, 0.5, 0.9]
+    # Action-conditioned aux (Proximity-Aware style): predict the SAME future
+    # risk target from z_t AND the upcoming action sequence [a_t..a_{t+K-1}].
+    # Only the aux branch changes; actor/critic paths are untouched.  Requires
+    # enabled: true.  The replay buffer tracks episode boundaries so the lookup
+    # never crosses episodes.
+    action_conditioned_aux: true
+    action_conditioned_steps: 4       # K: future actions used to condition (>=1)
+    action_embed_dim: 32
+    action_condition_hidden_dim: 128  # GRU hidden size for the action context
+    # Temporal branch: SCAFFOLD ONLY, not wired yet -- these keys are parsed but
+    # currently have NO effect (see docs/aux_prediction_tqc_design.md).
+    temporal_enabled: false
+    temporal_mode: "none"           # "none" | "state_stack"
+    history_len: 4
+    state_stack_len: 1

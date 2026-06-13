@@ -21,6 +21,13 @@
   <depend>drl_agent_interfaces</depend>
   <!-- ros_gz_interfaces: SpawnEntity / DeleteEntity / SetEntityPose / ControlWorld -->
   <depend>ros_gz_interfaces</depend>
+  <!-- TF for the real-robot inference node (goal frame -> base frame) -->
+  <depend>tf2_ros</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <!-- SetParameters (curriculum stage) used by trainers / validation runner -->
+  <depend>rcl_interfaces</depend>
 
   <!-- Python pip dependencies (ROS deb 패키지 래퍼) -->
   <depend>python3-tensorboard-pip</depend>

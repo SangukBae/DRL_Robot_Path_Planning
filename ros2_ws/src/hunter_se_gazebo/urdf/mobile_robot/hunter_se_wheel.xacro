@@ -51,11 +51,13 @@
       <child link="${wheel_prefix}_steering_link"/>
       <origin xyz="${x} ${y} ${z}" rpy="0 0 0"/>
       <axis xyz="0 0 1"/>
-      <!-- Match the prefilter's 315.789 deg/s steering-rate target and give
-           the steering servo enough authority to reach the 22 deg physical
-           limit under tire load. -->
+      <!-- Steering servo: velocity headroom (5.511 rad/s) exceeds the prefilter's
+           steering-rate target (now 200 deg/s) so the joint is not the bottleneck;
+           effort still reaches the 22 deg physical limit under tire load.
+           Damping raised 0.05 -> 0.2 to suppress steering micro-oscillation
+           (RViz front-wheel chatter). friction kept 0.0 (revisit only if needed). -->
       <limit lower="-0.3839724354387525" upper="0.3839724354387525" effort="1000.0" velocity="5.511"/>
-      <dynamics damping="0.05" friction="0.0"/>
+      <dynamics damping="0.2" friction="0.0"/>
     </joint>
 
     <link name="${wheel_prefix}_wheel_link">
