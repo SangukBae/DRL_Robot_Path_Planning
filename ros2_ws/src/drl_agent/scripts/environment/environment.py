@@ -554,6 +554,20 @@ class Environment(Node):
         self.map_large_footprint_margin = float(mc.get("map_large_footprint_margin", 2.0))
         # Minimum clearance any sampled pose must keep from an internal wall face.
         self.map_wall_clearance = float(mc.get("map_wall_clearance", 0.55))
+        # ── Structured spawn policy (corridor / intersection only) ──────────
+        # End-band depth (along the lane axis) and side margin (off the lane
+        # walls) for the start regions; lane-aligned spawn yaw bias/jitter; and
+        # the reserved central passage widths + safety margin that static
+        # obstacles must never block. Defaults are intentionally gentle.
+        self.map_start_band_depth = float(mc.get("map_start_band_depth", 2.5))
+        self.map_start_side_margin = float(mc.get("map_start_side_margin", 0.4))
+        self.map_spawn_yaw_center_bias = math.radians(
+            float(mc.get("map_spawn_yaw_center_bias_deg", 12.0)))
+        self.map_spawn_yaw_jitter = math.radians(
+            float(mc.get("map_spawn_yaw_jitter_deg", 8.0)))
+        self.map_corridor_passage_width = float(mc.get("map_corridor_passage_width", 1.6))
+        self.map_intersection_passage_width = float(mc.get("map_intersection_passage_width", 1.6))
+        self.map_passage_safety_margin = float(mc.get("map_passage_safety_margin", 0.25))
         # Minimum activatable pool coverage PER (map_type, size_group) so a
         # stage's size filter always has obstacles to activate on each map.
         self.map_static_coverage_per_group = int(mc.get(
@@ -571,6 +585,9 @@ class Environment(Node):
         # Episode-level layout state (populated by _select_episode_layout()).
         self.current_map_type = ""
         self.current_layout_spec = None
+        # Start region chosen this episode (corridor/intersection structured
+        # spawn); drives the structure-aware goal region. None for other maps.
+        self._current_start_region = None
         # Round-robin pointer for deterministic eval map cycling.
         self._eval_map_cursor = 0
         # Wall-box pool (spawned once, parked underground, activated per episode).
@@ -3022,6 +3039,10 @@ class Environment(Node):
 
         # corridor — one horizontal travel lane bounded by two long walls.
         half = self.map_corridor_width / 2.0
+        band = min(self.map_start_band_depth, 0.45 * span)  # end-band depth
+        c_ph = self.map_corridor_passage_width / 2.0        # reserved-strip half width
+        left_band  = (lo, lo + band, -half, half)
+        right_band = (hi - band, hi, -half, half)
         layouts["corridor"] = {
             "walls": [
                 {"cx": 0.0, "cy":  (half + t / 2.0), "sx": span, "sy": t},
@@ -3030,12 +3051,30 @@ class Environment(Node):
             "free_regions": [(lo, hi, -half, half)],
             "human_regions": [(lo, hi, -half, half)],
             "open_area": None,
+            # Structured spawn metadata: start at either end band, head inward.
+            "start_regions": [
+                {"name": "left",  "rect": left_band,  "axis": "x",
+                 "dir": 1.0,  "lane_half": half},
+                {"name": "right", "rect": right_band, "axis": "x",
+                 "dir": -1.0, "lane_half": half},
+            ],
+            "goal_regions": {"left": [right_band], "right": [left_band]},
+            # Central along-lane strip kept clear of static obstacles.
+            "reserved_passages": [
+                {"axis": "x", "y_center": 0.0, "half_width": c_ph},
+            ],
         }
 
         # intersection — plus-shaped lanes; four corner blocks wall off the rest.
         half = self.map_intersection_width / 2.0
         blk = hi - half          # corner block side length
         cmid = (half + hi) / 2.0  # corner block centre offset
+        band = min(self.map_start_band_depth, 0.9 * (hi - half))
+        i_ph = self.map_intersection_passage_width / 2.0
+        arm_l = (lo, lo + band, -half, half)
+        arm_r = (hi - band, hi, -half, half)
+        arm_b = (-half, half, lo, lo + band)
+        arm_t = (-half, half, hi - band, hi)
         layouts["intersection"] = {
             "walls": [
                 {"cx":  cmid, "cy":  cmid, "sx": blk, "sy": blk},
@@ -3049,6 +3088,29 @@ class Environment(Node):
                 (-half, half, half, hi), (-half, half, lo, -half),
             ],
             "open_area": None,
+            # Start at any of the 4 arm-end bands, head toward the centre.
+            "start_regions": [
+                {"name": "left",   "rect": arm_l, "axis": "x",
+                 "dir": 1.0,  "lane_half": half},
+                {"name": "right",  "rect": arm_r, "axis": "x",
+                 "dir": -1.0, "lane_half": half},
+                {"name": "bottom", "rect": arm_b, "axis": "y",
+                 "dir": 1.0,  "lane_half": half},
+                {"name": "top",    "rect": arm_t, "axis": "y",
+                 "dir": -1.0, "lane_half": half},
+            ],
+            # Goal lives in a DIFFERENT arm than the start arm.
+            "goal_regions": {
+                "left":   [arm_r, arm_t, arm_b],
+                "right":  [arm_l, arm_t, arm_b],
+                "bottom": [arm_t, arm_l, arm_r],
+                "top":    [arm_b, arm_l, arm_r],
+            },
+            # Cross-shaped central lanes kept clear of static obstacles.
+            "reserved_passages": [
+                {"axis": "x", "y_center": 0.0, "half_width": i_ph},
+                {"axis": "y", "x_center": 0.0, "half_width": i_ph},
+            ],
         }
 
         # clutter — a few short internal walls (wide gaps keep connectivity).
@@ -3268,6 +3330,70 @@ class Environment(Node):
         return (x_lo - margin <= x <= x_hi + margin
                 and y_lo - margin <= y <= y_hi + margin)
 
+    # ── Reserved-passage helpers (corridor / intersection lanes) ───────────
+    def _circle_intersects_passage(self, x: float, y: float, radius: float,
+                                   passage: dict) -> bool:
+        """True if a circle (x, y, radius) overlaps one reserved passage strip.
+        A passage is an infinite strip about its centre line on the cross axis;
+        `radius` should already include any safety margin."""
+        hw = passage["half_width"]
+        if passage["axis"] == "x":            # strip runs along x; cross axis = y
+            return abs(y - passage["y_center"]) < hw + radius
+        return abs(x - passage["x_center"]) < hw + radius   # runs along y
+
+    def _point_in_reserved_passage(self, x: float, y: float) -> bool:
+        """True if (x, y) lies inside any reserved passage of the active layout."""
+        spec = self.current_layout_spec
+        for p in (spec.get("reserved_passages", []) if spec else []):
+            if self._circle_intersects_passage(x, y, 0.0, p):
+                return True
+        return False
+
+    def _pose_blocks_reserved_passage(self, x: float, y: float, radius: float,
+                                      safety_margin: float = None) -> bool:
+        """True if a footprint (radius + safety margin) intrudes any reserved
+        passage. No-op for layouts without reserved passages (lobby / clutter /
+        non-structured). safety_margin defaults to map_passage_safety_margin
+        (static obstacles); humans pass 0.0 — they are dynamic and may step onto
+        the lane later, so only their body must clear it at spawn."""
+        spec = self.current_layout_spec
+        passages = spec.get("reserved_passages", []) if spec else []
+        if not passages:
+            return False
+        sm = self.map_passage_safety_margin if safety_margin is None else safety_margin
+        rr = radius + sm
+        for p in passages:
+            if self._circle_intersects_passage(x, y, rr, p):
+                return True
+        return False
+
+    def _sample_lane_aligned_yaw(self, region: dict, x: float, y: float) -> float:
+        """Spawn yaw aligned with the lane the start region belongs to.
+
+        Nominal heading points along the region axis toward the map centre; an
+        offset is then added that ONLY ever rotates the heading back toward the
+        lane centre line (never into the near wall). The offset grows with the
+        lateral distance from the centre line (center bias) plus a small random
+        jitter, so the robot at a wall starts angled gently inward."""
+        axis = region["axis"]
+        d = float(region["dir"])
+        if axis == "x":
+            fx, fy, c = d, 0.0, y          # cross coordinate = y
+        else:
+            fx, fy, c = 0.0, d, x          # cross coordinate = x
+        nominal = math.atan2(fy, fx)
+        half = max(float(region.get("lane_half", 1.0)), 1e-6)
+        s = 0.0 if abs(c) < 1e-6 else math.copysign(1.0, c)
+        # Cross-axis unit vector pointing toward the centre line.
+        crx, cry = (0.0, -s) if axis == "x" else (-s, 0.0)
+        # Sign of the rotation (from forward toward centre) via 2D cross product.
+        rot_sign = fx * cry - fy * crx
+        u = min(1.0, abs(c) / half)                       # 0 at centre, 1 at wall
+        offset = self.map_spawn_yaw_center_bias * u + \
+            float(np.random.uniform(0.0, self.map_spawn_yaw_jitter))
+        yaw = nominal + rot_sign * offset
+        return (yaw + math.pi) % (2.0 * math.pi) - math.pi
+
     def _sample_xy_in_regions(self, regions, radius: float):
         """Uniformly sample (x, y) in an area-weighted random region, shrinking
         each region by `radius` so the footprint stays inside it."""
@@ -3344,8 +3470,16 @@ class Environment(Node):
         exists, only that none was found.
         """
         spec = self.current_layout_spec
-        regions = spec["free_regions"]
         clr = self.map_wall_clearance
+
+        # Structure-aware goal region: when a corridor/intersection start region
+        # is known, CONSTRAIN every phase below to the opposite-end / different-arm
+        # bands (not just a preferred first pass). All A–F robustness fallbacks then
+        # operate INSIDE those bands, so a hard episode can never yield a same-side /
+        # mid-corridor or same-arm goal. Non-structured starts keep full free_regions.
+        sr = self._current_start_region
+        goal_bands = spec.get("goal_regions", {}).get(sr["name"]) if sr else None
+        regions = goal_bands if goal_bands else spec["free_regions"]
 
         # A: strict + lane-consistent (preferred).
         for _ in range(800):
@@ -3486,6 +3620,9 @@ class Environment(Node):
             x, y = xy
             if self._point_in_walls(x, y, clr + radius):
                 continue
+            # Keep the reserved corridor/intersection passage(s) traversable.
+            if self._pose_blocks_reserved_passage(x, y, radius):
+                continue
             if avoid_open_area and self._in_open_area(
                     x, y, margin=radius + self.map_large_footprint_margin):
                 continue
@@ -3516,6 +3653,27 @@ class Environment(Node):
         clearance    = self.start_front_clearance
         fov_deg      = self.start_front_fov_deg
         layout       = self.current_layout_spec
+        # Structured corridor/intersection maps: spawn inside an end/arm band and
+        # head down the lane. Other maps keep the legacy free-region sampling.
+        start_regions = layout.get("start_regions") if layout else None
+        self._current_start_region = None
+
+        def _sample_structured_start():
+            """Pick a start region and a uniform pose inside it (footprint kept off
+            the lane walls). Returns (x, y, region) or None."""
+            region = start_regions[int(np.random.randint(len(start_regions)))]
+            x_lo, x_hi, y_lo, y_hi = region["rect"]
+            mx = my = robot_radius
+            if region["axis"] == "x":         # cross axis = y → side margin on y
+                my += self.map_start_side_margin
+            else:
+                mx += self.map_start_side_margin
+            ax_lo, ax_hi = x_lo + mx, x_hi - mx
+            ay_lo, ay_hi = y_lo + my, y_hi - my
+            if ax_hi <= ax_lo or ay_hi <= ay_lo:
+                return None
+            return (float(np.random.uniform(ax_lo, ax_hi)),
+                    float(np.random.uniform(ay_lo, ay_hi)), region)
 
         def _sample_start_xy():
             """Layout-aware when a structured map is active, else legacy box."""
@@ -3527,7 +3685,15 @@ class Environment(Node):
                     np.random.uniform(self.lower, self.upper))
 
         for _ in range(500):
-            start_x, start_y = _sample_start_xy()
+            region = None
+            if start_regions:
+                got = _sample_structured_start()
+                if got is not None:
+                    start_x, start_y, region = got
+                else:
+                    start_x, start_y = _sample_start_xy()
+            else:
+                start_x, start_y = _sample_start_xy()
 
             # 1. Dead-zone
             if self.check_dead_zone(start_x, start_y, use_cross_mask=False):
@@ -3540,8 +3706,11 @@ class Environment(Node):
             if self._pose_collides_with_placed(start_x, start_y, robot_radius, lingering):
                 continue
 
-            # 3. Sample heading inside the loop
-            angle = np.random.uniform(-np.pi, np.pi)
+            # 3. Heading: lane-aligned for structured starts, else random.
+            if region is not None:
+                angle = self._sample_lane_aligned_yaw(region, start_x, start_y)
+            else:
+                angle = np.random.uniform(-np.pi, np.pi)
 
             # 4. Heading-toward-wall rejection
             if self._is_heading_toward_near_wall(start_x, start_y, angle, edge_margin):
@@ -3560,16 +3729,27 @@ class Environment(Node):
             ):
                 continue
 
+            self._current_start_region = region
             return start_x, start_y, angle
 
-        # Fallback: position-only safety (no heading constraint)
+        # Fallback: relax only the front-cone / heading-toward-wall rejections.
+        # Structured maps KEEP the end/arm start band + lane-aligned yaw (those
+        # constraints are the requirement, not a nicety), so a crowded episode
+        # never reverts a corridor/intersection start to mid-lane / random yaw.
         self.get_logger().warn(
             "Start-pose heading checks exhausted 500 tries; "
-            "falling back to position-only safe pose"
+            "falling back to relaxed front-clearance pose"
         )
-        angle = np.random.uniform(-np.pi, np.pi)
         for _ in range(200):
-            start_x, start_y = _sample_start_xy()
+            region = None
+            if start_regions:
+                got = _sample_structured_start()
+                if got is not None:
+                    start_x, start_y, region = got
+                else:
+                    start_x, start_y = _sample_start_xy()
+            else:
+                start_x, start_y = _sample_start_xy()
             if self.check_dead_zone(start_x, start_y, use_cross_mask=False):
                 continue
             if layout is not None and self._point_in_walls(
@@ -3577,13 +3757,54 @@ class Environment(Node):
                 continue
             if self._pose_collides_with_placed(start_x, start_y, robot_radius, lingering):
                 continue
+            # Structured: lane-aligned yaw (never into a wall); else random.
+            angle = (self._sample_lane_aligned_yaw(region, start_x, start_y)
+                     if region is not None else np.random.uniform(-np.pi, np.pi))
+            self._current_start_region = region
             return start_x, start_y, angle
+
+        # Last-ditch. Structured maps MUST still start inside an end/arm band so
+        # position, yaw and goal pairing stay consistent — never the arena centre.
+        # Use a deterministic safe point: the band mid-point ON the lane centre
+        # line (cross-axis = 0), which is inside the band and off the side walls.
+        # Prefer a band whose centre passes the position checks; else take the
+        # first band's centre regardless (still structurally correct).
+        if start_regions:
+            self.get_logger().warn(
+                "Start-pose sampling exhausted all 700 tries (500 + 200 fallback); "
+                "using deterministic start-region centre (structured map)."
+            )
+
+            def _band_centre(region):
+                x_lo, x_hi, y_lo, y_hi = region["rect"]
+                if region["axis"] == "x":      # lane runs along x → centre y on the lane
+                    return 0.5 * (x_lo + x_hi), 0.0
+                return 0.0, 0.5 * (y_lo + y_hi)  # lane runs along y → centre x on the lane
+
+            chosen = None
+            for region in start_regions:
+                cx, cy = _band_centre(region)
+                if self.check_dead_zone(cx, cy, use_cross_mask=False):
+                    continue
+                if self._point_in_walls(cx, cy, self.map_wall_clearance + robot_radius):
+                    continue
+                if self._pose_collides_with_placed(cx, cy, robot_radius, lingering):
+                    continue
+                chosen = (region, cx, cy)
+                break
+            if chosen is None:
+                region = start_regions[0]
+                cx, cy = _band_centre(region)
+                chosen = (region, cx, cy)
+            region, cx, cy = chosen
+            self._current_start_region = region
+            return cx, cy, self._sample_lane_aligned_yaw(region, cx, cy)
 
         self.get_logger().warn(
             "Start-pose sampling exhausted all 700 tries (500 + 200 fallback); "
             "returning origin (0, 0). Check dead-zone / obstacle configuration."
         )
-        return 0.0, 0.0, angle
+        return 0.0, 0.0, np.random.uniform(-np.pi, np.pi)
 
     def _sample_free_pose(self, radius: float, placed: list, start_x: float, start_y: float):
         """Sample a collision-free (x, y) for one obstacle.
@@ -3621,6 +3842,13 @@ class Environment(Node):
             # Structured maps: keep clear of internal walls.
             if self.current_layout_spec is not None and self._point_in_walls(
                     x, y, self.map_wall_clearance):
+                continue
+            # Keep the reserved corridor/intersection passage clear at SPAWN, so a
+            # traversable lane exists at t=0 including humans (they are dynamic and
+            # may walk onto the lane later). Lighter keep-out (no static safety
+            # margin) since a narrow corridor leaves little off-lane room; humans
+            # that still don't fit are parked. No-op on maps without passages.
+            if self._pose_blocks_reserved_passage(x, y, radius, safety_margin=0.0):
                 continue
             if math.hypot(x - start_x, y - start_y) < self.obstacle_robot_margin + radius:
                 continue

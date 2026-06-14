@@ -170,6 +170,17 @@ environment:
                                     # (catalog radius underestimates real footprint)
   map_wall_clearance: 0.55        # min clearance any sampled pose keeps off a wall
   map_static_coverage_per_group: 5  # pre-spawn >= this per (map_type, size_group)
+  # ── Structured spawn policy (corridor / intersection only) ─────────────────
+  # Robot starts inside an end/arm band (never mid-lane), heads down the lane,
+  # and a central passage strip is always kept clear of static obstacles so the
+  # lane stays traversable. Other maps (lobby/clutter) are unaffected.
+  map_start_band_depth: 2.5          # end/arm band depth along the lane axis [m]
+  map_start_side_margin: 0.4         # extra clearance off the lane side walls [m]
+  map_spawn_yaw_center_bias_deg: 12.0  # inward yaw tilt that grows toward the wall
+  map_spawn_yaw_jitter_deg: 8.0      # small extra inward yaw jitter
+  map_corridor_passage_width: 1.6    # reserved central lane width (corridor) [m]
+  map_intersection_passage_width: 1.6  # reserved cross-lane width (intersection) [m]
+  map_passage_safety_margin: 0.25    # extra keep-out added to obstacle radius [m]
 
 threshold_parameters:
   goal_threshold: 0.42
