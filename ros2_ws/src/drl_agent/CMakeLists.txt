@@ -63,12 +63,37 @@ install(
     scripts/utils/file_manager.py
     scripts/utils/episode_metrics.py
     scripts/utils/pure_pursuit.py
+    scripts/utils/geometry_utils.py    # pure helpers (extracted from environment.py)
+    scripts/utils/seed_utils.py        # centralised RNG seeding
+    scripts/utils/config_paths.py      # pure path/config-discovery helpers
     scripts/utils/sim_validation.py            # SIM_VALIDATION
     scripts/utils/sim_validation_summary.py    # SIM_VALIDATION
     scripts/environment/environment_interface.py
     scripts/environment/environment.py
     scripts/environment/environment_360.py
     scripts/environment/environment_curriculum.py
+    scripts/environment/reward_calculator.py     # extracted from environment.py
+    scripts/environment/collision_checker.py     # RectSafetyChecker (from environment.py)
+    scripts/environment/localization_noise.py    # loc/proprio noise models (from environment.py)
+    scripts/environment/map_catalog.py           # static-obstacle catalog policy (pure)
+    scripts/environment/map_layout_registry.py   # pure map-layout geometry builder
+    scripts/environment/zone_tracker.py          # ZoneMixin (legacy zone tracking)
+    scripts/environment/observation_builder.py   # ObservationMixin (state assembly)
+    scripts/environment/gazebo_entity_manager.py # GazeboEntityMixin (spawn/delete)
+    scripts/environment/map_layout_runtime.py    # MapLayoutMixin (layout selection/walls)
+    scripts/environment/start_sampler.py         # StartSamplerMixin
+    scripts/environment/goal_sampler.py          # GoalSamplerMixin
+    scripts/environment/human_spawn_sampler.py   # HumanSpawnMixin
+    scripts/environment/human_motion_manager.py  # HumanMotionMixin
+    scripts/environment/obstacle_catalog_spawner.py # ObstacleMixin
+    scripts/policy/tqc_networks.py               # Actor/Critic/loss (from tqc_agent.py)
+    scripts/policy/tqc_io.py                      # checkpoint save/load (from tqc_agent.py)
+    scripts/policy/gym_parameter_client.py       # /gym_node param client (from curriculum trainer)
+    scripts/policy/curriculum_stage_logic.py     # stage-advance gate (from curriculum trainer)
+    scripts/policy/curriculum_state_io.py        # resume state persistence (from curriculum trainer)
+    scripts/policy/curriculum_metrics.py         # eval metric accumulators (pure)
+    scripts/policy/curriculum_aux_eval.py        # CurriculumAuxEvalMixin
+    scripts/policy/curriculum_eval_runner.py     # CurriculumEvalMixin (eval loop)
     scripts/policy/train_tqc_curriculum_agent.py
     scripts/policy/train_td7_curriculum_agent.py
     scripts/policy/train_sac_curriculum_agent.py

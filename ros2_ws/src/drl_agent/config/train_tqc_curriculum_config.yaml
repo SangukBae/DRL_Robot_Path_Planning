@@ -15,6 +15,18 @@ curriculum_settings:
   pass_eval_success_rate:   [0.90, 0.85, 0.75, 0.70]
   pass_eval_collision_rate: [0.05, 0.10, 0.15, 0.20]
 
+  # Quality gate (conservative): minimum SPL (Success weighted by Path Length)
+  # required to PROMOTE, per stage. This stops "arrived but wandered" policies
+  # from passing on success_rate alone. Values are deliberately mild (well below
+  # a clean-run SPL) so they only catch clearly inefficient driving.
+  # Empty list / 0.0 / omit → SPL gate disabled (legacy success-only behaviour).
+  pass_eval_spl:            [0.55, 0.55, 0.50, 0.45]
+
+  # Optional extra gate (default OFF): minimum LiDAR clearance rate before
+  # promotion. Leave empty to disable; raise to require safer-distance driving.
+  # Kept off by default to introduce one quality metric (SPL) at a time.
+  pass_eval_lidar_clearance_rate: []
+
   # How many consecutive evaluations must pass the threshold before promotion.
   # Set to 1 for faster iteration, 2-3 for more conservative advancement.
   consecutive_eval_passes: 2

@@ -18,135 +18,10 @@ from aux_prediction import (
 from aux_prediction_losses import compute_aux_loss
 
 
-def quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False, kappa=1.0):
-    """
-    Quantile Huber loss for TQC
-    current_quantiles: (batch_size, n_critics, n_quantiles)
-    target_quantiles: (batch_size, 1, n_target_quantiles)
-    """
-    batch_size, n_critics, n_quantiles = current_quantiles.shape
-    n_target_quantiles = target_quantiles.shape[-1]
-    
-    # Expand quantiles for pairwise TD errors
-    current_quantiles = current_quantiles.unsqueeze(-1)  # (batch, n_critics, n_quantiles, 1)
-    target_quantiles = target_quantiles.unsqueeze(2)  # (batch, 1, 1, n_target_quantiles)
-    
-    # Compute TD errors
-    td_errors = target_quantiles - current_quantiles  # (batch, n_critics, n_quantiles, n_target_quantiles)
-    
-    # Compute quantile weights (tau)
-    tau = torch.arange(n_quantiles, device=current_quantiles.device, dtype=torch.float32)
-    tau = (tau + 0.5) / n_quantiles
-    tau = tau.view(1, 1, n_quantiles, 1)
-    
-    # Huber loss
-    huber_loss = torch.where(
-        td_errors.abs() <= kappa,
-        0.5 * td_errors.pow(2),
-        kappa * (td_errors.abs() - 0.5 * kappa)
-    )
-    
-    # Quantile regression loss
-    quantile_loss = (tau - (td_errors < 0).float()).abs() * huber_loss
-    
-    if sum_over_quantiles:
-        return quantile_loss.sum(dim=2).mean()
-    else:
-        return quantile_loss.mean()
-
-
-class Actor(nn.Module):
-    """Actor network with Gaussian policy for TQC"""
-    def __init__(self, state_dim, action_dim, hdim=256, activ=F.relu, log_std_min=-20, log_std_max=2):
-        super(Actor, self).__init__()
-        
-        self.activ = activ
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-        
-        # Network layers
-        self.l1 = nn.Linear(state_dim, hdim)
-        self.l2 = nn.Linear(hdim, hdim)
-        self.l3 = nn.Linear(hdim, hdim)
-        
-        # Mean and log_std heads
-        self.mean = nn.Linear(hdim, action_dim)
-        self.log_std = nn.Linear(hdim, action_dim)
-    
-    def forward(self, state, deterministic=False):
-        a = self.activ(self.l1(state))
-        a = self.activ(self.l2(a))
-        a = self.activ(self.l3(a))
-        
-        mean = self.mean(a)
-        log_std = self.log_std(a)
-        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        
-        if deterministic:
-            return torch.tanh(mean)
-        else:
-            # Sample from Gaussian
-            std = log_std.exp()
-            normal = torch.distributions.Normal(mean, std)
-            x = normal.rsample()
-            action = torch.tanh(x)
-            return action
-    
-    def action_log_prob(self, state):
-        """Get action and log probability"""
-        a = self.activ(self.l1(state))
-        a = self.activ(self.l2(a))
-        a = self.activ(self.l3(a))
-        
-        mean = self.mean(a)
-        log_std = self.log_std(a)
-        log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        
-        std = log_std.exp()
-        normal = torch.distributions.Normal(mean, std)
-        x = normal.rsample()
-        action = torch.tanh(x)
-        
-        # Compute log probability with tanh correction
-        log_prob = normal.log_prob(x).sum(1, keepdim=True)
-        log_prob -= (2 * (np.log(2) - x - F.softplus(-2 * x))).sum(1, keepdim=True)
-        
-        return action, log_prob
-
-class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim, hdim=256,
-                 activ=F.elu, n_quantiles=25, n_critics=2):
-        super().__init__()
-        self.activ = activ
-        self.n_quantiles = n_quantiles
-        self.n_critics = n_critics
-
-        # activ 모듈 선택
-        ActivMod = nn.ELU if activ is F.elu else nn.ReLU
-
-        self.critics = nn.ModuleList()
-        for _ in range(n_critics):
-            self.critics.append(nn.Sequential(
-                nn.Linear(state_dim + action_dim, hdim),
-                ActivMod(),
-                nn.Linear(hdim, hdim),
-                ActivMod(),
-                nn.Linear(hdim, hdim),
-                ActivMod(),
-                nn.Linear(hdim, n_quantiles),
-            ))
-    
-    def forward(self, state, action):
-        sa = torch.cat([state, action], 1)
-        
-        quantiles_list = []
-        for critic in self.critics:
-            q = critic(sa)  # (batch_size, n_quantiles)
-            quantiles_list.append(q)
-        
-        # Stack to (batch_size, n_critics, n_quantiles)
-        quantiles = torch.stack(quantiles_list, dim=1)
-        return quantiles
+# Network definitions + TQC loss now live in tqc_networks.py; checkpoint I/O in
+# tqc_io.py.  Re-imported here so `from tqc_agent import Actor` etc. still works.
+from tqc_networks import Actor, Critic, quantile_huber_loss
+import tqc_io
 
 
 class Agent(object):
@@ -694,41 +569,9 @@ class Agent(object):
         self.min_return = 1e8
     
     def save(self, directory, filename):
-        """Save model parameters"""
-        import os
-        os.makedirs(directory, exist_ok=True)
-        # Actor
-        torch.save(self.actor.state_dict(), f"{directory}/{filename}_actor.pth")
-        torch.save(self.actor_optimizer.state_dict(), f"{directory}/{filename}_actor_optimizer.pth")
-        
-        # Critic
-        torch.save(self.critic.state_dict(), f"{directory}/{filename}_critic.pth")
-        torch.save(self.critic_target.state_dict(), f"{directory}/{filename}_critic_target.pth")
-        torch.save(self.critic_optimizer.state_dict(), f"{directory}/{filename}_critic_optimizer.pth")
-        
-        # Checkpoint
-        torch.save(self.checkpoint_actor.state_dict(), f"{directory}/{filename}_checkpoint_actor.pth")
+        """Save model parameters (delegates to tqc_io.save)."""
+        tqc_io.save(self, directory, filename)
 
-        # AUX_PRED: shared encoder + auxiliary head (training-only).  Saved only
-        # when the encoder actually has parameters (aux enabled); inference does
-        # not require the aux head.
-        if self.encoder.has_params():
-            torch.save(self.encoder.state_dict(), f"{directory}/{filename}_encoder.pth")
-            torch.save(self.encoder_target.state_dict(), f"{directory}/{filename}_encoder_target.pth")
-            torch.save(self.checkpoint_encoder.state_dict(), f"{directory}/{filename}_checkpoint_encoder.pth")
-            if self.aux_head is not None:
-                torch.save(self.aux_head.state_dict(), f"{directory}/{filename}_aux_head.pth")
-
-        # Entropy coefficient
-        if self.ent_coef_auto:
-            torch.save(self.log_ent_coef, f"{directory}/{filename}_log_ent_coef.pth")
-            torch.save(self.ent_coef_optimizer.state_dict(), f"{directory}/{filename}_ent_coef_optimizer.pth")
-        else:
-            torch.save(self.ent_coef_tensor, f"{directory}/{filename}_ent_coef_tensor.pth")
-
-        # Replay buffer — enables full off-policy resume
-        self.replay_buffer.save(f"{directory}/{filename}_replay_buffer")
-    
     def load(
         self,
         directory,
@@ -737,163 +580,19 @@ class Agent(object):
         load_optimizer_state=True,
         load_replay_buffer=True,
     ):
-        import os, torch
-
-        maploc = self.device
-
-        def _torch_load(path):
-            try:
-                return torch.load(path, map_location=maploc, weights_only=True)
-            except TypeError:
-                # Older PyTorch versions do not support weights_only.
-                return torch.load(path, map_location=maploc)
-
-        # Actor
-        p = f"{directory}/{filename}_actor.pth"
-        if os.path.exists(p):
-            self.actor.load_state_dict(_torch_load(p))
-        if load_optimizer_state:
-            p = f"{directory}/{filename}_actor_optimizer.pth"
-            if os.path.exists(p):
-                self.actor_optimizer.load_state_dict(_torch_load(p))
-
-        # Critic
-        p = f"{directory}/{filename}_critic.pth"
-        if os.path.exists(p):
-            self.critic.load_state_dict(_torch_load(p))
-        p = f"{directory}/{filename}_critic_target.pth"
-        if os.path.exists(p):
-            self.critic_target.load_state_dict(_torch_load(p))
-        if load_optimizer_state:
-            p = f"{directory}/{filename}_critic_optimizer.pth"
-            if os.path.exists(p):
-                # AUX_PRED: critic_optimizer also owns the encoder + aux-head
-                # params, so its param-group size changes when the aux head
-                # architecture changes (single-step <-> action-conditioned).  On
-                # such a mismatch keep fresh optimizer moments (the critic /
-                # encoder WEIGHTS already loaded above) instead of aborting.
-                # Even when this load "succeeds", a later aux-head state-dict
-                # mismatch can still invalidate the loaded moments if only the
-                # param COUNT matched while shapes / semantics changed; that
-                # later path rebuilds this optimizer unconditionally.
-                try:
-                    self.critic_optimizer.load_state_dict(_torch_load(p))
-                except (ValueError, RuntimeError, KeyError) as e:
-                    print(
-                        "[AUX_PRED] critic optimizer state is incompatible with "
-                        "the current aux config (the aux head changed the trunk "
-                        "param group); keeping fresh optimizer moments. "
-                        f"Details: {e}"
-                    )
-
-        # Checkpoint actor
-        p = f"{directory}/{filename}_checkpoint_actor.pth"
-        if os.path.exists(p):
-            self.checkpoint_actor.load_state_dict(_torch_load(p))
-
-        # AUX_PRED: shared encoder + auxiliary head (only when this run uses aux
-        # AND the checkpoint carries them; baseline checkpoints lack these files
-        # and are loaded unchanged).
-        if self.encoder.has_params():
-            p = f"{directory}/{filename}_encoder.pth"
-            if os.path.exists(p):
-                self.encoder.load_state_dict(_torch_load(p))
-            p = f"{directory}/{filename}_encoder_target.pth"
-            if os.path.exists(p):
-                self.encoder_target.load_state_dict(_torch_load(p))
-            p = f"{directory}/{filename}_checkpoint_encoder.pth"
-            if os.path.exists(p):
-                self.checkpoint_encoder.load_state_dict(_torch_load(p))
-            p = f"{directory}/{filename}_aux_head.pth"
-            if self.aux_head is not None and os.path.exists(p):
-                # AUX_PRED: the aux head is TRAINING-ONLY.  Its architecture
-                # changes between the single-step AuxiliaryHead and the
-                # ActionConditionedAuxHead (and with min-dist / distributional
-                # options), so a strict load fails when upgrading / switching an
-                # ablation.  Try a strict load; on a state-dict mismatch keep the
-                # freshly-initialised head (it retrains) and warn, rather than
-                # aborting the whole resume -- the encoder/actor/critic, which
-                # actually drive the policy, still load above.
-                try:
-                    self.aux_head.load_state_dict(_torch_load(p))
-                except (RuntimeError, KeyError) as e:
-                    # The aux head changed architecture.  The critic_optimizer
-                    # (loaded earlier) owns the aux-head params in the SAME param
-                    # group, so its moments are now stale -- and the load above
-                    # may have "succeeded" if only the param COUNT matched while
-                    # shapes/semantics differ, leaving wrong moments that would
-                    # crash or silently corrupt the next step().  Rebuild the
-                    # optimizer fresh to guarantee no stale moment survives.
-                    self.critic_optimizer = self._make_critic_optimizer()
-                    print(
-                        "[AUX_PRED] aux-head checkpoint is incompatible with the "
-                        "current aux config (e.g. single-step <-> action-"
-                        "conditioned, or changed heads); keeping a freshly-"
-                        "initialised aux head AND fresh critic-optimizer moments "
-                        f"(both will retrain). Details: {e}"
-                    )
-
-        # Entropy coefficient
-        if self.ent_coef_auto:
-            p = f"{directory}/{filename}_log_ent_coef.pth"
-            if os.path.exists(p):
-                loaded = _torch_load(p)
-                # <<< 핵심: 텐서 객체를 교체하지 말고 data만 복사 >>>
-                self.log_ent_coef.data.copy_(loaded.to(maploc).data)
-            if load_optimizer_state:
-                p = f"{directory}/{filename}_ent_coef_optimizer.pth"
-                if os.path.exists(p):
-                    self.ent_coef_optimizer.load_state_dict(_torch_load(p))
-        else:
-            p = f"{directory}/{filename}_ent_coef_tensor.pth"
-            if os.path.exists(p):
-                loaded = _torch_load(p)
-                self.ent_coef_tensor = loaded.to(maploc).detach()
-
-        # Replay buffer
-        if load_replay_buffer:
-            buf_path = f"{directory}/{filename}_replay_buffer"
-            if os.path.isfile(buf_path + ".npz"):
-                self.replay_buffer.load(buf_path)
+        """Restore model parameters (delegates to tqc_io.load)."""
+        tqc_io.load(
+            self,
+            directory,
+            filename,
+            load_optimizer_state=load_optimizer_state,
+            load_replay_buffer=load_replay_buffer,
+        )
 
     def load_encoder_for_inference(self, actor_path):
-        """AUX_PRED: restore the shared encoder for an actor-only inference path.
+        """AUX_PRED: restore the shared encoder for actor-only inference.
 
-        Inference runs state -> encoder -> actor, so an aux-enabled checkpoint
-        MUST load the encoder alongside the actor; otherwise the actor receives
-        a randomly-initialised latent and the policy is broken.  The matching
-        encoder file is derived from the actor checkpoint path
-        (``<prefix>_actor.pth`` -> ``<prefix>_encoder.pth``).
-
-        Returns
-        -------
-        bool
-            True  -> encoder ready (loaded, or not needed for a baseline /
-                     identity encoder, i.e. aux disabled).
-            False -> an aux encoder is REQUIRED but its file is missing; the
-                     caller should treat this as a fatal inference error.
-        """
-        import os, torch
-
-        # Baseline (aux disabled): encoder is a parameter-free identity, so the
-        # actor consumes the raw state and there is nothing to restore.
-        if not self.encoder.has_params():
-            return True
-
-        if actor_path.endswith("_actor.pth"):
-            enc_path = actor_path[: -len("_actor.pth")] + "_encoder.pth"
-        else:
-            enc_path = os.path.join(os.path.dirname(actor_path), "encoder.pth")
-        if not os.path.isfile(enc_path):
-            return False
-
-        try:
-            sd = torch.load(enc_path, map_location=self.device, weights_only=True)
-        except TypeError:
-            sd = torch.load(enc_path, map_location=self.device)
-        self.encoder.load_state_dict(sd)
-        self.encoder.eval()
-        if getattr(self, "checkpoint_encoder", None) is not None:
-            self.checkpoint_encoder.load_state_dict(sd)
-            self.checkpoint_encoder.eval()
-        return True
+        Delegates to tqc_io.load_encoder_for_inference. Returns True when the
+        encoder is ready (loaded, or not needed for a baseline identity encoder),
+        False when a required aux encoder file is missing."""
+        return tqc_io.load_encoder_for_inference(self, actor_path)

@@ -36,3 +36,4 @@ __pycache__/
 ros2_ws/src/hunav_sim/
 ros2_ws/src/pointcloud_to_laserscan/
 third_party/
+.pytest_cache/

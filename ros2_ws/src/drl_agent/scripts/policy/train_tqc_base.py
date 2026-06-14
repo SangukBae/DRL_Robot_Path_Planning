@@ -37,6 +37,8 @@ sys.path.insert(
 from tqc_agent import Agent
 from environment_interface import EnvInterface
 from file_manager import load_yaml
+import seed_utils
+import config_paths
 # AUX_ABLATION: run-identity / ablation logging helpers.
 import aux_ablation_logging as aux_log
 
@@ -110,11 +112,18 @@ class TrainTQCBase(EnvInterface):
         self._init_csv_loggers()
 
         # ----------------------------
-        # Seeds
+        # Seeds — seed EVERY RNG the training process draws from so a fixed seed
+        # is fully reproducible: the env services (numpy + random inside the env
+        # node), plus this process's random / numpy / torch (CPU + all CUDA
+        # devices). Previously `random` was left unseeded here, so any library
+        # path using it broke reproducibility despite a fixed config seed.
         # ----------------------------
         self.set_env_seed(self.seed)
-        torch.manual_seed(self.seed)
-        np.random.seed(self.seed)
+        seeded = seed_utils.seed_all(self.seed, seed_torch=True)
+        self.get_logger().info(
+            f"[Seed] Trainer RNGs seeded ({' + '.join(seeded)}) with {self.seed}; "
+            f"env seed dispatched via /seed service."
+        )
 
         # ----------------------------
         # Environment dimensions
@@ -209,22 +218,23 @@ class TrainTQCBase(EnvInterface):
         """
         tried = []
 
-        # 0) User-provided parameter
-        if user_param_path:
-            p = os.path.expanduser(user_param_path)
-            if os.path.isfile(p):
-                base = os.path.dirname(p)
-                cand = os.path.join(base, filename)
+        def _try_location_hint(hint: str):
+            """A file-or-dir HINT (user param / env var): resolve via the shared
+            config_paths helper, return the file if it exists, else record the
+            attempt in `tried` (preserving the original error reporting)."""
+            cand = config_paths.location_candidate(hint, filename)
+            if cand:
                 if os.path.isfile(cand):
                     return cand
                 tried.append(cand)
-            elif os.path.isdir(p):
-                cand = os.path.join(p, filename)
-                if os.path.isfile(cand):
-                    return cand
-                tried.append(cand)
-            else:
-                tried.append(p)
+            elif hint:
+                tried.append(os.path.expanduser(hint))
+            return None
+
+        # 0) User-provided parameter (file or dir)
+        hit = _try_location_hint(user_param_path)
+        if hit:
+            return hit
 
         # 1) ament share directory
         try:
@@ -238,22 +248,9 @@ class TrainTQCBase(EnvInterface):
             pass
 
         # 2) Environment variable: DRL_AGENT_TRAIN_CONFIG (file or dir)
-        env_full = os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip()
-        if env_full:
-            env_full = os.path.expanduser(env_full)
-            if os.path.isfile(env_full):
-                base = os.path.dirname(env_full)
-                cand = os.path.join(base, filename)
-                if os.path.isfile(cand):
-                    return cand
-                tried.append(cand)
-            elif os.path.isdir(env_full):
-                cand = os.path.join(env_full, filename)
-                if os.path.isfile(cand):
-                    return cand
-                tried.append(cand)
-            else:
-                tried.append(env_full)
+        hit = _try_location_hint(os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip())
+        if hit:
+            return hit
 
         # 3) DRL_AGENT_SRC_PATH candidates
         src = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()

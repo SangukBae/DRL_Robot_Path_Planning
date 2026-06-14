@@ -10,9 +10,27 @@ from drl_agent_interfaces.srv import Step, Reset, Seed, GetDimensions, SampleAct
 import aux_prediction_labels as _aux_labels
 
 
+class EnvServiceError(RuntimeError):
+    """Raised when an environment service call fails definitively (unavailable,
+    timed out, or errored beyond the retry budget). Trainers catch this to
+    fail-fast (optionally after saving a checkpoint) instead of hanging."""
+
+
 class EnvInterface(Node):
     def __init__(self, node_name):
         super().__init__(node_name)
+
+        # Service-call robustness knobs (overridable as ROS params so a slow
+        # Gazebo can be given more headroom without code edits). Bounded waits +
+        # a finite retry budget replace the old unbounded `while not available`
+        # loops, so a dead env/Gazebo surfaces a clear error instead of hanging.
+        def _p(name, default):
+            if not self.has_parameter(name):
+                self.declare_parameter(name, default)
+            return self.get_parameter(name).value
+        self._svc_wait_timeout = float(_p("service_wait_timeout_sec", 5.0))
+        self._svc_call_timeout = float(_p("service_call_timeout_sec", 30.0))
+        self._svc_max_retries  = int(_p("service_max_retries", 3))
 
         # Create service clients
         self.reset_client = self.create_client(Reset, "reset")
@@ -60,18 +78,73 @@ class EnvInterface(Node):
         self.last_aux_meta = None
         return state
 
+    def _call_service(
+        self,
+        client,
+        request,
+        name,
+        *,
+        wait_timeout=None,
+        call_timeout=None,
+        max_retries=None,
+    ):
+        """Robustly call a service: bounded availability wait, bounded completion
+        wait, finite retries, explicit logging. Returns the response or raises
+        EnvServiceError after the retry budget is exhausted (never hangs).
+
+        name: leading-slash-free service name, used only for log/error messages."""
+        wait_timeout = (
+            self._svc_wait_timeout if wait_timeout is None else float(wait_timeout)
+        )
+        call_timeout = (
+            self._svc_call_timeout if call_timeout is None else float(call_timeout)
+        )
+        retries = self._svc_max_retries if max_retries is None else int(max_retries)
+        total = retries + 1
+        last_err = "unknown error"
+        for attempt in range(1, total + 1):
+            # The whole wait/call/spin block is guarded so that REAL ROS-level
+            # failures (executor or context shutdown, rmw/rcl errors raised by
+            # wait_for_service / call_async / spin_until_future_complete) are
+            # normalized into EnvServiceError too — not just the soft
+            # timeout/None/exception-on-future cases. Otherwise such a raw
+            # exception would escape this layer and bypass the trainer's
+            # checkpoint-on-failure path, breaking the fail-fast/resume contract.
+            try:
+                if not client.wait_for_service(timeout_sec=wait_timeout):
+                    last_err = f"unavailable after {wait_timeout:.1f}s wait"
+                else:
+                    future = client.call_async(request)
+                    rclpy.spin_until_future_complete(
+                        self, future, timeout_sec=call_timeout)
+                    if not future.done():
+                        try:
+                            future.cancel()
+                        except Exception:
+                            pass
+                        last_err = f"call timed out after {call_timeout:.1f}s"
+                    elif future.exception() is not None:
+                        last_err = f"call raised: {future.exception()}"
+                    elif future.result() is None:
+                        last_err = "call returned None result"
+                    else:
+                        if attempt > 1:
+                            self.get_logger().info(
+                                f"Service /{name} succeeded on attempt {attempt}/{total}")
+                        return future.result()
+            except Exception as e:
+                last_err = f"ROS-level error {type(e).__name__}: {e}"
+            self.get_logger().warn(
+                f"Service /{name} {last_err} (attempt {attempt}/{total})")
+        self.get_logger().error(
+            f"Service /{name} FAILED after {total} attempts: {last_err}")
+        raise EnvServiceError(f"/{name}: {last_err} (after {total} attempts)")
+
     def reset(self):
         """Resets the environment to its initial state using /reset service"""
-        request = Reset.Request()
-        while not self.reset_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("Service /reset not available, waiting again...")
-        try:
-            future = self.reset_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future)
-        except Exception as e:
-            self.get_logger().error(f"Service call /reset failed: {e}")
+        result = self._call_service(self.reset_client, Reset.Request(), "reset")
         # AUX_PRED: strip the appended label (no-op when aux disabled).
-        return self._strip_aux_label(future.result().state)
+        return self._strip_aux_label(result.state)
 
     def step(self, action):
         """Takes a step in the environment with the given action and the observed state"""
@@ -82,31 +155,15 @@ class EnvInterface(Node):
         request.action = np.array(
             [action[0], action[1]], dtype=np.float32
         ).tolist()
-        while not self.step_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("Service /step not available, waiting again...")
-        try:
-            future = self.step_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future)
-        except Exception as e:
-            self.get_logger().error(f"Service call /step failed: {e}")
-        response = future.result()
+        response = self._call_service(self.step_client, request, "step")
         # AUX_PRED: strip the appended label (no-op when aux disabled).
         state = self._strip_aux_label(response.state)
         return state, response.reward, response.done, response.target
 
     def get_dimensions(self):
         """Get the dimensions of the environment"""
-        request = GetDimensions.Request()
-        while not self.dimensions_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Service /get_dimensions not available, waiting again..."
-            )
-        try:
-            future = self.dimensions_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future)
-        except Exception as e:
-            self.get_logger().error(f"Service call /get_dimensions failed: {e}")
-        response = future.result()
+        response = self._call_service(
+            self.dimensions_client, GetDimensions.Request(), "get_dimensions")
         # AUX_PRED: cache the true RL state dim so reset()/step() can slice off
         # any appended auxiliary label.
         self._rl_state_dim = int(response.state_dim)
@@ -114,17 +171,10 @@ class EnvInterface(Node):
 
     def sample_action_space(self):
         """Sample an action from the action space"""
-        request = SampleActionSpace.Request()
-        while not self.actio_space_sample_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                "Service /action_space_sample not available, waiting again..."
-            )
-        try:
-            future = self.actio_space_sample_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future)
-        except Exception as e:
-            self.get_logger().error(f"Service call /action_space_sample failed: {e}")
-        return np.array(future.result().action)
+        response = self._call_service(
+            self.actio_space_sample_client, SampleActionSpace.Request(),
+            "action_space_sample")
+        return np.array(response.action)
 
     def _resolve_seed_override(self, default_seed: int) -> int:
         """Return the seed to use, allowing a per-run override for multi-seed sweeps.
@@ -153,13 +203,7 @@ class EnvInterface(Node):
         """Set the seed of the environment"""
         request = Seed.Request()
         request.seed = seed
-        while not self.seed_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info("Service /seed not available, waiting again...")
-        try:
-            future = self.seed_client.call_async(request)
-            rclpy.spin_until_future_complete(self, future)
-        except Exception as e:
-            self.get_logger().error(f"Service call /seed failed: {e}")
+        result = self._call_service(self.seed_client, request, "seed")
         self.get_logger().info(
-            f"Environment seed set to: {seed}, Success: {future.result().success}"
+            f"Environment seed set to: {seed}, Success: {result.success}"
         )

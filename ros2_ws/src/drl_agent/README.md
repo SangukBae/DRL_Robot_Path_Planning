@@ -80,6 +80,36 @@ ros2 launch drl_agent test_tqc.launch.py
 - 환경 노드(`environment_curriculum.py`)가 서비스 제공 상태여야 에이전트가 동작함
 - `drl_agent_interfaces` 패키지가 빌드되어 있어야 함
 
+## Tests (ROS2 없이 실행)
+
+순수 로직(각도/기하, 시드 재현성, 경로 탐색) 단위 테스트는 ROS2·Gazebo·빌드 없이
+바로 돌아갑니다. 패키지 루트에서:
+
+```bash
+cd ros2_ws/src/drl_agent
+pytest            # tests/ 디렉터리만 수집 (pytest.ini의 testpaths=tests)
+```
+
+- `tests/test_geometry_utils.py` — `scripts/utils/geometry_utils.py` (wrap_to_pi, heading_error, goal_distance_and_heading 등)
+- `tests/test_seed_utils.py` — `scripts/utils/seed_utils.py` (random/numpy 재현성, resume-seed 파생)
+- `tests/test_config_paths.py` — `scripts/utils/config_paths.py` (config 파일 탐색)
+
+> **`test_tqc_agent.py` / `test_td7_agent.py` 는 pytest 단위 테스트가 아니라**
+> ROS2 + Gazebo + 체크포인트가 필요한 **실행/평가 스크립트**입니다
+> (`ros2 run drl_agent test_tqc_agent.py ...`). 그래서 `pytest`는 이들을 수집하지
+> 않습니다. 체크포인트 경로는 하드코딩 기본값을 제거했으므로 파라미터로 넘기세요:
+> `-p checkpoint_actor_file:=<run_dir>/final_models/<prefix>_actor.pth`
+
+### 분리된 공통 유틸 (`scripts/utils/`)
+
+`environment.py` 등에 흩어져 있던 순수 함수를 점진적으로 추출한 모듈 (동작 동일):
+
+| 모듈 | 내용 |
+|------|------|
+| `geometry_utils.py` | 각도 wrap, heading error, 거리, goal 메트릭 (ROS/numpy 무의존) |
+| `seed_utils.py` | random/numpy/torch 통합 시드, resume-seed 파생 |
+| `config_paths.py` | config 파일 후보 탐색 (순수, ROS/ament 무의존) |
+
 ## Troubleshooting
 
 | 증상 | 조치 |

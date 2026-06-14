@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# NOTE: despite the "test_" prefix this is a ROS2 RUN/EVALUATION script (it
+# drives a live Gazebo episode and loads a trained actor), NOT a pytest unit
+# test. It requires ROS2 + Gazebo + a checkpoint and is launched via
+# `ros2 run drl_agent test_tqc_agent.py ...`. The fast, ROS-free pytest unit
+# tests live under `ros2_ws/src/drl_agent/tests/` (run with `pytest`).
 
 import os
 import sys
@@ -16,6 +21,7 @@ from nav_msgs.msg import Odometry
 # ⇩ 기존과 동일한 인터페이스/유틸
 from environment_interface import EnvInterface
 from file_manager import load_yaml, save_yaml, save_json
+import config_paths
 
 # ⇩ TD7 대신 TQC 사용
 from tqc_agent import Agent
@@ -35,10 +41,16 @@ class TestTQC(EnvInterface):
         self.declare_parameter("num_episodes", 100)        # 0 → infinite
         self.declare_parameter("odom_topic", "/bunker/odom")
 
-        
-        # __init__ 맨 위 파라미터 선언부에 추가
-        self.declare_parameter("checkpoint_actor_file", "/root/.ros/drl_agent/tqc_state_80_nstactics_5_obstacle_11/final_models/tqc_agent_seed_0_20251018_actor.pth")
-        
+
+        # Actor checkpoint to evaluate. No hardcoded absolute default (the old
+        # "/root/.ros/..." default only worked inside one Docker home); pass it
+        # explicitly, e.g.:
+        #   ros2 run drl_agent test_tqc_agent.py --ros-args \
+        #     -p checkpoint_actor_file:=<run_dir>/final_models/<prefix>_actor.pth
+        # Empty → a clear "Actor weight file not found" error below (no silent
+        # fallback to a stranger's path).
+        self.declare_parameter("checkpoint_actor_file", "")
+
         # ▶️ 실시간 출력 제어(스텝 주기 출력은 없음)
         self.declare_parameter("print_live", True)
         self.declare_parameter("echo_on_save", True)
@@ -79,19 +91,21 @@ class TestTQC(EnvInterface):
         # ----------------------------
         def _find_config_file(filename: str, user_param_path: str | None) -> str | None:
             tried = []
+
+            def _try_location_hint(hint):
+                # file-or-dir HINT via the shared config_paths helper (file -> its
+                # dir; dir -> itself), preserving the original `tried` reporting.
+                cand = config_paths.location_candidate(hint, filename)
+                if cand:
+                    if os.path.isfile(cand): return cand
+                    tried.append(cand)
+                elif hint:
+                    tried.append(os.path.expanduser(hint))
+                return None
+
             # 0) user-provided (file or dir)
-            if user_param_path:
-                p = os.path.expanduser(user_param_path)
-                if os.path.isfile(p):
-                    base = os.path.dirname(p); cand = os.path.join(base, filename)
-                    if os.path.isfile(cand): return cand
-                    tried.append(cand)
-                elif os.path.isdir(p):
-                    cand = os.path.join(p, filename)
-                    if os.path.isfile(cand): return cand
-                    tried.append(cand)
-                else:
-                    tried.append(p)
+            hit = _try_location_hint(user_param_path)
+            if hit: return hit
             # 1) ament share
             try:
                 from ament_index_python.packages import get_package_share_directory
@@ -102,19 +116,8 @@ class TestTQC(EnvInterface):
             except Exception:
                 pass
             # 2) env: DRL_AGENT_TRAIN_CONFIG (file or dir)
-            env_full = os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip()
-            if env_full:
-                env_full = os.path.expanduser(env_full)
-                if os.path.isfile(env_full):
-                    base = os.path.dirname(env_full); cand = os.path.join(base, filename)
-                    if os.path.isfile(cand): return cand
-                    tried.append(cand)
-                elif os.path.isdir(env_full):
-                    cand = os.path.join(env_full, filename)
-                    if os.path.isfile(cand): return cand
-                    tried.append(cand)
-                else:
-                    tried.append(env_full)
+            hit = _try_location_hint(os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip())
+            if hit: return hit
             # 3) env: DRL_AGENT_SRC_PATH candidates
             src = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
             if src:
@@ -198,6 +201,12 @@ class TestTQC(EnvInterface):
         # ----------------------------
         ckpt_path = self.get_parameter("checkpoint_actor_file").get_parameter_value().string_value.strip()
         ckpt_path = os.path.expanduser(ckpt_path)
+        if not ckpt_path:
+            self.get_logger().error(
+                "No checkpoint_actor_file given. Pass it with "
+                "-p checkpoint_actor_file:=<path>/<prefix>_actor.pth"
+            )
+            sys.exit(255)
         if not os.path.isfile(ckpt_path):
             self.get_logger().error(f"Actor weight file not found: {ckpt_path}")
             sys.exit(255)

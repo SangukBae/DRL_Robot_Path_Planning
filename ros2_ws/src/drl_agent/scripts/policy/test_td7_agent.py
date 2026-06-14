@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# NOTE: despite the "test_" prefix this is a ROS2 RUN/EVALUATION script (it
+# drives a live Gazebo episode and loads a trained actor), NOT a pytest unit
+# test. It requires ROS2 + Gazebo + a checkpoint and is launched via
+# `ros2 run drl_agent test_td7_agent.py ...`. The fast, ROS-free pytest unit
+# tests live under `ros2_ws/src/drl_agent/tests/` (run with `pytest`).
 
 import os
 import sys

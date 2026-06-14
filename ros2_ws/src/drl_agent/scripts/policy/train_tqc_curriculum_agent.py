@@ -28,8 +28,7 @@ from datetime import datetime
 import numpy as np
 import torch
 import rclpy
-from rcl_interfaces.srv import GetParameters, SetParameters
-from rcl_interfaces.msg import Parameter, ParameterValue, ParameterType
+# rcl_interfaces parameter plumbing now lives in gym_parameter_client.py.
 
 # Allow direct script execution (not only via ros2 run)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -41,7 +40,14 @@ sys.path.insert(
 )
 
 from train_tqc_base import TrainTQCBase
+from environment_interface import EnvServiceError
+from gym_parameter_client import GymParameterClient
+import curriculum_stage_logic
+import curriculum_state_io
+from curriculum_eval_runner import CurriculumEvalMixin
+from curriculum_aux_eval import CurriculumAuxEvalMixin
 from file_manager import load_yaml
+import seed_utils
 from episode_metrics import EpisodeMetrics, PaperMetricsCSV
 # AUX_PRED: expected wire-format version for the env<->agent label contract.
 from aux_prediction_labels import AUX_WIRE_VERSION
@@ -51,54 +57,16 @@ import aux_ablation_logging as aux_log
 from aux_eval_metrics import AuxEvalAccumulator, split_label
 
 
-class _LabelProximity:
-    """Per-episode human-proximity tracker from privileged aux labels.
-
-    H-Coll and the TRUE (human) PSC are derived from the env's privileged
-    human-distance labels, NOT from the agent's aux head.  So they are available
-    for an aux-OFF agent baseline too, as long as the ENV emits labels
-    (aux_prediction.enabled on the env side).  When the env emits no labels both
-    metrics are reported BLANK (None) — never a misleading 0.
-    """
-
-    def __init__(self, personal_space_m: float, h_coll_radius_m: float):
-        self.ps = float(personal_space_m)
-        self.hcr = float(h_coll_radius_m)
-        self.reset()
-
-    def reset(self):
-        self.min_m = float("inf")
-        self.steps = 0
-        self.intrusions = 0
-
-    def add_dist(self, dist_m):
-        """Fold one step's nearest-human distance [m] (ignored if not finite)."""
-        if dist_m is None or not math.isfinite(dist_m):
-            return
-        self.steps += 1
-        if dist_m < self.min_m:
-            self.min_m = dist_m
-        if dist_m < self.ps:
-            self.intrusions += 1
-
-    @property
-    def available(self) -> bool:
-        return self.steps > 0
-
-    def psc(self):
-        """Fraction of label-available steps that respected personal space.
-        None when no label was seen (env labels off)."""
-        return (1.0 - self.intrusions / self.steps) if self.steps > 0 else None
-
-    def h_coll(self, collision: bool):
-        """1 if a collision episode ended with a human inside h_coll_radius.
-        None when no label was seen (env labels off)."""
-        if self.steps == 0:
-            return None
-        return int(bool(collision) and self.min_m < self.hcr)
+# Per-episode human-proximity tracker (H-Coll / true PSC) lives in the pure,
+# testable curriculum_metrics module.
+from curriculum_metrics import _LabelProximity
 
 
-class TrainTQCCurriculum(TrainTQCBase):
+class TrainTQCCurriculum(
+    CurriculumEvalMixin,
+    CurriculumAuxEvalMixin,
+    TrainTQCBase,
+):
     """TQC trainer with automatic curriculum stage advancement.
 
     Inherits all setup and model I/O from TrainTQCBase.
@@ -167,6 +135,12 @@ class TrainTQCCurriculum(TrainTQCBase):
                                                  [0.90, 0.85, 0.75, 0.70]))
         self.cur_pass_cr         = list(cur.get("pass_eval_collision_rate",
                                                  [0.05, 0.10, 0.15, 0.20]))
+        # Quality gates (in ADDITION to success/collision). Conservative: an
+        # absent/empty list → non-blocking default (SPL 0.0, clearance 0.0), so
+        # older configs promote exactly as before. The shipped config sets a mild
+        # SPL floor so "arrived but wandered" episodes don't pass on reward alone.
+        self.cur_pass_spl        = list(cur.get("pass_eval_spl", []))
+        self.cur_pass_clear      = list(cur.get("pass_eval_lidar_clearance_rate", []))
         self.cur_consec_passes   = int(cur.get("consecutive_eval_passes", 2))
 
         # AUX_PRED: per-step auxiliary label tracking.  EnvInterface.reset()/
@@ -197,14 +171,14 @@ class TrainTQCCurriculum(TrainTQCBase):
         self._stage_restart_source_prefix = ""
         self._stage_restart_weights_dir = ""
 
-        # ROS2 clients for the gym_node (EnvironmentCurriculum)
-        # Node is named "gym_node" — matches Environment.__init__("gym_node")
-        self._param_set_client = self.create_client(
-            SetParameters, "/gym_node/set_parameters"
-        )
-        self._param_get_client = self.create_client(
-            GetParameters, "/gym_node/get_parameters"
-        )
+        # ROS2 parameter interaction with the gym_node (EnvironmentCurriculum) is
+        # encapsulated in GymParameterClient. Node is named "gym_node" — matches
+        # Environment.__init__("gym_node").
+        self._gym_params = GymParameterClient(self)
+        # Back-compat aliases (kept in case other code paths reference the raw
+        # clients); all parameter traffic now goes through self._gym_params.
+        self._param_set_client = self._gym_params.set_client
+        self._param_get_client = self._gym_params.get_client
 
         # Extra CSV that includes the curriculum_stage column
         self._curriculum_reward_csv = os.path.join(
@@ -357,7 +331,10 @@ class TrainTQCCurriculum(TrainTQCBase):
             f"enabled={self.cur_enabled} "
             f"min_steps={self.cur_min_stage_steps} "
             f"min_eps={self.cur_min_stage_eps} "
-            f"consec={self.cur_consec_passes}"
+            f"consec={self.cur_consec_passes} | "
+            f"gates: sr={self.cur_pass_sr} cr={self.cur_pass_cr} "
+            f"spl={self.cur_pass_spl or 'off'} "
+            f"clearance={self.cur_pass_clear or 'off'}"
         )
         self.declare_parameter("resume_weight_prefix", "")
         self.declare_parameter("resume_stage", -1)
@@ -388,7 +365,35 @@ class TrainTQCCurriculum(TrainTQCBase):
                 resume_weight_prefix, resume_stage, resume_weights_dir
             )
         elif self.load_model:
-            self._load_curriculum_state()
+            if self._load_curriculum_state():
+                self._reseed_env_for_resume()
+
+    def _reseed_env_for_resume(self):
+        """Define the ENVIRONMENT-RNG resume scope explicitly (the env runs in a
+        SEPARATE process; its numpy/random state is NOT snapshotted across the
+        process boundary, unlike the trainer-side RNGs which ARE restored exactly
+        from rng_state.pkl / rng_torch.pt / rng_cuda.pt).
+
+        On resume the env is re-seeded DETERMINISTICALLY from (base_seed,
+        resume_global_t). Consequence (documented contract):
+          • Reproducible: the same checkpoint always resumes the same env
+            obstacle/human sampling stream.
+          • NOT bit-exact: it does not byte-continue the pre-interrupt env stream,
+            and it deliberately decorrelates from the already-trained early-stage
+            layouts (so a resumed run does not replay the identical first-N
+            episodes). This is a RESUMABLE guarantee, not exact continuation.
+        Raising the bar to exact continuation would require an env-side RNG
+        get/set-state service — intentionally out of scope for this change."""
+        resume_env_seed = seed_utils.derive_resume_seed(
+            self.seed, self._resume_global_t)
+        self.set_env_seed(resume_env_seed)
+        self.get_logger().info(
+            f"[Curriculum] Resume: env RNG re-seeded deterministically to "
+            f"{resume_env_seed} (= base_seed {self.seed} + global_t "
+            f"{self._resume_global_t}). Env sampling is reproducible PER CHECKPOINT "
+            f"but does NOT bit-continue the pre-interrupt stream; trainer-side "
+            f"numpy/random/torch RNGs are restored exactly."
+        )
 
     # ------------------------------------------------------------------ #
     #  Stage control helpers                                                #
@@ -402,260 +407,29 @@ class TrainTQCCurriculum(TrainTQCBase):
     # we only snapshot it into the (cur / next) bookkeeping used to align each
     # stored label with its encoder-input state, plus a one-time config sanity
     # check at startup.
-    def _check_aux_label_contract(self):
-        """AUX_PRED: fail-fast on any agent/env aux mismatch (STRUCTURAL).
-
-        The auxiliary label geometry lives in two configs (agent-side
-        hyperparameters_tqc.yaml and env-side environment_curriculum.yaml).
-        Rather than clipping or trusting a total-length match (different
-        num_sectors / horizons_sec can yield the same length), the env sends a
-        geometry header with the label; here we compare that header field-by-
-        field against the agent's aux config and raise immediately on ANY
-        inconsistency (missing label, wrong num_sectors, wrong number of
-        horizons, different horizon values, or mismatched label length).
-        """
-        if not self._aux_enabled:
-            return
-        exp = getattr(self.rl_agent, "aux_cfg", None)
-        lab = self.last_aux_label
-        meta = self.last_aux_meta
-
-        if lab is None:
-            raise RuntimeError(
-                "[AUX_PRED] agent aux_prediction.enabled=true but the environment "
-                "appended no future-risk label. Set aux_prediction.enabled=true in "
-                "environment_curriculum.yaml (and rebuild) so the env emits labels."
-            )
-        if meta is None:
-            raise RuntimeError(
-                "[AUX_PRED] env label is missing its geometry header (malformed or "
-                "version-incompatible wire format). Rebuild so env and agent share "
-                "the same aux_prediction_labels module."
-            )
-        if meta.get("version") != AUX_WIRE_VERSION:
-            raise RuntimeError(
-                f"[AUX_PRED] wire-format version mismatch: env="
-                f"{meta.get('version')} but agent expects {AUX_WIRE_VERSION}. "
-                "Rebuild so env and agent share the same aux_prediction_labels "
-                "module (the wire layout changed incompatibly)."
-            )
-        if exp is None:
-            return
-
-        hint = ("Make num_sectors / horizons_sec IDENTICAL in "
-                "hyperparameters_tqc.yaml and environment_curriculum.yaml, then rebuild.")
-        if meta["num_sectors"] != exp.num_sectors:
-            raise RuntimeError(
-                f"[AUX_PRED] num_sectors mismatch: env={meta['num_sectors']} "
-                f"agent={exp.num_sectors}. {hint}"
-            )
-        if meta["num_horizons"] != exp.num_horizons:
-            raise RuntimeError(
-                f"[AUX_PRED] horizon count mismatch: env={meta['num_horizons']} "
-                f"agent={exp.num_horizons}. {hint}"
-            )
-        env_h = list(meta["horizons_sec"])
-        agent_h = list(exp.horizons_sec)
-        if any(abs(float(a) - float(b)) > 1e-3 for a, b in zip(env_h, agent_h)):
-            raise RuntimeError(
-                f"[AUX_PRED] horizon values mismatch: env={env_h} agent={agent_h}. {hint}"
-            )
-        if lab.shape[0] != exp.label_dim:
-            raise RuntimeError(
-                f"[AUX_PRED] label length mismatch: env sent {lab.shape[0]} but the "
-                f"agent expects {exp.label_dim}. {hint}"
-            )
-
     def _set_curriculum_stage(self, stage: int) -> bool:
-        """Push curriculum_stage to /gym_node via set_parameters service."""
-        if not self._param_set_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().warn(
-                "[Curriculum] /gym_node/set_parameters not available — "
-                "is environment_curriculum.py running?"
-            )
-            return False
-        req = SetParameters.Request()
-        req.parameters = [
-            Parameter(
-                name="curriculum_stage",
-                value=ParameterValue(
-                    type=ParameterType.PARAMETER_INTEGER,
-                    integer_value=int(stage),
-                ),
-            )
-        ]
-        future = self._param_set_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        if future.result() is None:
-            self.get_logger().warn("[Curriculum] /gym_node/set_parameters timed out.")
-            return False
-        ok = all(r.successful for r in future.result().results)
+        """Delegate to GymParameterClient; cache the new stage on success."""
+        ok = self._gym_params.set_curriculum_stage(stage)
         if ok:
             self._curriculum_stage = stage
-            self.get_logger().info(
-                f"[Curriculum] Environment stage set to {stage}."
-            )
-        else:
-            self.get_logger().warn(
-                f"[Curriculum] set_parameters for stage={stage} rejected by gym_node."
-            )
         return ok
 
     def _fetch_eval_mode(self):
-        """Read the env's ACTUAL curriculum_eval_mode bool via get_parameters.
-        Returns True/False, or None when unavailable (service down / param not
-        declared on an older env)."""
-        try:
-            if not self._param_get_client.wait_for_service(timeout_sec=1.0):
-                return None
-            req = GetParameters.Request()
-            req.names = ["curriculum_eval_mode"]
-            future = self._param_get_client.call_async(req)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=3.0)
-            res = future.result()
-            if res is None or not res.values:
-                return None
-            pv = res.values[0]
-            if pv.type == ParameterType.PARAMETER_BOOL:
-                return bool(pv.bool_value)
-        except Exception:
-            return None
-        return None
+        """Delegate to GymParameterClient.get_eval_mode."""
+        return self._gym_params.get_eval_mode()
 
     def _set_eval_mode(self, on: bool) -> bool:
-        """Set the env's curriculum_eval_mode so evaluation episodes use
-        eval_map_types (round-robin) instead of the training map distribution,
-        while the env stays in train mode (obstacles/humans still activate).
+        """Delegate to GymParameterClient.set_eval_mode."""
+        return self._gym_params.set_eval_mode(on)
 
-        Returns True only after CONFIRMING via get_parameters that the env's
-        actual value equals `on` — not merely that the SetParameters request was
-        accepted. This makes the caller's eval_map_applied flag reflect ground
-        truth even when a set times out but applies, or the env was already in the
-        target state from a prior (failed-looking) toggle.
-        """
-        try:
-            if self._param_set_client.wait_for_service(timeout_sec=3.0):
-                req = SetParameters.Request()
-                req.parameters = [
-                    Parameter(
-                        name="curriculum_eval_mode",
-                        value=ParameterValue(
-                            type=ParameterType.PARAMETER_BOOL,
-                            bool_value=bool(on),
-                        ),
-                    )
-                ]
-                future = self._param_set_client.call_async(req)
-                rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-            else:
-                self.get_logger().warn(
-                    "[Curriculum] /gym_node/set_parameters unavailable for "
-                    "curriculum_eval_mode toggle — will confirm actual value below."
-                )
-        except Exception as e:
-            self.get_logger().warn(f"[Curriculum] could not set eval_mode={on}: {e}")
-        # Confirm the actually-applied value (ground truth), regardless of the
-        # request-level result above.
-        actual = self._fetch_eval_mode()
-        return actual is not None and actual == bool(on)
 
     def _save_curriculum_state(self, global_t: int):
-        """Write curriculum_state.json + RNG state files for full off-policy resume."""
-        path = os.path.join(self.log_dir, "curriculum_state.json")
-        with open(path, "w") as f:
-            json.dump(
-                {
-                    "stage":                  self._curriculum_stage,
-                    "stage_start_step":       self._stage_start_step,
-                    "stage_start_episode":    self._stage_start_ep,
-                    "consecutive_pass_count": self._consecutive_pass_count,
-                    "global_t":               global_t,
-                    "total_episodes":         self._total_episodes,
-                    "epoch":                  self._resume_epoch,
-                    "ep_timesteps":           self._partial_ep_timesteps,
-                    "ep_total_reward":        self._partial_ep_reward,
-                },
-                f,
-                indent=2,
-            )
-        # RNG states — binary, saved alongside the JSON
-        try:
-            with open(os.path.join(self.log_dir, "rng_state.pkl"), "wb") as f:
-                pickle.dump(
-                    {"numpy": np.random.get_state(), "python": random.getstate()},
-                    f,
-                    protocol=pickle.HIGHEST_PROTOCOL,
-                )
-            torch.save(
-                torch.get_rng_state(),
-                os.path.join(self.log_dir, "rng_torch.pt"),
-            )
-            if torch.cuda.is_available():
-                torch.save(
-                    torch.cuda.get_rng_state(),
-                    os.path.join(self.log_dir, "rng_cuda.pt"),
-                )
-        except Exception as _e:
-            self.get_logger().warn(f"[Curriculum] RNG state save failed: {_e}")
+        """Delegate to curriculum_state_io.save_curriculum_state (format unchanged)."""
+        curriculum_state_io.save_curriculum_state(self, global_t)
 
     def _load_curriculum_state(self) -> bool:
-        """Restore saved curriculum progress when resuming a run."""
-        path = os.path.join(self.log_dir, "curriculum_state.json")
-        if not os.path.isfile(path):
-            self.get_logger().info(
-                "[Curriculum] No curriculum_state.json found; resume will restart "
-                "from stage 0 even though model weights were loaded."
-            )
-            return False
-        try:
-            with open(path, "r") as f:
-                state = json.load(f)
-            self._curriculum_stage = int(state.get("stage", 0))
-            self._stage_start_step = int(state.get("stage_start_step", 0))
-            self._stage_start_ep = int(state.get("stage_start_episode", 0))
-            self._consecutive_pass_count = int(
-                state.get("consecutive_pass_count", 0)
-            )
-            self._resume_global_t      = int(state.get("global_t", 0))
-            self._total_episodes       = int(state.get("total_episodes", 0))
-            self._resume_epoch         = int(state.get("epoch", 1))
-            self._partial_ep_timesteps = int(state.get("ep_timesteps", 0))
-            self._partial_ep_reward    = float(state.get("ep_total_reward", 0.0))
-            self._last_global_t = self._resume_global_t
-            self._resume_loaded = True
-            self.get_logger().info(
-                f"[Curriculum] Restored state from {path} | "
-                f"stage={self._curriculum_stage} "
-                f"global_t={self._resume_global_t} "
-                f"episodes={self._total_episodes} "
-                f"pass_streak={self._consecutive_pass_count}"
-            )
-            # Restore RNG states for reproducible off-policy resume
-            try:
-                pkl = os.path.join(self.log_dir, "rng_state.pkl")
-                if os.path.isfile(pkl):
-                    with open(pkl, "rb") as f:
-                        rng = pickle.load(f)
-                    np.random.set_state(rng["numpy"])
-                    random.setstate(rng["python"])
-                pt = os.path.join(self.log_dir, "rng_torch.pt")
-                if os.path.isfile(pt):
-                    torch.set_rng_state(torch.load(pt))
-                cuda_pt = os.path.join(self.log_dir, "rng_cuda.pt")
-                if torch.cuda.is_available() and os.path.isfile(cuda_pt):
-                    torch.cuda.set_rng_state(torch.load(cuda_pt))
-                self.get_logger().info("[Curriculum] RNG states restored.")
-            except Exception as _e:
-                self.get_logger().warn(
-                    f"[Curriculum] RNG state restore failed: {_e}"
-                )
-            return True
-        except Exception as e:
-            self.get_logger().warn(
-                f"[Curriculum] Failed to load curriculum_state.json: {e}. "
-                "Falling back to fresh curriculum progression."
-            )
-            return False
+        """Delegate to curriculum_state_io.load_curriculum_state (format unchanged)."""
+        return curriculum_state_io.load_curriculum_state(self)
 
     def _start_from_specific_weights(
         self, weight_prefix: str, stage: int, weights_dir: str
@@ -698,458 +472,53 @@ class TrainTQCCurriculum(TrainTQCBase):
         )
 
     def _fetch_num_stages(self) -> int:
-        """Query curriculum_num_stages from the running gym_node.
-
-        EnvironmentCurriculum declares this parameter at startup with the exact
-        count from the config file the environment was actually launched with,
-        so trainer and environment always agree on stage count.
-        Falls back to 5 if the parameter or service is unavailable.
-        """
-        if not self._param_get_client.wait_for_service(timeout_sec=3.0):
-            self.get_logger().warn(
-                "[Curriculum] /gym_node/get_parameters unavailable — "
-                "defaulting to 5 stages. Is environment_curriculum.py running?"
-            )
-            return 5
-        req = GetParameters.Request()
-        req.names = ["curriculum_num_stages"]
-        future = self._param_get_client.call_async(req)
-        rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-        if future.result() is None or not future.result().values:
-            self.get_logger().warn(
-                "[Curriculum] curriculum_num_stages not found on gym_node — "
-                "defaulting to 5."
-            )
-            return 5
-        n = int(future.result().values[0].integer_value)
-        if n < 1:
-            return 5
-        self.get_logger().info(f"[Curriculum] gym_node reports {n} stages.")
-        return n
+        """Delegate to GymParameterClient.get_num_stages."""
+        return self._gym_params.get_num_stages()
 
     def _fetch_env_aux_params(self) -> dict:
-        """AUX_ABLATION: read the env node's actual loaded-config path / hash and
-        running aux geometry from gym_node, so run_manifest.json records the TRUE
-        env settings instead of a re-discovered file.  Returns {} on any failure.
-        """
-        out = {}
-        try:
-            if not self._param_get_client.wait_for_service(timeout_sec=3.0):
-                return out
-            names = ["loaded_config_path", "loaded_config_sha1", "aux_enabled",
-                     "aux_num_sectors", "aux_horizons_sec", "aux_risk_distance_scale"]
-            req = GetParameters.Request()
-            req.names = names
-            future = self._param_get_client.call_async(req)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=5.0)
-            res = future.result()
-            if res is None or not res.values:
-                return out
-            for name, pv in zip(names, res.values):
-                t = pv.type
-                if t == ParameterType.PARAMETER_STRING:
-                    out[name] = pv.string_value
-                elif t == ParameterType.PARAMETER_BOOL:
-                    out[name] = bool(pv.bool_value)
-                elif t == ParameterType.PARAMETER_INTEGER:
-                    out[name] = int(pv.integer_value)
-                elif t == ParameterType.PARAMETER_DOUBLE:
-                    out[name] = float(pv.double_value)
-                elif t == ParameterType.PARAMETER_DOUBLE_ARRAY:
-                    out[name] = [float(x) for x in pv.double_array_value]
-                # PARAMETER_NOT_SET -> param absent on this env (older build)
-        except Exception as e:
-            self.get_logger().warn(f"[AUX_ABLATION] could not read env aux params: {e}")
-        return out
+        """Delegate to GymParameterClient.get_env_aux_params."""
+        return self._gym_params.get_env_aux_params()
 
     def _fetch_current_map_type(self) -> str:
-        """Read the env's read-only `current_map_type` parameter (structured map
-        curriculum). Returns "" when unavailable (e.g. layout disabled / older
-        env). Cheap: one get_parameters round-trip, called once per episode."""
-        try:
-            if not self._param_get_client.wait_for_service(timeout_sec=1.0):
-                return ""
-            req = GetParameters.Request()
-            req.names = ["current_map_type"]
-            future = self._param_get_client.call_async(req)
-            rclpy.spin_until_future_complete(self, future, timeout_sec=3.0)
-            res = future.result()
-            if res is None or not res.values:
-                return ""
-            pv = res.values[0]
-            if pv.type == ParameterType.PARAMETER_STRING:
-                return pv.string_value
-        except Exception:
-            return ""
-        return ""
+        """Delegate to GymParameterClient.get_current_map_type."""
+        return self._gym_params.get_current_map_type()
+
 
     # ------------------------------------------------------------------ #
     #  AUX_PRED: formal-eval helpers                                        #
     # ------------------------------------------------------------------ #
-    def _human_min_dist_m_from_label(self, label):
-        """Privileged nearest-human distance [m] from an env label: the closest
-        future approach over all horizons (min over the min_dist_norm block * D_c).
-
-        Depends ONLY on the env emitting labels (self._h_coll_available), NOT on
-        the agent aux head — so H-Coll / true PSC work for an aux-OFF agent
-        baseline too. Returns None when no usable label is available."""
-        if not self._h_coll_available or label is None or self._label_H <= 0:
-            return None
-        arr = np.asarray(label, dtype=np.float64).ravel()
-        risk_dim = self._label_H * self._label_K
-        if arr.shape[0] < risk_dim + self._label_H:
-            return None
-        md_norm = arr[risk_dim:risk_dim + self._label_H]
-        return float(np.min(md_norm)) * self._label_Dc
-
-    def _build_future_actions(self, actions_list):
-        """Boundary-safe future-action tensor for action-conditioned aux eval.
-
-        actions_list[i] = a_i (action taken from s_i), all within ONE episode.
-        For step i returns [a_i, .., a_{i+K-1}] zero-padded past the episode end,
-        and valid_len[i] = min(K, T - i) (>= 1) — NEVER reading across the
-        boundary, identical to the training-time alignment.
-        """
-        K = max(1, int(self._aux_eval_ac_steps))
-        T = len(actions_list)
-        adim = len(actions_list[0]) if T > 0 else 0
-        fut = np.zeros((T, K, adim), dtype=np.float32)
-        vlen = np.ones((T,), dtype=np.int64)
-        for i in range(T):
-            n = min(K, T - i)
-            vlen[i] = max(1, n)
-            for j in range(n):
-                fut[i, j] = np.asarray(actions_list[i + j], dtype=np.float32)
-        return fut, vlen
-
-    def _aux_eval_episode(self, acc, states_list, labels_list, actions_list, map_type):
-        """Run the aux head over one finished eval episode and add the batch to
-        the accumulator (single-step OR action-conditioned, boundary-safe)."""
-        if not self._aux_eval_on or not states_list:
-            return
-        states = np.asarray(states_list, dtype=np.float32)
-        labels = np.asarray(labels_list, dtype=np.float64)
-        if self._aux_eval_action_conditioned:
-            fut, vlen = self._build_future_actions(actions_list)
-            preds = self.rl_agent.aux_predict_eval(states, fut, vlen)
-        else:
-            preds = self.rl_agent.aux_predict_eval(states)
-        if preds is None:
-            return
-        risk_gt, md_gt = split_label(labels, self._aux_eval_H, self._aux_eval_K)
-        risk_pred = preds["risk_map"]
-        md_pred = preds.get("min_dist")   # None when the head has no min-dist out
-        acc.add_batch(
-            risk_pred.reshape(len(states_list), -1),
-            risk_gt.reshape(len(states_list), -1),
-            md_pred,
-            md_gt,
-            map_type=map_type or "na",
-        )
-
     def _check_stage_advance(self, global_t: int, metrics: dict, num_stages: int) -> bool:
-        """Return True when this eval pass should count toward stage promotion."""
-        if not self.cur_enabled:
-            return False
-        if self._curriculum_stage >= num_stages - 1:
-            return False   # already at the final stage
-        # No promotion during warmup
-        if global_t <= self.timesteps_before_training:
-            return False
-        # Minimum time / episode count in the current stage
-        if global_t - self._stage_start_step < self.cur_min_stage_steps:
-            return False
-        if self._total_episodes - self._stage_start_ep < self.cur_min_stage_eps:
-            return False
+        """Return True when this eval pass should count toward stage promotion.
 
-        stage_idx   = min(self._curriculum_stage, len(self.cur_pass_sr) - 1)
-        required_sr = self.cur_pass_sr[stage_idx]
-        required_cr = self.cur_pass_cr[stage_idx]
-        return (
-            metrics.get("success_rate",   0.0) >= required_sr
-            and metrics.get("collision_rate", 1.0) <= required_cr
+        The pure decision (gate thresholds vs. eval metrics) lives in
+        ``curriculum_stage_logic.should_advance_stage``; this wrapper supplies the
+        trainer's current state + config and logs any gate failures."""
+        advance, reasons = curriculum_stage_logic.should_advance_stage(
+            enabled=self.cur_enabled,
+            curriculum_stage=self._curriculum_stage,
+            num_stages=num_stages,
+            global_t=global_t,
+            timesteps_before_training=self.timesteps_before_training,
+            stage_start_step=self._stage_start_step,
+            min_stage_steps=self.cur_min_stage_steps,
+            total_episodes=self._total_episodes,
+            stage_start_ep=self._stage_start_ep,
+            min_stage_eps=self.cur_min_stage_eps,
+            pass_sr=self.cur_pass_sr,
+            pass_cr=self.cur_pass_cr,
+            pass_spl=self.cur_pass_spl,
+            pass_clear=self.cur_pass_clear,
+            metrics=metrics,
         )
+        if reasons:
+            self.get_logger().info(
+                f"[Curriculum] Stage {self._curriculum_stage} promotion gate NOT met: "
+                + ", ".join(reasons)
+            )
+        return advance
 
     # ------------------------------------------------------------------ #
     #  Override: evaluate_and_print → returns dict of metrics              #
-    # ------------------------------------------------------------------ #
-
-    def evaluate_and_print(self, evals, epoch, start_time):
-        """Run eval_eps episodes and return a metrics dict (not just mean reward)."""
-        self.get_logger().info("=" * 55)
-        self.get_logger().info(
-            f"[Curriculum] Evaluating — Epoch {epoch} | Stage {self._curriculum_stage}"
-        )
-        self.get_logger().info(f"Elapsed: {time.time() - start_time:.1f}s")
-        self.get_logger().info("=" * 55)
-
-        ENV_DIM = self.environment_dim
-        rewards, final_dists = [], []
-        success_count = collision_count = timeout_count = 0
-        per_ep_metrics = []
-        # Structured map curriculum: per-map_type breakdown of this evaluation.
-        per_map = {}   # map_type -> {n, success, collision, timeout, reward, goal_dist, h_coll}
-        # Formal aux-evaluation accumulator (global + per map_type). Only used
-        # when the agent has an aux head; otherwise it stays empty (aux off path).
-        aux_acc = None
-        if self._aux_eval_on:
-            aux_acc = AuxEvalAccumulator(
-                num_horizons=self._aux_eval_H, num_sectors=self._aux_eval_K,
-                risk_distance_scale=self._aux_eval_Dc,
-                near_event_threshold_m=self._aux_near_event_threshold_m,
-            )
-        # Switch the env to the eval_map_types round-robin for these episodes
-        # (obstacles still activate; env stays in train mode). If the toggle fails
-        # we do NOT silently evaluate on the training mix — warn loudly and flag
-        # the fallback so the per-map numbers are not mistaken for eval_map_types.
-        eval_mode_on = self._set_eval_mode(True)
-        if not eval_mode_on:
-            self.get_logger().warn(
-                "[Curriculum] ⚠ FAILED to enable curriculum_eval_mode "
-                "(set_parameters rejected/timed out). This evaluation FALLS BACK to "
-                "the TRAINING map distribution — the per-map breakdown below is NOT "
-                "an eval_map_types evaluation. Check that environment_curriculum.py "
-                "is running and exposes curriculum_eval_mode."
-            )
-        # try/finally so an exception mid-eval (reset/step/logging) can never leave
-        # the env stuck in eval mode — otherwise later TRAINING resets would keep
-        # cycling eval_map_types.
-        try:
-            for _ in range(self.eval_eps):
-                state    = self.reset()
-                map_type = self._fetch_current_map_type()
-                done     = False
-                ep_steps = 0
-                ep_rew   = 0.0
-                self._em.reset(state)
-                # Per-step buffers for the formal aux eval (state_t, label_t paired
-                # with s_t, and a_t taken from s_t). Boundary-safe: one episode.
-                ev_states, ev_labels, ev_actions = [], [], []
-                # Label-based human proximity (H-Coll / true PSC). Gated on the
-                # ENV emitting labels — independent of the agent aux head.
-                prox = _LabelProximity(self._psc_personal_space_m, self._h_coll_radius_m)
-
-                while not done and ep_steps < self.max_episode_steps:
-                    # Capture s_t + its paired aux label BEFORE stepping (aux head
-                    # eval needs the encoder input s_t and its label).
-                    if self._aux_eval_on and self.last_aux_label is not None:
-                        ev_states.append(np.asarray(state, dtype=np.float32).ravel())
-                        ev_labels.append(np.asarray(self.last_aux_label, dtype=np.float64).ravel())
-                    action = self.rl_agent.select_action(
-                        state, use_checkpoint=False, use_exploration=False
-                    )
-                    if self._aux_eval_on and len(ev_states) == len(ev_actions) + 1:
-                        ev_actions.append(np.asarray(action, dtype=np.float32).ravel())
-                    state, reward, done, info = self.step(action)
-                    self._em.update(state, action)
-                    # Fold the post-step label (paired with s_{t+1}) so the FINAL
-                    # collision step's proximity is counted (it would be missed if
-                    # we only read labels before stepping).
-                    prox.add_dist(self._human_min_dist_m_from_label(self.last_aux_label))
-                    ep_rew   += reward
-                    ep_steps += 1
-
-                s = np.asarray(state, dtype=np.float32).ravel()
-                final_dist = float(s[ENV_DIM])
-                final_dists.append(final_dist)
-                rewards.append(ep_rew)
-                per_ep_metrics.append(self._em.compute(bool(done and info)))
-
-                ep_success   = bool(done and info)
-                ep_collision = bool(done and not info)
-                ep_timeout   = bool(not done)
-                if ep_success:
-                    success_count   += 1
-                elif ep_collision:
-                    collision_count += 1
-                else:
-                    timeout_count   += 1
-                # Label-derived human metrics (None when the env emits no labels).
-                ep_h_coll = prox.h_coll(ep_collision)
-                ep_psc    = prox.psc()
-
-                # Formal aux metrics for this episode (boundary-safe).
-                if aux_acc is not None and ev_states:
-                    # Align lengths defensively (last action may be missing if the
-                    # episode ended on the captured state).
-                    L = min(len(ev_states), len(ev_labels), len(ev_actions)) \
-                        if self._aux_eval_action_conditioned else min(len(ev_states), len(ev_labels))
-                    if L > 0:
-                        self._aux_eval_episode(
-                            aux_acc, ev_states[:L], ev_labels[:L],
-                            ev_actions[:L] if self._aux_eval_action_conditioned else None,
-                            map_type,
-                        )
-
-                m = per_map.setdefault(
-                    map_type or "na",
-                    {"n": 0, "success": 0, "collision": 0, "timeout": 0,
-                     "reward": 0.0, "goal_dist": 0.0,
-                     "h_coll": 0, "h_coll_n": 0, "psc_sum": 0.0, "psc_n": 0},
-                )
-                m["n"]         += 1
-                m["success"]   += int(ep_success)
-                m["collision"] += int(ep_collision)
-                m["timeout"]   += int(ep_timeout)
-                m["reward"]    += ep_rew
-                m["goal_dist"] += final_dist
-                # Only count episodes where labels were available (avail) so the
-                # rates are over the eligible denominator, not all episodes.
-                if ep_h_coll is not None:
-                    m["h_coll"]   += int(ep_h_coll)
-                    m["h_coll_n"] += 1
-                if ep_psc is not None:
-                    m["psc_sum"]  += float(ep_psc)
-                    m["psc_n"]    += 1
-        finally:
-            # Always return the env to the training map distribution so the next
-            # training reset is NOT stuck on the eval round-robin — even if the
-            # eval loop raised. Warn if the restore itself fails.
-            if not self._set_eval_mode(False):
-                self.get_logger().warn(
-                    "[Curriculum] ⚠ FAILED to clear curriculum_eval_mode — subsequent "
-                    "TRAINING resets may keep cycling eval_map_types until it clears."
-                )
-
-        n = self.eval_eps
-        metrics = {
-            "mean_reward":    float(np.mean(rewards)),
-            "std_reward":     float(np.std(rewards)),
-            "success_rate":   success_count   / n,
-            "collision_rate": collision_count / n,
-            "timeout_rate":   timeout_count   / n,
-            "mean_goal_dist": float(np.mean(final_dists)),
-            # False → eval ran on the training map mix (eval_map_types NOT applied).
-            "eval_map_applied": bool(eval_mode_on),
-        }
-        # Aggregate paper metrics (SPL, CTE, jerk, STL, lidar_clearance, ...).
-        _agg = PaperMetricsCSV.aggregate(per_ep_metrics)
-        metrics.update(_agg)
-        # Label-derived human metrics, aggregated over the EPISODES THAT HAD
-        # LABELS (env-side). None (→ blank) when no eval episode had labels, so an
-        # aux-off-env run never reports a misleading 0. An aux-OFF agent with the
-        # env labels ON still gets real H-Coll / PSC.
-        _hc_sum = sum(d["h_coll"] for d in per_map.values())
-        _hc_n   = sum(d["h_coll_n"] for d in per_map.values())
-        _psc_sum = sum(d["psc_sum"] for d in per_map.values())
-        _psc_n   = sum(d["psc_n"] for d in per_map.values())
-        metrics["h_coll_rate"] = (float(_hc_sum) / _hc_n) if _hc_n > 0 else None
-        # TRUE (human personal-space) PSC overrides the state-stream proxy name in
-        # the summary; the LiDAR clearance proxy is kept separately as
-        # lidar_clearance_rate (from _agg).
-        metrics["psc"] = (float(_psc_sum) / _psc_n) if _psc_n > 0 else None
-        # Formal aux-eval metrics (global). Merged into metrics so the eval
-        # summary CSV + console can read them; absent/blank when aux is off.
-        aux_eval_metrics = aux_acc.finalize() if aux_acc is not None else {}
-        if aux_eval_metrics:
-            metrics.update(aux_eval_metrics)
-        aux_eval_per_map = aux_acc.finalize_per_map() if aux_acc is not None else {}
-        self._paper.write_eval(
-            epoch=epoch, global_t=self._last_global_t,
-            stage=self._curriculum_stage, eval_eps=n,
-            base=metrics, metrics_mean=_agg,
-        )
-
-        # AUX_ABLATION: one eval-summary row per evaluation -> aux on/off and
-        # learning-curve comparison at the same timesteps.
-        try:
-            self._aux_eval_summary.append(
-                eval_global_t=self._last_global_t,
-                curriculum_stage=self._curriculum_stage,
-                eval_eps=n, metrics=metrics,
-            )
-        except Exception as _e:
-            self.get_logger().warn(f"[AUX_ABLATION] eval-summary append failed: {_e}")
-
-        _psc_v = metrics.get("psc")
-        _hc_v = metrics.get("h_coll_rate")
-        _psc_s = f"{_psc_v:.3f}" if _psc_v is not None else "n/a"
-        _hc_s = f"{_hc_v*100:.1f}%" if _hc_v is not None else "n/a"
-        self.get_logger().info(
-            f"Eval {n} eps | "
-            f"Reward {metrics['mean_reward']:.3f}±{metrics['std_reward']:.3f} | "
-            f"Success {metrics['success_rate']*100:.1f}% | "
-            f"Collision {metrics['collision_rate']*100:.1f}% | "
-            f"Timeout {metrics['timeout_rate']*100:.1f}% | "
-            f"GoalDist {metrics['mean_goal_dist']:.3f}m | "
-            f"SPL {metrics['spl']:.3f} | STL {metrics.get('stl', 0.0):.3f} | "
-            f"PSC {_psc_s} | H-Coll {_hc_s} | "
-            f"Clearance {metrics.get('lidar_clearance_rate', 0.0):.3f} | "
-            f"CTE {metrics['mean_cross_track_error_m']:.3f}m"
-        )
-        # AUX_PRED: formal aux-evaluation line — printed ONLY when aux is on.
-        if self._aux_eval_on and aux_eval_metrics:
-            _pk = aux_eval_metrics.get("aux_peak_sector_acc")
-            _pk_s = f"{_pk:.3f}" if (_pk is not None and _pk == _pk) else "n/a"
-            self.get_logger().info(
-                "Eval(aux) | "
-                f"AuxLossEval(RiskRMSE) {aux_eval_metrics['aux_risk_rmse']:.4f} | "
-                f"MinDistMAE(m) {aux_eval_metrics['aux_min_dist_mae_m']:.4f} | "
-                f"PeakAcc {_pk_s} | "
-                f"EventF1 {aux_eval_metrics['aux_near_event_f1']:.3f} "
-                f"(thr<{self._aux_near_event_threshold_m:.2f}m, N={aux_eval_metrics.get('aux_eval_samples', 0)})"
-            )
-
-        # Structured map curriculum: write + log the per-map_type breakdown so a
-        # mixed-map stage average never hides one map collapsing.
-        metrics["per_map"] = {}
-        if not eval_mode_on:
-            self.get_logger().warn(
-                "[Curriculum] per-map breakdown below is a FALLBACK (training map "
-                "distribution), not eval_map_types — see warning above."
-            )
-        try:
-            with open(self._curriculum_eval_per_map_csv, "a", newline="") as f:
-                w = csv.writer(f)
-                def _b(am, key):
-                    # blank when a metric is absent / None / NaN (aux off / no labels)
-                    v = am.get(key) if isinstance(am, dict) else am
-                    if v is None:
-                        return ""
-                    try:
-                        fv = float(v)
-                        return "" if fv != fv else round(fv, 6)
-                    except Exception:
-                        return ""
-                for mt in sorted(per_map.keys()):
-                    d = per_map[mt]
-                    nn = max(d["n"], 1)
-                    sr, cr, tr = d["success"] / nn, d["collision"] / nn, d["timeout"] / nn
-                    mr, gd = d["reward"] / nn, d["goal_dist"] / nn
-                    # Label-derived rates over label-available episodes only (None
-                    # → blank when this map had no labels).
-                    hc = (d["h_coll"] / d["h_coll_n"]) if d["h_coll_n"] > 0 else None
-                    psc = (d["psc_sum"] / d["psc_n"]) if d["psc_n"] > 0 else None
-                    am = aux_eval_per_map.get(mt, {})
-                    metrics["per_map"][mt] = {
-                        "eval_eps": d["n"], "success_rate": sr,
-                        "collision_rate": cr, "timeout_rate": tr,
-                        "mean_reward": mr, "mean_goal_dist": gd,
-                        "h_coll_rate": hc, "psc": psc, **am,
-                    }
-                    w.writerow([
-                        epoch, self._last_global_t, self._curriculum_stage, mt, d["n"],
-                        round(sr, 4), round(cr, 4), round(tr, 4),
-                        round(mr, 4), round(gd, 4),
-                        _b(None, hc), _b(None, psc),
-                        _b(am, "aux_risk_rmse"), _b(am, "aux_min_dist_mae_m"),
-                        _b(am, "aux_peak_sector_acc"), _b(am, "aux_near_event_f1"),
-                    ])
-                    _hc_ms = f"{hc*100:.1f}%" if hc is not None else "n/a"
-                    self.get_logger().info(
-                        f"  [map={mt:<12}] n={d['n']:<3} "
-                        f"Success {sr*100:5.1f}% | Collision {cr*100:5.1f}% | "
-                        f"Timeout {tr*100:5.1f}% | GoalDist {gd:.3f}m | H-Coll {_hc_ms}"
-                    )
-        except Exception as _e:
-            self.get_logger().warn(f"[Curriculum] per-map eval log failed: {_e}")
-
-        evals.append(metrics["mean_reward"])
-        np.save(f"{self.results_dir}/{self.file_name}", evals)
-        return metrics
-
-    # ------------------------------------------------------------------ #
-    #  Override: train_online — adds stage advancement around eval          #
     # ------------------------------------------------------------------ #
 
     def train_online(self):
@@ -1401,7 +770,8 @@ class TrainTQCCurriculum(TrainTQCBase):
                             f"{self.cur_consec_passes} for stage "
                             f"{self._curriculum_stage} "
                             f"(sr={metrics['success_rate']*100:.1f}% "
-                            f"cr={metrics['collision_rate']*100:.1f}%)"
+                            f"cr={metrics['collision_rate']*100:.1f}% "
+                            f"spl={metrics.get('spl', 0.0):.3f})"
                         )
                         if self._consecutive_pass_count >= self.cur_consec_passes:
                             new_stage = self._curriculum_stage + 1
@@ -1469,6 +839,19 @@ def main(args=None):
                 node._save_curriculum_state(getattr(node, "_last_global_t", 0))
             except Exception:
                 pass
+    except EnvServiceError as e:
+        # Environment service died (Gazebo/env node hung or crashed). Fail-fast:
+        # save a checkpoint + curriculum state so the run is resumable, then stop
+        # cleanly instead of hanging or losing progress.
+        print(f"\n[Curriculum] Environment service failure: {e}")
+        if node is not None:
+            try:
+                node.save_models(node.pytorch_models_dir, node.file_name)
+                node._save_curriculum_state(getattr(node, "_last_global_t", 0))
+                print("[Curriculum] Saved checkpoint after service failure — "
+                      "run is resumable.")
+            except Exception as se:
+                print(f"[Curriculum] Checkpoint save after service failure failed: {se}")
     except Exception as e:
         print(f"[Curriculum] Error: {e}")
         import traceback
