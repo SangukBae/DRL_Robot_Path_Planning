@@ -46,7 +46,7 @@ class HumanSpawnMixin:
                 "corridor_lanes", "intersection_arms", "lobby_crossings"):
             regions = list(self.current_layout_spec.get("human_regions", []))
             if regions:
-                random.shuffle(regions)
+                self._human_py_rng.shuffle(regions)
                 return regions
             return None
 
@@ -61,8 +61,31 @@ class HumanSpawnMixin:
             (q_lo, 0.0, 0.0,  q_hi),  # top-left
             (0.0,  q_hi, 0.0, q_hi),  # top-right
         ]
-        random.shuffle(quadrants)
+        self._human_py_rng.shuffle(quadrants)
         return quadrants
+
+    def _point_in_human_regions(self, x: float, y: float) -> bool:
+        """True if (x, y) is inside the active map's human (navigable) regions —
+        the lane (corridor), the arms (intersection), or the full inner extent
+        (lobby / clutter). Used to keep an episode GOAL REACHABLE: a goal outside
+        these regions sits across an internal wall, which the simple goal-driven
+        pedestrian motion cannot reach — it would just slide into the wall for the
+        whole episode (Fix A stops penetration but not the futile pushing). The
+        per-step WAYPOINT is intentionally NOT constrained this way: it must be
+        able to transit free space between regions (e.g. the intersection centre,
+        which belongs to no arm) — its own wall checks keep it off walls.
+        Permissive (True) for non-structured maps / layouts without human_regions.
+        """
+        spec = self.current_layout_spec
+        if spec is None:
+            return True
+        regions = spec.get("human_regions", [])
+        if not regions:
+            return True
+        for (x_lo, x_hi, y_lo, y_hi) in regions:
+            if x_lo <= x <= x_hi and y_lo <= y <= y_hi:
+                return True
+        return False
 
     def _sample_human_spawn_pose(
         self,
@@ -77,9 +100,11 @@ class HumanSpawnMixin:
         if spawn_regions:
             x_lo, x_hi, y_lo, y_hi = spawn_regions[human_index % len(spawn_regions)]
             return self._sample_free_pose_in_region(
-                radius, placed, start_x, start_y, x_lo, x_hi, y_lo, y_hi
+                radius, placed, start_x, start_y, x_lo, x_hi, y_lo, y_hi,
+                rng=self._human_np_rng,   # pedestrian spawn stays off the global stream
             )
-        return self._sample_free_pose(radius, placed, start_x, start_y)
+        return self._sample_free_pose(
+            radius, placed, start_x, start_y, rng=self._human_np_rng)
 
     # Per-mode pedestrian motion defaults. Each human keeps one mode for the
     # whole episode. Tunable via human_mode_params[<mode>] in the YAML (or per
@@ -123,7 +148,7 @@ class HumanSpawnMixin:
         if total <= 0.0:
             weights = [1.0] * len(modes)
             total = float(len(modes))
-        mode = str(np.random.choice(modes, p=[w / total for w in weights]))
+        mode = str(self._human_np_rng.choice(modes, p=[w / total for w in weights]))
 
         p = dict(self._HUMAN_MODE_DEFAULTS[mode])
         p.update(self.human_mode_params.get(mode, {}) or {})
@@ -132,7 +157,7 @@ class HumanSpawnMixin:
         if axis_kind == "crossing":
             mode_axis = math.atan2(-y, -x)                      # head across the arena
         elif axis_kind == "principal":
-            mode_axis = float(np.random.choice([0.0, math.pi / 2, math.pi, -math.pi / 2]))
+            mode_axis = float(self._human_np_rng.choice([0.0, math.pi / 2, math.pi, -math.pi / 2]))
         else:
             mode_axis = None                                    # random direction each retarget
         fields = {
@@ -187,26 +212,32 @@ class HumanSpawnMixin:
         axis = state.get("mode_axis")
         spread = float(state.get("mode_dir_spread", math.pi))
         for _ in range(60):
-            d = np.random.uniform(span_min, span_max)
+            d = self._human_np_rng.uniform(span_min, span_max)
             if axis is None:
-                ang = np.random.uniform(-math.pi, math.pi)      # waiting / slow_turn
+                ang = self._human_np_rng.uniform(-math.pi, math.pi)      # waiting / slow_turn
             else:
-                ang = float(axis) + np.random.uniform(-spread, spread)  # crossing / along_path
+                ang = float(axis) + self._human_np_rng.uniform(-spread, spread)  # crossing / along_path
             gx = float(np.clip(cx + d * math.cos(ang), lower, upper))
             gy = float(np.clip(cy + d * math.sin(ang), lower, upper))
             if (math.hypot(gx - cx, gy - cy) >= min_reach
                     and not self.check_dead_zone(
                         gx, gy, use_cross_mask=False,
-                        lower_bound=lower, upper_bound=upper)):
+                        lower_bound=lower, upper_bound=upper)
+                    # Goal must be off internal walls AND inside the reachable
+                    # navigable region (lane/arm) — not across a wall.
+                    and not self._point_in_walls(gx, gy, self.human_target_wall_clearance)
+                    and self._point_in_human_regions(gx, gy)):
                 return gx, gy
         # Recovery: any free pose in the arena (wider search than the mode cone).
         for _ in range(40):
-            gx = float(np.random.uniform(lower, upper))
-            gy = float(np.random.uniform(lower, upper))
+            gx = float(self._human_np_rng.uniform(lower, upper))
+            gy = float(self._human_np_rng.uniform(lower, upper))
             if (math.hypot(gx - cx, gy - cy) >= min_reach
                     and not self.check_dead_zone(
                         gx, gy, use_cross_mask=False,
-                        lower_bound=lower, upper_bound=upper)):
+                        lower_bound=lower, upper_bound=upper)
+                    and not self._point_in_walls(gx, gy, self.human_target_wall_clearance)
+                    and self._point_in_human_regions(gx, gy)):
                 return gx, gy
         return float(cx), float(cy)   # arena fully blocked -> hold (very rare)
 
@@ -248,8 +279,14 @@ class HumanSpawnMixin:
                 ang = base_ang + off
                 x = float(np.clip(cx + step * math.cos(ang), lower, upper))
                 y = float(np.clip(cy + step * math.sin(ang), lower, upper))
-                if not self.check_dead_zone(x, y, use_cross_mask=False,
-                                            lower_bound=lower, upper_bound=upper):
+                # Route the local step around dead zones AND internal walls: reject
+                # a target inside a wall or a step whose straight segment crosses
+                # one (the offset fan then bends the path around the wall).
+                if (not self.check_dead_zone(x, y, use_cross_mask=False,
+                                             lower_bound=lower, upper_bound=upper)
+                        and not self._point_in_walls(x, y, self.human_target_wall_clearance)
+                        and not self._segment_hits_wall(
+                            cx, cy, x, y, self.human_segment_wall_clearance)):
                     return x, y
             return float(cx), float(cy)   # boxed in -> hold (caller resamples goal)
 
@@ -264,28 +301,29 @@ class HumanSpawnMixin:
             if mode_bounded:
                 dmin = float(state.get("mode_wp_dist_min", 0.0))
                 dmax = float(state["mode_wp_dist_max"])
-                d = np.random.uniform(min(dmin, dmax), dmax)
+                d = self._human_np_rng.uniform(min(dmin, dmax), dmax)
                 axis = state.get("mode_axis")
                 if axis is None:
-                    ang = np.random.uniform(-math.pi, math.pi)
+                    ang = self._human_np_rng.uniform(-math.pi, math.pi)
                 else:
                     spread = float(state.get("mode_dir_spread", math.pi))
-                    ang = float(axis) + np.random.uniform(-spread, spread)
+                    ang = float(axis) + self._human_np_rng.uniform(-spread, spread)
                 x = float(np.clip(cx + d * math.cos(ang), lower, upper))
                 y = float(np.clip(cy + d * math.sin(ang), lower, upper))
             elif bounded:
-                d = np.random.uniform(
+                d = self._human_np_rng.uniform(
                     min(self.human_waypoint_dist_min, self.human_waypoint_dist_max),
                     self.human_waypoint_dist_max,
                 )
-                ang = np.random.uniform(-math.pi, math.pi)
+                ang = self._human_np_rng.uniform(-math.pi, math.pi)
                 x = float(np.clip(cx + d * math.cos(ang), lower, upper))
                 y = float(np.clip(cy + d * math.sin(ang), lower, upper))
             else:
-                x = np.random.uniform(lower, upper)
-                y = np.random.uniform(lower, upper)
-            if not self.check_dead_zone(x, y, use_cross_mask=False,
-                                        lower_bound=lower, upper_bound=upper):
+                x = self._human_np_rng.uniform(lower, upper)
+                y = self._human_np_rng.uniform(lower, upper)
+            if (not self.check_dead_zone(x, y, use_cross_mask=False,
+                                         lower_bound=lower, upper_bound=upper)
+                    and not self._point_in_walls(x, y, self.human_target_wall_clearance)):
                 return x, y
         return (float(cx), float(cy)) if (mode_bounded or bounded) else (0.0, 0.0)
 

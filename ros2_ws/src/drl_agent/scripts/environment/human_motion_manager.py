@@ -236,6 +236,28 @@ class HumanMotionMixin:
         cap = self.human_social_avoid_max_heading_offset
         return float(np.clip(delta, -cap, cap))
 
+    def _resolve_human_wall_collision(self, x, y, nx, ny, r):
+        """Stop a kinematic pedestrian from walking THROUGH an internal wall.
+
+        Humans are teleported via set_pose (no physics), so nothing stops them
+        entering corridor / intersection / clutter internal walls. After the
+        straight-line integration produced the candidate (nx, ny), reject it if
+        the body (radius r) would overlap an internal wall, sliding along the wall
+        axis-aligned when one component is still free so the human follows the wall
+        instead of penetrating it. Returns (rx, ry, blocked) where ``blocked`` is
+        True only when fully boxed in (no progress) so the caller can retarget.
+        No-op on maps without internal walls (lobby / non-structured)."""
+        if not self._point_in_walls(nx, ny, r):
+            return nx, ny, False
+        # Already inside a wall (shouldn't happen post-spawn) → let it move out.
+        if self._point_in_walls(x, y, r):
+            return nx, ny, False
+        if not self._point_in_walls(nx, y, r):
+            return nx, y, False          # slide along x (wall blocks y motion)
+        if not self._point_in_walls(x, ny, r):
+            return x, ny, False          # slide along y (wall blocks x motion)
+        return x, y, True                # fully blocked → hold + retarget
+
     def _update_humans_kinematic(self, dt: float, pose_batch: list):
         """Kinematic pedestrian motion with acceleration limits, smooth stop/resume, and gait.
 
@@ -296,7 +318,7 @@ class HumanMotionMixin:
             stop_prob_tick = 1.0 - (1.0 - float(
                 state.get("mode_stop_prob", self.human_stop_prob_per_sec))) ** dt
             stopping = state.get("stopping", False)
-            if not stopping and np.random.rand() < stop_prob_tick:
+            if not stopping and self._human_np_rng.rand() < stop_prob_tick:
                 stopping = True
                 state["stopping"] = True
 
@@ -309,6 +331,9 @@ class HumanMotionMixin:
                 yaw   = (yaw + w * dt + math.pi) % (2.0 * math.pi) - math.pi
                 new_x = max(arena_lower, min(arena_upper, x + v * math.cos(yaw) * dt))
                 new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
+                # Don't decelerate THROUGH an internal wall (slide / hold).
+                new_x, new_y, _ = self._resolve_human_wall_collision(
+                    x, y, new_x, new_y, state["radius"])
 
                 state["x"]   = new_x
                 state["y"]   = new_y
@@ -364,7 +389,7 @@ class HumanMotionMixin:
                 and segment_elapsed >= self.human_max_segment_sec
             )
             do_prob_retarget = (
-                retarget_cooldown <= 0.0 and np.random.rand() < retarget_prob_tick
+                retarget_cooldown <= 0.0 and self._human_np_rng.rand() < retarget_prob_tick
             )
             if dist_to_target < 0.5 or near_wall or do_prob_retarget or segment_timeout:
                 # For fixed-axis modes (crossing / along_path), reverse the travel
@@ -391,7 +416,7 @@ class HumanMotionMixin:
                 state["retarget_cooldown"] = self.human_min_retarget_interval
                 state["segment_elapsed"] = 0.0
                 if self.human_heading_jitter_on_retarget_only:
-                    state["heading_jitter"] = np.random.uniform(
+                    state["heading_jitter"] = self._human_np_rng.uniform(
                         -self.human_heading_jitter, self.human_heading_jitter
                     )
 
@@ -400,7 +425,7 @@ class HumanMotionMixin:
             if self.human_heading_jitter_on_retarget_only:
                 desired_yaw_raw += float(state.get("heading_jitter", 0.0))
             else:
-                desired_yaw_raw += np.random.uniform(
+                desired_yaw_raw += self._human_np_rng.uniform(
                     -self.human_heading_jitter, self.human_heading_jitter
                 )
             # Falcon-lite weak avoidance: nudge the desired heading away from
@@ -447,6 +472,16 @@ class HumanMotionMixin:
             yaw   = (yaw + w * dt + math.pi) % (2.0 * math.pi) - math.pi
             new_x = max(arena_lower, min(arena_upper, x + v * math.cos(yaw) * dt))
             new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
+            # Keep kinematic humans from walking THROUGH an internal wall: slide
+            # along it, or hold + retarget if fully boxed in (so they route around
+            # instead of pressing into the wall).
+            new_x, new_y, wall_blocked = self._resolve_human_wall_collision(
+                x, y, new_x, new_y, state["radius"])
+            if wall_blocked:
+                # Force next-tick retarget (dist_to_target==0 < 0.5 triggers it),
+                # which re-routes via the wall-aware waypoint/goal sampler.
+                state["target_x"], state["target_y"] = new_x, new_y
+                state["retarget_cooldown"] = 0.0
 
             state["x"]   = new_x
             state["y"]   = new_y
