@@ -66,14 +66,27 @@ class GoalSamplerMixin:
         goal_bands = spec.get("goal_regions", {}).get(sr["name"]) if sr else None
         regions = goal_bands if goal_bands else spec["free_regions"]
 
-        # A: strict + lane-consistent (preferred).
+        # A: strict clearance + (optional) lane-consistency.
+        # The lane check (straight start->goal line stays off internal walls) is the
+        # right PREFERENCE for a single straight lane (corridor) or scattered walls
+        # (clutter), but it is WRONG for the intersection: only the OPPOSITE arm has
+        # a wall-free straight line — the two SIDE arms are reached by routing
+        # through the free centre, so their straight line clips a corner block.
+        # Enforcing it here meant phase A (800 area-weighted tries over the 3 equal
+        # candidate arms) accepted opposite-arm goals immediately and rejected every
+        # side-arm sample, so the goal was almost always the opposite arm and phase B
+        # (which drops the check) was never reached. We therefore SKIP the lane check
+        # on the intersection, so all three non-start arms — weighted equally by
+        # goal_regions — are sampled ~uniformly. corridor/clutter keep it unchanged.
+        skip_lane_check = (self.current_map_type == "intersection")
         for _ in range(800):
             xy = self._sample_xy_in_regions(regions, goal_radius)
             if xy is None:
                 break
             x, y = xy
-            if is_valid(x, y, require_clearance=True) and not self._segment_hits_wall(
-                    start_x, start_y, x, y, clr):
+            if is_valid(x, y, require_clearance=True) and (
+                    skip_lane_check
+                    or not self._segment_hits_wall(start_x, start_y, x, y, clr)):
                 return x, y
         # B: strict clearance, drop the lane check (e.g. intersection cross-arm
         # goals whose straight line clips a corner but are reachable via centre).
@@ -106,8 +119,18 @@ class GoalSamplerMixin:
                     for px, py, pr in lingering)
             else:
                 min_obs_clear = float("inf")
-            lane_bonus = 0.0 if self._segment_hits_wall(start_x, start_y, x, y, clr) else 2.0
-            score = min_obs_clear + 0.1 * start_dist + lane_bonus
+            if skip_lane_check:
+                # Intersection: BOTH the straight-line lane bonus and the
+                # start-distance term geometrically favour the opposite arm (the
+                # only one with a wall-free straight line, and the farthest), which
+                # would re-collapse the fallback onto opposite-arm goals in crowded
+                # / exhausted episodes. Score purely by obstacle clearance so the
+                # least-crowded of the three candidate arms wins, with no arm bias.
+                score = min_obs_clear
+            else:
+                lane_bonus = (0.0 if self._segment_hits_wall(start_x, start_y, x, y, clr)
+                              else 2.0)
+                score = min_obs_clear + 0.1 * start_dist + lane_bonus
             if score > best_score:
                 best_score, best = score, (x, y)
         if best is not None:
