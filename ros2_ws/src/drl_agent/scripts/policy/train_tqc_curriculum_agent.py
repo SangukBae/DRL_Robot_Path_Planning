@@ -120,6 +120,8 @@ class TrainTQCCurriculum(
 
         # Load curriculum advancement rules
         cur_cfg_path = self._find_config_file("train_tqc_curriculum_config.yaml")
+        # Remember resolved path so the run manifest can hash the curriculum config.
+        self._curriculum_cfg_path = cur_cfg_path or ""
         if cur_cfg_path:
             cur = load_yaml(cur_cfg_path).get("curriculum_settings", {})
         else:
@@ -309,7 +311,11 @@ class TrainTQCCurriculum(
                 _env_cfg = ""
         aux_log.write_run_manifest(
             self.log_dir, seed=self.seed, agent=self.rl_agent,
+            run_tag=self._csv_run_tag,
+            seed_source=getattr(self, "_seed_source", ""),
             train_config_file=getattr(self, "_train_cfg_path", ""),
+            curriculum_config_file=getattr(self, "_curriculum_cfg_path", ""),
+            hyperparameters_file=getattr(self, "_hparams_path", ""),
             environment_config_file=_env_cfg,
             environment_config_sha1=_envp.get("loaded_config_sha1", ""),
             env_aux={
@@ -319,6 +325,26 @@ class TrainTQCCurriculum(
                 "risk_distance_scale": _envp.get("aux_risk_distance_scale"),
             },
             aux_eval=self._aux_eval_cfg,   # formal aux-eval thresholds / ref speeds
+            determinism=getattr(self, "_determinism_info", None),
+            # Pedestrian RNG policy: prefer the env node's reported values; the
+            # base seed is the run seed the trainer pushed via /seed. resume_*
+            # documents the Option-B contract (deterministic per checkpoint).
+            human_rng={
+                "enabled": _envp.get("human_rng_enabled", True),
+                "policy": _envp.get(
+                    "human_rng_policy",
+                    "substream_isolated_from_global; "
+                    "per_episode_reseed=SeedSequence(base_seed,episode_count); "
+                    "resume=deterministic_per_checkpoint; exact_resume_disabled"),
+                "base_seed": _envp.get("human_rng_base_seed", int(self.seed)),
+                "base_seed_source": "env /seed service = run seed (self.seed)",
+                "episode_derivation":
+                    "RandomState+Random seeded from SeedSequence([base_seed, episode_count]) each reset",
+                "resume_guarantee":
+                    "deterministic_per_checkpoint (env re-seeded from "
+                    "derive_resume_seed(base_seed, resume_global_t)); "
+                    "NOT bit-exact continuation",
+            },
             file_name=getattr(self, "file_name", ""),
             repo_dir=os.path.dirname(os.path.abspath(__file__)),
         )
@@ -386,13 +412,18 @@ class TrainTQCCurriculum(
         get/set-state service — intentionally out of scope for this change."""
         resume_env_seed = seed_utils.derive_resume_seed(
             self.seed, self._resume_global_t)
+        # set_env_seed -> env.seed_callback re-bases BOTH the global env RNGs AND
+        # the dedicated HUMAN sub-stream on resume_env_seed (the human stream is
+        # then reseeded per episode as (resume_env_seed, episode_count)). So the
+        # human RNG follows the SAME Option-B contract: deterministic per
+        # checkpoint, not a bit-exact continuation.
         self.set_env_seed(resume_env_seed)
         self.get_logger().info(
-            f"[Curriculum] Resume: env RNG re-seeded deterministically to "
-            f"{resume_env_seed} (= base_seed {self.seed} + global_t "
-            f"{self._resume_global_t}). Env sampling is reproducible PER CHECKPOINT "
-            f"but does NOT bit-continue the pre-interrupt stream; trainer-side "
-            f"numpy/random/torch RNGs are restored exactly."
+            f"[Curriculum] Resume: env RNG (global + human sub-stream) re-seeded "
+            f"deterministically to {resume_env_seed} (= base_seed {self.seed} + "
+            f"global_t {self._resume_global_t}). Env sampling is reproducible PER "
+            f"CHECKPOINT but does NOT bit-continue the pre-interrupt stream; "
+            f"trainer-side numpy/random/torch RNGs are restored exactly."
         )
 
     # ------------------------------------------------------------------ #

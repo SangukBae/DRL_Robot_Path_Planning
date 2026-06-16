@@ -185,7 +185,9 @@ class GymParameterClient:
         out = {}
         try:
             names = ["loaded_config_path", "loaded_config_sha1", "aux_enabled",
-                     "aux_num_sectors", "aux_horizons_sec", "aux_risk_distance_scale"]
+                     "aux_num_sectors", "aux_horizons_sec", "aux_risk_distance_scale",
+                     # Human-RNG reproducibility policy (recorded in the manifest).
+                     "human_rng_enabled", "human_rng_policy", "human_rng_base_seed"]
             req = GetParameters.Request()
             req.names = names
             res = self._node._call_service(

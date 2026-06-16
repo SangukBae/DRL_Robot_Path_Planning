@@ -124,6 +124,28 @@ class TrainTQCBase(EnvInterface):
             f"[Seed] Trainer RNGs seeded ({' + '.join(seeded)}) with {self.seed}; "
             f"env seed dispatched via /seed service."
         )
+        # Record where the seed came from (config / ROS param / env var) so the
+        # run manifest pins the EXACT seed provenance for multi-seed sweeps.
+        self._seed_source = self._describe_seed_source(train_settings.get("seed"))
+
+        # Reproducibility: make torch deterministic so the SAME seed + SAME code
+        # produce the SAME training trajectory. Default ON; opt out with
+        # train_settings.deterministic_torch=false (e.g. to recover the small
+        # throughput that cuDNN auto-tuning buys). warn_only avoids a hard crash
+        # if a rare op lacks a deterministic kernel.
+        self._determinism_info = {"requested": False}
+        if bool(train_settings.get("deterministic_torch", True)):
+            self._determinism_info = seed_utils.enable_torch_determinism(
+                warn_only=bool(train_settings.get("deterministic_warn_only", True))
+            )
+            self.get_logger().info(
+                f"[Seed] Torch determinism applied: {self._determinism_info}"
+            )
+        else:
+            self.get_logger().warn(
+                "[Seed] deterministic_torch=false — cuDNN auto-tuning left ON; "
+                "same-seed runs may not reproduce bit-for-bit."
+            )
 
         # ----------------------------
         # Environment dimensions
@@ -209,6 +231,25 @@ class TrainTQCBase(EnvInterface):
     #  Config discovery                                                     #
     # ------------------------------------------------------------------ #
 
+    def _describe_seed_source(self, config_seed) -> str:
+        """Describe where the effective seed came from (manifest provenance).
+
+        Mirrors the priority in ``_resolve_seed_override`` (ROS param > env var >
+        config) without re-resolving — purely for logging the source label.
+        """
+        try:
+            param = -1
+            if self.has_parameter("seed"):
+                param = self.get_parameter("seed").get_parameter_value().integer_value
+            if param is not None and param >= 0:
+                return f"ros_param seed:={param}"
+            env_seed = os.environ.get("DRL_AGENT_SEED", "").strip()
+            if env_seed.lstrip("-").isdigit() and int(env_seed) >= 0:
+                return f"env DRL_AGENT_SEED={env_seed}"
+            return f"config({config_seed})"
+        except Exception:
+            return "unknown"
+
     def _find_config_file(self, filename: str, user_param_path: str | None = None) -> str | None:
         """
         Robust config discovery.
@@ -236,45 +277,45 @@ class TrainTQCBase(EnvInterface):
         if hit:
             return hit
 
-        # 1) ament share directory
+        share_dir = ""
         try:
             from ament_index_python.packages import get_package_share_directory
             share_dir = get_package_share_directory("drl_agent")
-            cand = os.path.join(share_dir, "config", filename)
-            if os.path.isfile(cand):
-                return cand
-            tried.append(cand)
         except Exception:
             pass
 
-        # 2) Environment variable: DRL_AGENT_TRAIN_CONFIG (file or dir)
+        # 1) Environment variable: DRL_AGENT_TRAIN_CONFIG (file or dir)
         hit = _try_location_hint(os.environ.get("DRL_AGENT_TRAIN_CONFIG", "").strip())
         if hit:
             return hit
 
-        # 3) DRL_AGENT_SRC_PATH candidates
-        src = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
-        if src:
-            src = os.path.expanduser(src)
-            candidates = [
-                os.path.join(src, "drl_agent", "config"),
-                os.path.join(src, "src", "drl_agent", "config"),
-                os.path.join(src, "src", "drl_agent", "src", "drl_agent", "config"),
-                os.path.join(src, "config"),
-            ]
-            for d in candidates:
-                cand = os.path.join(d, filename)
-                if os.path.isfile(cand):
-                    return cand
-                tried.append(cand)
+        # 2) Editable source tree (preferred over install/share so config edits
+        # under ros2_ws/src/drl_agent take effect without requiring a rebuild).
+        source_dirs = config_paths.source_package_candidates(
+            "drl_agent",
+            src_hint=os.environ.get("DRL_AGENT_SRC_PATH", "").strip(),
+            installed_share_dir=share_dir,
+            script_path=__file__,
+        )
+        for cand in config_paths.candidate_config_paths(filename, source_dirs):
+            if os.path.isfile(cand):
+                return cand
+            tried.append(cand)
 
-        # 4) Relative to this script (two common layouts)
+        # 3) Relative to this script (two common layouts)
         here = os.path.dirname(os.path.abspath(__file__))
         candidates = [
             os.path.normpath(os.path.join(here, "..", "config", filename)),
             os.path.normpath(os.path.join(here, "..", "..", "config", filename)),
         ]
         for cand in candidates:
+            if os.path.isfile(cand):
+                return cand
+            tried.append(cand)
+
+        # 4) Installed share directory (fallback only).
+        if share_dir:
+            cand = os.path.join(share_dir, "config", filename)
             if os.path.isfile(cand):
                 return cand
             tried.append(cand)

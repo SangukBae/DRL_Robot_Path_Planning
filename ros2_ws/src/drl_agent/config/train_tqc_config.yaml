@@ -1,6 +1,12 @@
 train_settings:
   # 재현성
   seed: 0
+  # 같은 seed + 같은 코드면 같은 training trajectory가 나오도록 torch를 결정적으로
+  # 실행 (cuDNN auto-tuning OFF + deterministic algorithms + CUBLAS workspace).
+  # 끄면(false) cuDNN 튜닝으로 약간 빨라지지만 same-seed 재현이 깨질 수 있음.
+  deterministic_torch: true
+  # deterministic 커널이 없는 드문 op에서 하드 크래시 대신 경고만 내고 진행.
+  deterministic_warn_only: true
 
   # 환경/롤아웃
   max_episode_steps: 600          # 10 Hz(time_delta=0.1)에서 기존 60초 episode 길이 유지

@@ -70,3 +70,40 @@ def test_find_config_file_file_hint_then_dir_hint(tmp_path):
 def test_find_config_file_returns_empty_when_missing(tmp_path):
     assert cp.find_config_file("nope.yaml", [str(tmp_path)]) == ""
     assert cp.find_config_file("nope.yaml", ["", None]) == ""
+
+
+def test_source_package_candidates_from_repo_root_hint(tmp_path):
+    pkg = tmp_path / "ros2_ws" / "src" / "drl_agent"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text("<package/>")
+    out = cp.source_package_candidates(
+        "drl_agent",
+        src_hint=str(tmp_path),
+    )
+    assert out == [str(pkg.resolve())]
+
+
+def test_source_package_candidates_from_install_share(tmp_path):
+    pkg = tmp_path / "src" / "drl_agent"
+    pkg.mkdir(parents=True)
+    (pkg / "package.xml").write_text("<package/>")
+    share = tmp_path / "install" / "drl_agent" / "share" / "drl_agent"
+    share.mkdir(parents=True)
+    out = cp.source_package_candidates(
+        "drl_agent",
+        installed_share_dir=str(share),
+    )
+    assert out == [str(pkg.resolve())]
+
+
+def test_source_package_candidates_from_source_script_path(tmp_path):
+    pkg = tmp_path / "src" / "drl_agent"
+    script = pkg / "scripts" / "policy" / "train_tqc_base.py"
+    script.parent.mkdir(parents=True)
+    script.write_text("# test\n")
+    (pkg / "package.xml").write_text("<package/>")
+    out = cp.source_package_candidates(
+        "drl_agent",
+        script_path=str(script),
+    )
+    assert out == [str(pkg.resolve())]

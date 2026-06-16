@@ -58,3 +58,22 @@ def test_derive_resume_seed_is_deterministic(base, offset, expected):
 def test_derive_resume_seed_stays_in_int32():
     big = seed_utils.derive_resume_seed(2 ** 31 - 1, 10 ** 9)
     assert 0 <= big < 2 ** 31
+
+
+def test_enable_torch_determinism_is_safe_without_torch():
+    # Must never raise, always set the cuBLAS workspace env, and report whether
+    # torch was actually available (torch-free env → torch False, no crash).
+    info = seed_utils.enable_torch_determinism(warn_only=True)
+    assert info["requested"] is True
+    assert info["cublas_workspace_config"] == ":4096:8"
+    import os
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+    assert "torch" in info
+    try:
+        import torch  # noqa: F401
+        # When torch is present the deterministic flags must have been applied.
+        assert info["torch"] is True
+        assert info.get("cudnn_deterministic") is True
+        assert info.get("cudnn_benchmark") is False
+    except Exception:
+        assert info["torch"] is False

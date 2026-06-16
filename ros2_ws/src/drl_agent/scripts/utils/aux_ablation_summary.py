@@ -96,16 +96,52 @@ def _pick_row(rows, eval_step):
     return min(cand, key=lambda r: abs(_to_float(r["eval_global_t"]) - float(eval_step)))
 
 
+def _run_tag_of(csv_path):
+    """Extract the run tag from an ``eval_summary_<run_tag>.csv`` filename ('' if
+    the name does not match the expected pattern)."""
+    base = os.path.basename(csv_path)
+    if base.startswith("eval_summary_") and base.endswith(".csv"):
+        return base[len("eval_summary_"):-len(".csv")]
+    return ""
+
+
 def _load_manifest(csv_path):
-    man_path = os.path.join(os.path.dirname(csv_path), "run_manifest.json")
-    if not os.path.isfile(man_path):
-        return None
-    try:
-        with open(man_path) as f:
-            return json.load(f)
-    except Exception as exc:
-        print(f"[AUX_ABLATION][warn] cannot read {man_path}: {exc}")
-        return None
+    """Load the manifest that belongs to THIS eval-summary CSV.
+
+    A single ``logs/`` dir can hold several runs (eval_summary_<tag>.csv +
+    run_manifest_<tag>.json). The shared ``run_manifest.json`` is only the LATEST
+    run, so pairing every CSV with it mislabels older runs. We therefore prefer
+    the per-run ``run_manifest_<tag>.json`` matched on the CSV's run tag, and fall
+    back to the shared ``run_manifest.json`` only for legacy runs that predate
+    per-run manifests.
+    """
+    log_dir = os.path.dirname(csv_path)
+    run_tag = _run_tag_of(csv_path)
+    candidates = []
+    if run_tag:
+        candidates.append(os.path.join(log_dir, f"run_manifest_{run_tag}.json"))
+    candidates.append(os.path.join(log_dir, "run_manifest.json"))
+    for man_path in candidates:
+        if not os.path.isfile(man_path):
+            continue
+        try:
+            with open(man_path) as f:
+                man = json.load(f)
+        except Exception as exc:
+            print(f"[AUX_ABLATION][warn] cannot read {man_path}: {exc}")
+            continue
+        # When falling back to the shared manifest, only accept it if its run_tag
+        # is absent (legacy) or matches — otherwise it belongs to a DIFFERENT run
+        # and pairing it here would silently mislabel this CSV.
+        man_tag = str(man.get("run_tag", "") or "")
+        if os.path.basename(man_path) == "run_manifest.json" and run_tag \
+                and man_tag and man_tag != run_tag:
+            print(f"[AUX_ABLATION][warn] no per-run manifest for run '{run_tag}'; "
+                  f"shared run_manifest.json belongs to '{man_tag}' — skipping to "
+                  f"avoid mislabeling {os.path.basename(csv_path)}")
+            return None
+        return man
+    return None
 
 
 def _fmt(v):
