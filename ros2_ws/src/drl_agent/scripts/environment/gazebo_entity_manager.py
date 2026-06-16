@@ -31,6 +31,26 @@ from map_catalog import (
 )
 
 
+# Pedestrians spawn as 8 separately-named part models that share ONE collision
+# footprint, recorded in spawned_obstacle_records under the p_torso name only (and
+# kept updated to the live body centre by the human-motion timer). The suffixes
+# let _delete_spawned_obstacles map any surviving part back to its body footprint
+# so a partial delete failure does not silently drop the human from the
+# leftover-avoidance set used by non-pool start/goal sampling.
+_HUMAN_PART_SUFFIXES = (
+    "_v_torso", "_v_ll", "_v_rl", "_v_la", "_v_ra", "_p_torso", "_p_ll", "_p_rl",
+)
+
+
+def _human_group_prefix(name: str):
+    """Return the shared prefix of a human part name (so '<pref>_p_torso' is its
+    footprint record key), or None for a non-human (static) entity name."""
+    for suf in _HUMAN_PART_SUFFIXES:
+        if name.endswith(suf):
+            return name[: -len(suf)]
+    return None
+
+
 class GazeboEntityMixin:
     def _await_future(self, future, timeout: float = 3.0):
         """Poll a service future until done or timed out.
@@ -200,10 +220,19 @@ class GazeboEntityMixin:
         )
 
     def _delete_spawned_obstacles(self):
-        """Delete all obstacles from the previous episode and wait for each confirmation."""
+        """Delete all obstacles from the previous episode and wait for each confirmation.
+
+        Record reconciliation is deferred until after every delete is attempted so
+        a human's footprint record (keyed by its p_torso name, but representing the
+        WHOLE body) is dropped only when ALL of that human's parts are confirmed
+        gone. Popping per-name inline would drop the body footprint the instant the
+        p_torso part deleted even if a proxy leg/arm delete failed — leaving a real,
+        untracked leftover that non-pool start/goal sampling would not avoid.
+        """
         if not self.spawned_obstacle_names:
             return
         remaining_names = []
+        deleted_names = []
         for name in list(self.spawned_obstacle_names):
             req = DeleteEntity.Request()
             req.entity.name = name
@@ -218,9 +247,30 @@ class GazeboEntityMixin:
                     self.get_logger().warn(f"Delete {name}: Gazebo returned success=false")
                     remaining_names.append(name)
                 else:
-                    self.spawned_obstacle_records.pop(name, None)
+                    deleted_names.append(name)
             except Exception as e:
                 self.get_logger().warn(f"DeleteEntity for {name}: {e}")
                 remaining_names.append(name)
         self.spawned_obstacle_names = remaining_names
+        self._reconcile_obstacle_records(deleted_names, remaining_names)
+
+    def _reconcile_obstacle_records(self, deleted_names, remaining_names):
+        """Drop spawned_obstacle_records entries for CONFIRMED-gone entities only.
+
+        Static record key == entity name. A human's footprint key is
+        '<pref>_p_torso' but represents the whole body, so it is kept while ANY of
+        that human's 8 parts is still in ``remaining_names`` — otherwise a delete
+        that removed the torso but left a proxy leg/arm would silently drop a real
+        leftover from the non-pool start/goal leftover-avoidance set.
+        """
+        surviving_human_prefixes = {
+            p for p in (_human_group_prefix(n) for n in remaining_names) if p
+        }
+        for name in deleted_names:
+            pref = _human_group_prefix(name)
+            if pref is None:
+                self.spawned_obstacle_records.pop(name, None)        # static
+            elif pref not in surviving_human_prefixes:
+                self.spawned_obstacle_records.pop(pref + "_p_torso", None)
+            # else: a part of this human is still present -> keep the footprint.
 

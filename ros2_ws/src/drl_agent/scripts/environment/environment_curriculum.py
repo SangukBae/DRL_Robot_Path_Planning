@@ -25,12 +25,46 @@ import copy
 
 # Make sure the environment directory is on the path so we can import Environment.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils"))
 
 import rclpy
 import rclpy.executors
 from rcl_interfaces.msg import SetParametersResult
 
 from environment import Environment   # base class — not modified
+from map_catalog import MAP_TYPES, clamp_active_by_map
+import config_paths
+
+
+def _preferred_curriculum_config_path() -> str:
+    """Prefer the editable source-tree curriculum config over install/share.
+
+    This avoids the common failure mode where a user updates
+    ``ros2_ws/src/drl_agent/config/environment_curriculum.yaml`` but the launched
+    env still reads an older installed copy from ``install/share``.
+    """
+    share_dir = ""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        share_dir = get_package_share_directory("drl_agent")
+    except Exception:
+        pass
+
+    src_candidates = config_paths.source_package_candidates(
+        "drl_agent",
+        src_hint=os.environ.get("DRL_AGENT_SRC_PATH", "").strip(),
+        installed_share_dir=share_dir,
+        script_path=__file__,
+    )
+    hit = config_paths.find_config_file("environment_curriculum.yaml", src_candidates)
+    if hit:
+        return hit
+
+    if share_dir:
+        cand = os.path.join(share_dir, "config", "environment_curriculum.yaml")
+        if os.path.isfile(cand):
+            return cand
+    return ""
 
 
 def _with_default_curriculum_config(args=None):
@@ -45,14 +79,9 @@ def _with_default_curriculum_config(args=None):
     if "config_file:=" in joined:
         return arg_list
 
-    try:
-        from ament_index_python.packages import get_package_share_directory
-        share_dir = get_package_share_directory("drl_agent")
-        default_cfg = os.path.join(share_dir, "config", "environment_curriculum.yaml")
-        if os.path.isfile(default_cfg):
-            arg_list.extend(["--ros-args", "-p", f"config_file:={default_cfg}"])
-    except Exception:
-        pass
+    default_cfg = _preferred_curriculum_config_path()
+    if default_cfg:
+        arg_list.extend(["--ros-args", "-p", f"config_file:={default_cfg}"])
     return arg_list
 
 
@@ -109,16 +138,9 @@ class EnvironmentCurriculum(Environment):
         # checks the explicit ROS parameter first, so a user-provided
         # `-p config_file:=...` still overrides this fallback cleanly.
         if "DRL_AGENT_CONFIG" not in os.environ:
-            try:
-                from ament_index_python.packages import get_package_share_directory
-                share_dir = get_package_share_directory("drl_agent")
-                default_cfg = os.path.join(
-                    share_dir, "config", "environment_curriculum.yaml"
-                )
-                if os.path.isfile(default_cfg):
-                    os.environ["DRL_AGENT_CONFIG"] = default_cfg
-            except Exception:
-                pass
+            default_cfg = _preferred_curriculum_config_path()
+            if default_cfg:
+                os.environ["DRL_AGENT_CONFIG"] = default_cfg
 
         super().__init__()                      # full base init (config, pool, timers …)
         self._load_curriculum_config()
@@ -258,6 +280,18 @@ class EnvironmentCurriculum(Environment):
             "proprio_noise":           copy.deepcopy(self.proprio_noise),
         })
 
+    def _parse_active_by_map(self, raw, cap: int, label: str) -> dict:
+        """Validate + clamp a stage's active_*_by_map dict via the ROS-free
+        map_catalog.clamp_active_by_map helper (unknown map keys / non-int values
+        dropped, counts clamped to [0, cap]); any issues are surfaced as warnings.
+        An empty / missing / malformed input → {} so the base resolver falls back
+        to the stage single value. Never raises (a bad stage entry can't crash a
+        reset)."""
+        clean, warns = clamp_active_by_map(raw, cap, allowed=MAP_TYPES)
+        for w in warns:
+            self.get_logger().warn(f"[Curriculum] {label}: {w}")
+        return clean
+
     def _apply_curriculum_stage(self, idx: int):
         """Apply stage idx as (base human knobs) + (this stage's overrides).
 
@@ -305,6 +339,23 @@ class EnvironmentCurriculum(Environment):
             int(stage.get("active_humans",  self.num_of_humans)),
             self.obstacle_pool_human_size,
         )
+
+        # ── Per-MAP active counts (same stage, different map geometry) ──────────
+        # A stage may set active_static_by_map / active_humans_by_map so e.g. the
+        # narrow corridor gets fewer obstacles than the intersection/clutter/lobby
+        # WITHIN the same stage. Resolution happens per episode in the base
+        # _apply_episode_active_counts() (after map_type is chosen): it prefers the
+        # by-map value, else the stage single value just computed above. We store
+        # both here; the single values double as the fallback for any map_type a
+        # by-map dict omits, and as the count for the non-structured path.
+        self._stage_active_static = self.num_of_static_obstacles
+        self._stage_active_humans = self.num_of_humans
+        self._stage_active_static_by_map = self._parse_active_by_map(
+            stage.get("active_static_by_map"), self.obstacle_pool_static_size,
+            "active_static_by_map")
+        self._stage_active_humans_by_map = self._parse_active_by_map(
+            stage.get("active_humans_by_map"), self.obstacle_pool_human_size,
+            "active_humans_by_map")
 
         # Human sensor noise / dropout (domain randomisation intensity)
         if "human_scan_noise_std" in stage:
@@ -404,7 +455,9 @@ class EnvironmentCurriculum(Environment):
                 f"loc(on={self.loc_noise['enabled']} "
                 f"sig_xy={self.loc_noise['sigma_xy_m']:.2f} "
                 f"delay={self.loc_noise['delay_steps']} "
-                f"gt_rew={self.loc_noise['use_gt_for_reward']})"
+                f"gt_rew={self.loc_noise['use_gt_for_reward']}) | "
+                f"by_map(static={self._stage_active_static_by_map or '-'} "
+                f"humans={self._stage_active_humans_by_map or '-'})"
             )
             self._last_stage_apply_logged = idx
 

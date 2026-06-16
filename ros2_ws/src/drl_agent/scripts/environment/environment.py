@@ -55,6 +55,7 @@ from map_catalog import (
     MAP_TYPE_ALLOWED_STATIC_KEYS,
     MAP_TYPES,
     static_size_group,
+    resolve_active_count,
 )
 
 # Extracted responsibility groups (mixins). Each lives in its own module and
@@ -288,6 +289,17 @@ class Environment(
         # Obstacle spawn margin parameters
         self.num_of_humans = int(self.environment_config.get("num_of_humans", 0))
 
+        # Per-episode active-count resolution (map-type-aware curriculum support).
+        # The curriculum subclass overwrites _stage_active_* / _stage_active_*_by_map
+        # in _apply_curriculum_stage; the base (non-curriculum) env keeps the single
+        # config values with EMPTY by-map maps, so _apply_episode_active_counts() is
+        # a no-op there (it just re-asserts the base counts). See that method.
+        self._stage_active_static       = self.num_of_static_obstacles
+        self._stage_active_humans       = self.num_of_humans
+        self._stage_active_static_by_map = {}
+        self._stage_active_humans_by_map = {}
+        self._last_active_counts_logged = None
+
         # AUX_PRED: future-risk label config.  When enabled, step()/reset()
         # append a fixed-size privileged label to the returned state vector; the
         # TQC trainer slices it off (the 87-D RL state itself is unchanged).
@@ -467,6 +479,19 @@ class Environment(
             except Exception as e:
                 self.get_logger().warn(f"Failed to load obstacle catalog: {e}")
 
+        # Internal-wall clearances for human GOAL / WAYPOINT sampling (structured
+        # maps). Single source of truth so the sampler and the per-step runtime
+        # resolver (_resolve_human_wall_collision, which uses each human's own
+        # radius) stay consistent. The point clearance uses the MAX human radius,
+        # so the sampler never accepts a wall-adjacent target that the runtime
+        # would immediately reject — for ANY human, even if radii change. The
+        # segment clearance is a small routing tolerance: it only rejects a local
+        # step whose straight line clearly crosses a wall (the offset fan then
+        # bends the path around it).
+        self.human_target_wall_clearance = max(
+            (float(e.get("radius", 0.30)) for e in self.human_catalog), default=0.35)
+        self.human_segment_wall_clearance = 0.10
+
         # Obstacles this node believes may still be present in the world.
         # If deletion times out, keep the last known pose/radius so the next
         # episode avoids spawning the robot or new obstacles on top of it.
@@ -562,6 +587,50 @@ class Environment(
         self._catalog_by_key = {
             e["key"]: e for e in self.static_obstacle_catalog if "key" in e
         }
+        # Reproducibility: the static/human pool is built ONCE on the FIRST reset
+        # (_initialize_obstacle_pool), which runs AFTER the trainer's /seed
+        # service has already re-seeded the env to the run seed. Its three
+        # random.shuffle() draws therefore (a) varied the pool COMPOSITION run to
+        # run only as a side effect of the run seed, and (b) ADVANCED the global
+        # `random` stream by a count that depends on pool size / catalog — so any
+        # change to the obstacle set (e.g. the new corridor geometry filter)
+        # shifted the very next draws: the first episode's start/goal sampling.
+        # We fix this by giving the pool build its OWN local RNG seeded with
+        # pool_build_seed (see _initialize_obstacle_pool): pool composition is now
+        # reproducible AND the global per-episode stream is left untouched by pool
+        # construction. Store the seed here; the actual seeding is local to the
+        # build so it cannot be clobbered by the /seed service.
+        self.declare_parameter("pool_build_seed", 0)
+        self.pool_build_seed = int(
+            self.get_parameter("pool_build_seed").get_parameter_value().integer_value
+        )
+        # Dedicated pedestrian RNG sub-stream (spawn + motion). Kept OFF the
+        # global random/np.random streams so wall-clock-paced human-motion ticks
+        # never shift the next episode's start/goal/map/static sampling. Base seed
+        # is set from the run seed in seed_callback; re-seeded per episode in
+        # reset_callback as (base_seed, episode_count). Initialised here so the
+        # attributes exist before the first /seed and the first reset.
+        self._human_rng_base_seed = self.pool_build_seed
+        self._seed_human_rngs(self._human_rng_base_seed, 0)
+        # Human-RNG reproducibility policy, exposed as read-only params so the
+        # trainer can stamp it into run_manifest.json (single source of truth).
+        # RESUME CONTRACT = Option B: the human sub-stream is reseeded each reset
+        # from (base_seed, episode_count); base_seed is set from the run /seed.
+        # On resume the env process restarts (episode_count from 0) and is re-
+        # seeded deterministically from derive_resume_seed(base_seed, global_t),
+        # so the human stream is REPRODUCIBLE PER CHECKPOINT but NOT a bit-exact
+        # continuation of the pre-interrupt stream (consistent with the env-RNG
+        # contract in _reseed_env_for_resume). Exact continuation is intentionally
+        # out of scope: a separate env process can't snapshot its RandomState
+        # across the boundary, and within-episode motion is wall-clock paced.
+        self._HUMAN_RNG_POLICY = (
+            "substream_isolated_from_global; "
+            "per_episode_reseed=SeedSequence(base_seed,episode_count); "
+            "resume=deterministic_per_checkpoint; exact_resume_disabled"
+        )
+        self.declare_parameter("human_rng_enabled", True)
+        self.declare_parameter("human_rng_policy", self._HUMAN_RNG_POLICY)
+        self.declare_parameter("human_rng_base_seed", int(self._human_rng_base_seed))
         if self.map_layout_enabled:
             self._map_layouts = self._build_map_layouts()
             self._static_pool_coverage = self._build_static_pool_coverage()
@@ -1244,17 +1313,46 @@ class Environment(
         self.get_logger().info("gym_node shutting down...")
         self.destroy_node()
 
+    def _seed_human_rngs(self, base_seed: int, episode_index: int):
+        """(Re)build the dedicated pedestrian RNG sub-stream.
+
+        Creates fresh ``self._human_np_rng`` (np.random.RandomState) and
+        ``self._human_py_rng`` (random.Random) seeded from (base_seed,
+        episode_index). All human spawn + motion sampling draws from these so the
+        GLOBAL random/np.random streams are never advanced by humans — that
+        decouples the robot's start/goal/map/static sampling from the wall-clock-
+        paced human-motion timer. Re-seeding each episode (index = episode count)
+        makes the per-episode human spawn config reproducible regardless of how
+        many motion ticks the previous episode happened to run."""
+        self._human_np_rng, self._human_py_rng = seed_utils.make_substream_rngs(
+            base_seed, episode_index)
+
     def seed_callback(self, request, response):
         """Sets environment seed for reproducibility of the training process.
 
         Seeds BOTH global RNGs the env draws from: numpy (obstacle/start/goal
         sampling) and Python's `random` (human spawn / waypoint / curriculum
         sampling). Seeding only numpy left those `random.*` draws unseeded, so
-        same-seed runs were not byte-for-byte reproducible."""
+        same-seed runs were not byte-for-byte reproducible.
+
+        Also (re)bases the dedicated human RNG sub-stream on this seed so the
+        pedestrian stream is reproducible per run without ever touching the
+        global streams above (see _seed_human_rngs)."""
         seed = int(request.seed)
         seeded = seed_utils.seed_basic_rngs(seed)
+        self._human_rng_base_seed = seed
+        self._seed_human_rngs(seed, getattr(self, "_episode_count", 0))
+        # Mirror the actual human base seed into the read-only param so the
+        # manifest records the TRUE per-run value (best-effort; never fatal).
+        try:
+            self.set_parameters(
+                [Parameter("human_rng_base_seed", Parameter.Type.INTEGER, int(seed))]
+            )
+        except Exception:
+            pass
         self.get_logger().info(
-            f"[Seed] Environment RNGs seeded ({' + '.join(seeded)}) with {seed}"
+            f"[Seed] Environment RNGs seeded ({' + '.join(seeded)} + human-substream) "
+            f"with {seed}"
         )
         self._rotate_debug_csv()
         response.success = True
@@ -1834,6 +1932,37 @@ class Environment(
         response.target = bool(target)
         return response
 
+    def _apply_episode_active_counts(self):
+        """Pick THIS episode's active static/human counts for the current map_type.
+
+        Priority (per axis):
+          1. stage's ``active_*_by_map[map_type]``  (set by the curriculum)
+          2. stage's single ``active_*``            (or the base config value)
+        Values are coerced to int, floored at 0, and capped at the pre-allocated
+        pool size, so a per-map override can never exceed obstacle_pool_*_size or
+        the structured-map geometry guarantees (the placer still parks anything it
+        cannot fit). Called from reset_callback AFTER _select_episode_layout() has
+        set self.current_map_type and BEFORE obstacle activation/spawn reads these
+        counts. No-op for the plain (non-curriculum) env: the by-map maps are empty
+        and _stage_active_* equal the base config, so this just re-asserts them.
+        """
+        mt = self.current_map_type or ""
+        self.num_of_static_obstacles = resolve_active_count(
+            self._stage_active_static_by_map, self._stage_active_static,
+            self.obstacle_pool_static_size, mt)
+        self.num_of_humans = resolve_active_count(
+            self._stage_active_humans_by_map, self._stage_active_humans,
+            self.obstacle_pool_human_size, mt)
+        # Log only when the (map, counts) tuple changes, so transitions are visible
+        # without spamming every episode.
+        key = (mt, self.num_of_static_obstacles, self.num_of_humans)
+        if key != self._last_active_counts_logged:
+            self._last_active_counts_logged = key
+            self.get_logger().info(
+                f"[Episode active] map_type='{mt or 'none'}' -> "
+                f"static={self.num_of_static_obstacles} humans={self.num_of_humans}"
+            )
+
     def reset_callback(self, _, response):
         """Resets the state of the environment and returns an initial observation, state"""
         # Stop the obstacle-motion timer and wait for any in-flight iteration to finish.
@@ -1846,6 +1975,16 @@ class Environment(
             self.human_states = {}
 
         self._episode_count += 1
+        # Re-seed the dedicated human RNG sub-stream for THIS episode. Done while
+        # the motion timer is disabled (above) and human_states is empty, so no
+        # concurrent reader. This makes the episode's human spawn config a pure
+        # function of (run seed, episode_count) — independent of the previous
+        # episode's wall-clock-paced motion tick count — and keeps every human
+        # draw off the global streams used for start/goal/map/static sampling.
+        self._seed_human_rngs(
+            getattr(self, "_human_rng_base_seed", self.pool_build_seed),
+            self._episode_count,
+        )
         self.current_episode_step = 0
         self.contact_collision_latched = False
         # Clear per-episode reward memory so the first step of the new episode
@@ -1877,6 +2016,12 @@ class Environment(
         # its internal walls BEFORE start/goal/obstacle/human sampling so every
         # sampler is layout-aware. No-op when the curriculum is disabled.
         self._select_episode_layout()
+        # Resolve THIS episode's active static/human counts now that map_type is
+        # known: a stage may set per-map counts (active_*_by_map) so e.g. the
+        # narrow corridor gets fewer obstacles than the intersection in the SAME
+        # stage. Must run AFTER _select_episode_layout() and BEFORE obstacle
+        # activation/spawn below (which read num_of_static_obstacles / num_of_humans).
+        self._apply_episode_active_counts()
 
         """*****************************************************
 		** Determine start positions for the agent
@@ -1978,7 +2123,16 @@ class Environment(
         if self.train_mode:
             min_start_goal_dist = 3.0
             goal_radius = max(self.goal_threshold, 0.25)
-            lingering = list(self.spawned_obstacle_records.values())
+            # `lingering` follows the SAME mode-aware contract as start sampling
+            # (see start_sampler._sample_train_start_pose): in pool mode the
+            # records are the PREVIOUS episode's about-to-be-teleported placements
+            # (STALE → ignore, since obstacles are re-placed keeping
+            # obstacle_goal_margin clear of this goal), while in non-pool mode they
+            # are genuinely-present failed-delete leftovers at their body footprint
+            # (humans kept while any part lingers — see _delete_spawned_obstacles)
+            # which are REAL → avoid.
+            lingering = ([] if getattr(self, "use_obstacle_pool", False)
+                         else list(self.spawned_obstacle_records.values()))
 
             def _is_valid_goal(x: float, y: float, require_clearance: bool = True) -> bool:
                 if self.check_dead_zone(

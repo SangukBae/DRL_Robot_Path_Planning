@@ -56,8 +56,18 @@ class ObstacleMixin:
                 "some parked obstacles will reuse slots."
             )
 
+        # Reproducibility: pool construction uses its OWN RNG (seeded with
+        # pool_build_seed, default 0) instead of the global `random`. This runs on
+        # the first reset, AFTER the trainer re-seeded the env to the run seed, so
+        # using the global RNG here would (a) make pool composition depend on the
+        # run seed and (b) advance the global stream by a pool-size/catalog-
+        # dependent count — shifting the first episode's start/goal sampling
+        # whenever the obstacle set changes. A local RNG makes the pool
+        # deterministic AND leaves the per-episode global stream untouched.
+        pool_rng = random.Random(int(getattr(self, "pool_build_seed", 0)))
+
         init_slots = list(self.parking_slots)
-        random.shuffle(init_slots)
+        pool_rng.shuffle(init_slots)
         # Use a one-element list so nested functions share a single mutable counter.
         slot_index = [0]
 
@@ -77,7 +87,7 @@ class ObstacleMixin:
                 if not catalog:
                     return pool
                 build_entries = list(catalog)
-                random.shuffle(build_entries)
+                pool_rng.shuffle(build_entries)
                 build_entries = [build_entries[i % len(build_entries)]
                                  for i in range(pool_size)]
             for i, entry in enumerate(build_entries):
@@ -116,7 +126,7 @@ class ObstacleMixin:
             if not catalog or pool_size <= 0:
                 return pool
             shuffled_cat = list(catalog)
-            random.shuffle(shuffled_cat)
+            pool_rng.shuffle(shuffled_cat)
             for i in range(pool_size):
                 entry = shuffled_cat[i % len(shuffled_cat)]
                 # All 8 parts share a single parking slot
@@ -242,8 +252,12 @@ class ObstacleMixin:
         providing type and position diversity without any create/remove service calls.
         Inactive entities are returned to randomized ground-level parking slots
         outside the arena walls.
-        Updates spawned_obstacle_records so change_goal / _sample_train_start_pose
-        see the correct occupied cells on the *next* reset.
+        Rebuilds spawned_obstacle_records / _names with THIS episode's placements
+        (used for entity bookkeeping/markers and the human-motion update). Start /
+        goal sampling no longer reads these records: it is obstacle-free by contract
+        (obstacles are placed here, AFTER start/goal, keeping obstacle_robot_margin /
+        obstacle_goal_margin clear), so consulting the records would only re-impose
+        the previous episode's stale positions. See _sample_train_start_pose.
         """
         new_records: dict = {}
         placed: list = []  # (x, y, radius) of entities placed in the arena this episode
@@ -273,6 +287,9 @@ class ObstacleMixin:
                     if e["key"] in STATIC_GLOBALLY_BANNED_KEYS:
                         return False
                     if e["key"] not in allowed_keys:
+                        return False
+                    if not self._static_key_fits_map_geometry(
+                            self.current_map_type, e["key"]):
                         return False
                     if groups is not None and e["size_group"] not in groups:
                         return False
@@ -336,7 +353,7 @@ class ObstacleMixin:
                 return
             spawn_regions = self._build_human_spawn_regions()
             shuffled = list(pool)
-            random.shuffle(shuffled)
+            self._human_py_rng.shuffle(shuffled)   # human sub-stream (off global)
             activated = 0
             for entry in shuffled:
                 all_names = [entry["v_torso"], entry["v_ll"], entry["v_rl"],
@@ -354,15 +371,15 @@ class ObstacleMixin:
                     if pose is not None:
                         x, y = pose
                         yaw = (
-                            np.random.uniform(-math.pi, math.pi)
+                            self._human_np_rng.uniform(-math.pi, math.pi)
                             if entry["yaw_random"]
                             else 0.0
                         )
                         mode_fields = self._assign_human_mode(x, y)
                         tx, ty = self._sample_human_waypoint(x, y, state=mode_fields)
-                        speed = np.random.uniform(entry["speed_min"], entry["speed_max"]) * mode_fields["mode_speed_scale"]
+                        speed = self._human_np_rng.uniform(entry["speed_min"], entry["speed_max"]) * mode_fields["mode_speed_scale"]
                         name_p_torso = entry["p_torso"]
-                        heading_jitter = np.random.uniform(
+                        heading_jitter = self._human_np_rng.uniform(
                             -self.human_heading_jitter, self.human_heading_jitter
                         )
                         desired_yaw = math.atan2(ty - y, tx - x) + heading_jitter
@@ -388,8 +405,8 @@ class ObstacleMixin:
                             "pause_left":        mode_fields["mode_init_wait"],
                             "stopping": False,
                             **mode_fields,   # per-human behaviour mode (kept for the episode)
-                            "gait_phase":        np.random.uniform(0.0, 2.0 * math.pi),
-                            "gait_freq_hz":      np.random.uniform(
+                            "gait_phase":        self._human_np_rng.uniform(0.0, 2.0 * math.pi),
+                            "gait_freq_hz":      self._human_np_rng.uniform(
                                                      entry["gait_freq_hz_min"],
                                                      entry["gait_freq_hz_max"]),
                             "leg_swing_amp_rad": math.radians(entry["leg_swing_amp_deg"]),
@@ -435,6 +452,13 @@ class ObstacleMixin:
         ):
             return
         ep = self._episode_count
+        # `placed` seeds the per-episode mutual-collision set. _delete_spawned_
+        # obstacles() above dropped a record only once its entity is CONFIRMED gone
+        # (a human's body footprint is retained while any of its parts lingers), so
+        # whatever remains in spawned_obstacle_records is genuinely still in the
+        # world (a delete that timed out / failed) — NOT a stale prev-episode
+        # position. New spawns must avoid those real leftovers, so seeding from them
+        # is correct; in the normal all-deletes-succeeded case the dict is empty.
         placed = list(self.spawned_obstacle_records.values())
 
         def _spawn_from_catalog(entries, count, name_prefix, log_label):
@@ -463,7 +487,7 @@ class ObstacleMixin:
             self.human_states = {}
             spawn_regions = self._build_human_spawn_regions()
             for i in range(self.num_of_humans):
-                entry = random.choice(self.human_catalog)
+                entry = self._human_py_rng.choice(self.human_catalog)   # human sub-stream
                 radius = float(entry.get("radius", 0.30))
                 result = self._sample_human_spawn_pose(
                     radius, placed, start_x, start_y, i, spawn_regions
@@ -472,7 +496,7 @@ class ObstacleMixin:
                     self.get_logger().warn(f"Could not place human {i + 1} — skipping")
                     continue
                 x, y = result
-                yaw = np.random.uniform(-math.pi, math.pi) if entry.get("yaw_random", True) else 0.0
+                yaw = self._human_np_rng.uniform(-math.pi, math.pi) if entry.get("yaw_random", True) else 0.0
                 prefix = f"rl_human_{ep:04d}_{i + 1:03d}"
                 arm_uri = entry.get("visual_arm_uri", entry["visual_torso_uri"])
                 part_defs = [
@@ -500,11 +524,11 @@ class ObstacleMixin:
                 if all_ok:
                     mode_fields = self._assign_human_mode(x, y)
                     tx, ty = self._sample_human_waypoint(x, y, state=mode_fields)
-                    speed = np.random.uniform(
+                    speed = self._human_np_rng.uniform(
                         float(entry.get("speed_min", 0.3)),
                         float(entry.get("speed_max", 0.8)),
                     ) * mode_fields["mode_speed_scale"]
-                    heading_jitter = np.random.uniform(
+                    heading_jitter = self._human_np_rng.uniform(
                         -self.human_heading_jitter, self.human_heading_jitter
                     )
                     desired_yaw = math.atan2(ty - y, tx - x) + heading_jitter
@@ -530,8 +554,8 @@ class ObstacleMixin:
                         "pause_left":        mode_fields["mode_init_wait"],
                         "stopping": False,
                         **mode_fields,   # per-human behaviour mode (kept for the episode)
-                        "gait_phase":        np.random.uniform(0.0, 2.0 * math.pi),
-                        "gait_freq_hz":      np.random.uniform(
+                        "gait_phase":        self._human_np_rng.uniform(0.0, 2.0 * math.pi),
+                        "gait_freq_hz":      self._human_np_rng.uniform(
                                                  float(entry.get("gait_freq_hz_min", 0.8)),
                                                  float(entry.get("gait_freq_hz_max", 1.6))),
                         "leg_swing_amp_rad": math.radians(float(entry.get("leg_swing_amp_deg", 18.0))),
@@ -561,4 +585,3 @@ class ObstacleMixin:
                     self.get_logger().warn(
                         f"Human {i + 1}: partial spawn failure; {len(spawned_so_far)}/8 parts cleaned up"
                     )
-

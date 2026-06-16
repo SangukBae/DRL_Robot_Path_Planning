@@ -81,3 +81,44 @@ def static_size_group(radius: float) -> str:
     if radius <= 0.65:
         return "medium"
     return "large"
+
+
+# ── Map-type-aware active counts (curriculum) ──────────────────────────────────
+# Pure (ROS-free) helpers so the per-map active_static / active_humans logic is
+# unit-testable without a running node. A curriculum STAGE may carry
+# active_static_by_map / active_humans_by_map = {map_type: count}; per episode the
+# count for the chosen map_type is resolved, else the stage's single value is used.
+
+def clamp_active_by_map(raw, cap, allowed=MAP_TYPES):
+    """Validate a stage's active_*_by_map mapping.
+
+    Returns (clean_dict, warnings): unknown map_type keys are dropped, non-int
+    values are dropped, and every accepted count is clamped to [0, cap]. A None /
+    non-dict input yields ({}, warnings) so callers fall back to the single value.
+    Never raises — a malformed stage entry must not crash a reset."""
+    out, warns = {}, []
+    if raw is None:
+        return out, warns
+    if not isinstance(raw, dict):
+        warns.append(f"active_*_by_map must be a map_type->int dict; ignoring {raw!r}")
+        return out, warns
+    for k, v in raw.items():
+        if k not in allowed:
+            warns.append(f"unknown map_type '{k}' ignored (allowed: {list(allowed)})")
+            continue
+        try:
+            out[k] = max(0, min(int(v), int(cap)))
+        except (TypeError, ValueError):
+            warns.append(f"value for '{k}' ({v!r}) is not an int; ignored")
+    return out, warns
+
+
+def resolve_active_count(by_map, single, cap, map_type):
+    """Resolve THIS episode's active count: by_map[map_type] if present, else the
+    stage single value; coerced to int, floored at 0, capped at ``cap`` (pool size)."""
+    raw = by_map.get(map_type, single) if isinstance(by_map, dict) else single
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 0
+    return max(0, min(n, int(cap)))

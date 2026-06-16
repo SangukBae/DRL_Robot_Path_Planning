@@ -34,15 +34,18 @@ from map_catalog import (
 class StartSamplerMixin:
     def _sample_free_pose_layout(self, radius: float, placed: list,
                                  start_x: float, start_y: float,
-                                 avoid_open_area: bool = False):
+                                 avoid_open_area: bool = False, rng=None):
         """Layout-aware obstacle pose: sample inside the current map's free
         regions, keep robot/goal/mutual margins + wall clearance (+ optional
-        lobby open-area keep-out for large items)."""
+        lobby open-area keep-out for large items).
+
+        ``rng`` is threaded into _sample_xy_in_regions so HUMAN callers draw from
+        their dedicated sub-stream; None keeps the global stream (static/robot)."""
         spec = self.current_layout_spec
         regions = spec["free_regions"]
         clr = self.map_wall_clearance
         for _ in range(200):
-            xy = self._sample_xy_in_regions(regions, radius)
+            xy = self._sample_xy_in_regions(regions, radius, rng=rng)
             if xy is None:
                 return None
             x, y = xy
@@ -70,13 +73,44 @@ class StartSamplerMixin:
 
         Checks (in order for each candidate):
           1. Dead-zone exclusion
-          2. Lingering-obstacle overlap
+          2. Obstacle overlap — only against GENUINELY-PRESENT entities (see
+             `lingering` below); empty in pool mode, so usually a no-op
           3. Yaw sampled inside the loop — then:
           4. Heading-toward-near-wall rejection
-          5. Front-cone immediate-collision rejection
+          5. Front-cone immediate-collision rejection (obstacles + outer wall)
         """
         robot_radius = self._robot_collision_radius()
-        lingering    = list(self.spawned_obstacle_records.values())
+        # `lingering` = obstacles the robot must avoid AT SAMPLING TIME. Its
+        # contents depend on the obstacle backend, because the same
+        # spawned_obstacle_records dict means different things:
+        #
+        #  * Pool mode (use_obstacle_pool=True, the curriculum default): obstacles
+        #    are TELEPORTED, never deleted. spawned_obstacle_records still holds the
+        #    PREVIOUS episode's placements here (it is refreshed by
+        #    _activate_random_obstacles AFTER this call) and the human-motion timer
+        #    even rewrites human entries to wherever they drifted last episode.
+        #    Those entities are about to be teleported away — _activate_random_
+        #    obstacles re-places every active obstacle keeping >= obstacle_robot_
+        #    margin (2.82 m) + radius clear of THIS start, and parks the rest. So
+        #    consulting the records is a STALE constraint: prev-episode obstacles
+        #    that this episode will not reproduce carve disks out of the new start
+        #    band, exhausting the 500/200-try budgets and forcing the deterministic-
+        #    centre fallback — collapsing start diversity. We therefore IGNORE them
+        #    (empty list) and rely on the placer keeping clear of the chosen start.
+        #
+        #  * Non-pool mode (use_obstacle_pool=False): obstacles are deleted +
+        #    re-spawned each reset. _delete_spawned_obstacles() ran before this call
+        #    and dropped a record only once its entity is CONFIRMED gone (a human's
+        #    body footprint is retained while ANY of its 8 parts still lingers), so
+        #    whatever remains in spawned_obstacle_records is genuinely still in the
+        #    world (a delete that timed out / failed) at its body footprint. Those
+        #    are REAL leftovers and must be avoided.
+        #
+        # Either way the front-cone check below still rejects a start facing an
+        # OUTER wall within front-clearance (empty placed list -> wall ray-cast
+        # only); internal walls are handled by _front_hits_internal_wall.
+        lingering    = ([] if getattr(self, "use_obstacle_pool", False)
+                        else list(self.spawned_obstacle_records.values()))
         edge_margin  = self.start_edge_heading_margin
         clearance    = self.start_front_clearance
         fov_deg      = self.start_front_fov_deg
@@ -164,9 +198,12 @@ class StartSamplerMixin:
         # Structured maps KEEP the end/arm start band + lane-aligned yaw (those
         # constraints are the requirement, not a nicety), so a crowded episode
         # never reverts a corridor/intersection start to mid-lane / random yaw.
+        self._start_relaxed_fallback_count = getattr(
+            self, "_start_relaxed_fallback_count", 0) + 1
         self.get_logger().warn(
             "Start-pose heading checks exhausted 500 tries; "
-            "falling back to relaxed front-clearance pose"
+            "falling back to relaxed front-clearance pose "
+            f"(relaxed fallbacks so far: {self._start_relaxed_fallback_count})"
         )
         for _ in range(200):
             region = None
@@ -198,9 +235,12 @@ class StartSamplerMixin:
         # Prefer a band whose centre passes the position checks; else take the
         # first band's centre regardless (still structurally correct).
         if start_regions:
+            self._start_centre_fallback_count = getattr(
+                self, "_start_centre_fallback_count", 0) + 1
             self.get_logger().warn(
                 "Start-pose sampling exhausted all 700 tries (500 + 200 fallback); "
-                "using deterministic start-region centre (structured map)."
+                "using deterministic start-region centre (structured map). "
+                f"(centre fallbacks so far: {self._start_centre_fallback_count})"
             )
 
             def _band_centre(region):
@@ -234,21 +274,28 @@ class StartSamplerMixin:
         )
         return 0.0, 0.0, np.random.uniform(-np.pi, np.pi)
 
-    def _sample_free_pose(self, radius: float, placed: list, start_x: float, start_y: float):
+    def _sample_free_pose(self, radius: float, placed: list, start_x: float, start_y: float,
+                          rng=None):
         """Sample a collision-free (x, y) for one obstacle.
 
         placed: list of (x, y, radius) already committed this episode.
         Returns (x, y) or None if no free position found within 200 tries.
+
+        ``rng`` selects the RNG sub-stream: None (default) draws from the GLOBAL
+        np.random (static-obstacle / robot / goal callers, unchanged), while
+        HUMAN callers pass ``self._human_np_rng`` so pedestrian spawn never
+        advances the global stream (reproducibility split).
         """
+        r = rng if rng is not None else np.random
         # Structured map curriculum: delegate to the layout-aware sampler so the
         # obstacle lands inside the current map's free regions (off the walls).
         if self.current_layout_spec is not None:
-            return self._sample_free_pose_layout(radius, placed, start_x, start_y)
+            return self._sample_free_pose_layout(radius, placed, start_x, start_y, rng=rng)
         arena_lower = self.goal_obstacle_lower + self.obstacle_wall_margin
         arena_upper = self.goal_obstacle_upper - self.obstacle_wall_margin
         for _ in range(200):
-            x = np.random.uniform(arena_lower, arena_upper)
-            y = np.random.uniform(arena_lower, arena_upper)
+            x = r.uniform(arena_lower, arena_upper)
+            y = r.uniform(arena_lower, arena_upper)
             if math.hypot(x - start_x, y - start_y) < self.obstacle_robot_margin + radius:
                 continue
             if math.hypot(x - self.goal_x, y - self.goal_y) < self.obstacle_goal_margin + radius:
@@ -261,12 +308,17 @@ class StartSamplerMixin:
 
     def _sample_free_pose_in_region(
         self, radius: float, placed: list, start_x: float, start_y: float,
-        x_lo: float, x_hi: float, y_lo: float, y_hi: float
+        x_lo: float, x_hi: float, y_lo: float, y_hi: float, rng=None
     ):
-        """Like _sample_free_pose but constrained to [x_lo, x_hi] × [y_lo, y_hi]."""
+        """Like _sample_free_pose but constrained to [x_lo, x_hi] × [y_lo, y_hi].
+
+        ``rng`` as in _sample_free_pose: None → global np.random; human callers
+        pass ``self._human_np_rng`` to keep pedestrian spawn off the global stream.
+        """
+        r = rng if rng is not None else np.random
         for _ in range(200):
-            x = np.random.uniform(x_lo, x_hi)
-            y = np.random.uniform(y_lo, y_hi)
+            x = r.uniform(x_lo, x_hi)
+            y = r.uniform(y_lo, y_hi)
             # Structured maps: keep clear of internal walls.
             if self.current_layout_spec is not None and self._point_in_walls(
                     x, y, self.map_wall_clearance):
