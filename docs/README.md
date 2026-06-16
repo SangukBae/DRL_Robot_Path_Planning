@@ -40,7 +40,7 @@ DRL 로봇 경로계획 시스템 문서 인덱스. **무엇부터 읽을지**�
 | 문서 | 내용 |
 |--|--|
 | [environment_design](design/environment_design.md) | 환경 노드 동작, 두 파일 역할 분리 |
-| [curriculum_design](design/curriculum_design.md) | 5단계 커리큘럼·진급 규칙 |
+| [curriculum_design](design/curriculum_design.md) | 7단계 커리큘럼·맵별 활성 개수(`*_by_map`)·진급 규칙 |
 | [aux_prediction_design](design/aux_prediction_design.md) | 공유 인코더 + 미래 위험 aux head |
 | [localization_noise_design](design/localization_noise_design.md) | 위치추정 오차 모사 모델 |
 | [map_curriculum_design](design/map_curriculum_design.md) | 구조화 맵 4종 |

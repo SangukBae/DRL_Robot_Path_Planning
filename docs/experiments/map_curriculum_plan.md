@@ -3,9 +3,13 @@
 이 문서는 현재 `drl_agent` 커리큘럼 환경을 다음 방향으로 확장하기 위한 구체 설계안이다.
 
 - 맵 타입을 `lobby / corridor / intersection / clutter` 4종으로 확장
-- `25 x 25` 마스터 맵을 기준으로 사용
-- `lobby`는 전체 `25 x 25` 사용
-- `corridor / intersection / clutter`는 내부 외벽을 당겨 `21 x 21` 유효 영역처럼 사용
+- `25 x 25` 마스터 맵을 기준으로 사용 (**구현됨**: world 외벽 ±12.5)
+- **현재 구현 = 균일 25×25**: 4종 맵이 모두 동일한 25×25 **외곽(외벽 ±12.5)**을
+  공유한다. 단, 실제 샘플링/주행 가능한 navigable extent는 외곽이 아니라
+  `외벽 inner face(±12.35) − map_wall_clearance(0.55) ≈ ±11.8`이다(벽 두께+clearance).
+  `lobby`는 그 외곽 전체를 쓰고, `corridor/intersection`은 폭 고정·길이만 증가,
+  `clutter`는 벽이 span 비례. (아래 원안의 "corridor/intersection/clutter = 21×21
+  차등"은 맵별 inner extent라는 신규 기능이 필요해 채택하지 않음 — §2.1 참고.)
 - 맵 타입에 따라 내부 벽 배치, 정적 장애물 후보군, 장애물 배치 가능 영역, 사람 spawn 제약을 다르게 적용
 - 커리큘럼 stage가 올라갈수록 장애물 수만이 아니라 맵 종류와 맵 구조 복잡도도 함께 증가
 
@@ -100,6 +104,35 @@
 ## 2. 목표 맵 정의
 
 ### 2.1 마스터 맵 좌표계
+
+> **현재 구현 상태 (2026-06, 안 A를 "균일 25×25"로 채택):**
+> `drl_arena.world`의 외벽을 `±12.5`(25×25)로 확장했고, `map_inner_* = ±12.5`(=벽
+> 중심선)로 두어 **4종 맵이 모두 동일한 25×25 외곽**을 쓴다.
+> - **외곽 vs navigable 구분**: 외벽 중심선 ±12.5, 내부 충돌 face ±12.35(벽 두께 0.3),
+>   실제 샘플링/주행 가능한 navigable extent = face − `map_wall_clearance(0.55)` ≈ **±11.8**.
+>   `_build_map_layouts`가 registry에 이 보정된 값을 넘긴다([map_layout_runtime.py] `outer_margin`).
+> - `lobby` = 25×25 **외곽** 공유(navigable ≈23.6×23.6). 마지막 학습 맵을 25×25 외곽으로
+>   쓰려는 원래 의도 충족.
+> - `corridor / intersection` = **폭(5.2 m)은 고정**, 길이만 (navigable) ~23.6 m로 증가.
+> - `clutter` = 25×25 외곽, 내부 벽은 span 비례.
+> - 좌표 동기화 지점은 정확히 두 곳: `environment_curriculum.yaml`(+`environment.yaml`)와
+>   `drl_arena.world`. `goal_obstacle ±11.5 + obstacle_wall_margin 1.0 = ±12.5 = 물리 벽 중심선`.
+> - 본 문서의 "lobby 25 / 나머지 21" 차등안(아래 안 A 원안, `map_inner` ±10.5)은
+>   맵 타입별 inner extent + 둘레벽이라는 신규 기능이 필요해 채택하지 않았다.
+>   필요해지면 맵 타입별 `inner` 파라미터와 perimeter wall pool을 추가하면 된다.
+>
+> **남은 후속 작업 (확장 자체와 분리, 둘 다 선택):**
+> 1. **장애물 밀도(난이도)** — *맵 타입별 active count 구현됨 (2026-06).*
+>    25×25는 면적이 ~2.16배라 같은 개수면 밀도가 낮다. 이제 stage가
+>    `active_static_by_map` / `active_humans_by_map`로 **같은 stage 안에서도 map_type별로
+>    다른 개수**를 줄 수 있다(§3.2). corridor는 활성화 후보 상한 ~10에 묶이므로 더 낮게,
+>    intersection/clutter/lobby는 더 높게 설정한다. 커리큘럼도 7-stage(한 stage에 한 축만
+>    변경)로 재설계됨 — §13 및 `environment_curriculum.yaml` 참고. (lobby/clutter를 더
+>    크게 키우려면 corridor에 맞는 작은 장애물 에셋 추가가 추가 옵션.)
+> 2. **corridor/intersection 내부벽–외벽 0.7 m gap (cosmetic)**: navigable을 clearance
+>    까지 줄인 결과라 기능 영향은 없다. 없애려면 registry에서 **wall geometry용 extent**
+>    (외벽 face까지)와 **free/start/goal region용 extent**(navigable ±11.8)를 분리하면
+>    된다. 우선순위 낮음(보류).
 
 기준 맵은 현재 두 안 중 하나로 확정해야 한다.
 
@@ -243,11 +276,13 @@ environment:
 curriculum:
   stages:
     - name: stage_x
-      active_static: 5
+      active_static: 6                # 단일값(맵 무관) — fallback
       active_humans: 1
+      active_static_by_map: {corridor: 5, intersection: 7}   # 맵별 override (선택)
+      active_humans_by_map: {corridor: 1, intersection: 1}   # 맵별 override (선택)
       allowed_map_types: ["corridor", "intersection"]
-      map_type_probs: [0.7, 0.3]
-      allowed_static_groups: ["corridor_small", "corridor_medium"]
+      map_type_probs: [0.5, 0.5]
+      allowed_static_groups: ["small", "medium"]
       eval_map_types: ["corridor", "intersection"]
 ```
 
@@ -255,15 +290,37 @@ curriculum:
 
 - `allowed_map_types`: 이 stage에서 에피소드마다 선택 가능한 맵 타입 목록
 - `map_type_probs`: 맵 샘플링 확률
-- `allowed_static_groups`: 이 stage에서 사용할 정적 장애물 후보군
+- `allowed_static_groups`: 이 stage에서 사용할 정적 장애물 후보군 (크기 그룹 필터)
 - `eval_map_types`: 평가 때 고정 또는 순회할 맵 타입 목록
+- `active_static` / `active_humans`: 이 stage의 단일(맵 무관) 활성 개수
+- `active_static_by_map` / `active_humans_by_map`: **같은 stage 안에서도 map_type별로
+  다른 활성 개수**를 주는 `{map_type: 개수}` 매핑 (선택). corridor처럼 좁아서 배치
+  상한이 빡빡한 맵에 더 적게, intersection/clutter/lobby처럼 넓은 맵에 더 많이 줄 때 사용.
+
+**활성 개수 결정 우선순위 (에피소드마다, map_type 확정 후):**
+
+1. 현재 episode `map_type`이 `active_*_by_map`에 있으면 그 값
+2. 없으면 stage의 단일 `active_static` / `active_humans`
+3. (그 stage가 단일값도 생략하면) base `environment:` 값
+
+값은 정수화 + `max(0, ...)` + `obstacle_pool_static_size` / `obstacle_pool_human_size`
+상한 클램프. 허용되지 않은 map key나 비정수 값은 경고 후 무시(런타임 안 깨짐).
+실제 적용된 이번 episode 최종 개수는 `[Episode active] map_type=... -> static=.. humans=..`
+로그로 확인할 수 있다.
+
+적용 위치(설계): stage 공통값은 `_apply_curriculum_stage()`에서 stage 전환 시 설정되지만,
+실제 `map_type`은 reset 중 episode마다 `_select_episode_layout()`에서 정해진다. 따라서
+맵별 개수는 base `environment.py`의 `_apply_episode_active_counts()`가 **`_select_episode_layout()`
+직후 · 장애물 활성화 직전**에 최종 결정한다 (그래야 stale 없이 이번 episode 맵에 맞는 값이 쓰임).
+순수 결정 로직은 ROS-free `map_catalog.clamp_active_by_map` / `resolve_active_count`에 있어 단위
+테스트(`tests/test_active_by_map.py`)로 잠겨 있다.
 
 주의:
 
-- `map_type_probs` 길이는 `allowed_map_types`와 같아야 한다
-- omitted 시 균등 분포를 기본값으로 둔다
-- stage가 맵 타입을 바꾼다면, `environment_curriculum.py`의 base snapshot / restore에 이 새 필드들도 포함해야 함
-- 그렇지 않으면 이전 stage 설정이 다음 stage로 누수된다
+- `map_type_probs` 길이는 `allowed_map_types`와 같아야 한다 (omitted 시 균등 분포)
+- `active_*_by_map`는 stage 적용 때마다 다시 파싱되므로 별도 snapshot/restore 불필요
+- `active_*_by_map`가 어떤 map_type을 빠뜨리면 그 맵은 단일값으로 fallback (하위호환)
+- 기존 단일값만 쓰는 YAML은 그대로 동작한다 (by_map 없으면 우선순위 2/3 경로)
 
 ---
 
@@ -753,10 +810,31 @@ clutter에서만 최소 경로 폭 heuristic을 적용하는 것이 현실적이
 
 ## 8. 커리큘럼 stage 재설계
 
+> **현재 구현 (2026-06, 7-stage). 아래 §8 본문의 Stage 0~4는 초기 5-stage 제안(역사적
+> 기록)이며, 실제 `environment_curriculum.yaml`은 다음 7-stage다.** 설계 원칙: **한 stage에
+> 한 축만 크게 변경**(구조 / 사람 / 지형 / 일반화 / 노이즈를 분리) + 혼합맵 stage는
+> `active_*_by_map`으로 좁은 corridor를 가볍게.
+>
+> | stage | maps | static (by_map) | humans (by_map) | loc noise | proprio | 핵심 축 |
+> |---|---|---|---|---|---|---|
+> | 0 empty | lobby | 0 | 0 | clean | – | 기본 goal 도달 |
+> | 1 corridor_static | corridor | 3 | 0 | clean | – | corridor 정적 |
+> | 2 add_intersection | corridor,intersection | C3 / I6 | 0 | clean | – | **구조** 추가 |
+> | 3 first_human | corridor,intersection | C4 / I6 | C1 / I1 | weak | – | **사람** 추가 |
+> | 4 add_clutter | +clutter | C4 / I7 / Cl8 | C1 / I2 / Cl3 | weak | light | **지형** 추가 |
+> | 5 generalize | +lobby (4종) | C5 / I7 / Cl9 / L8 | C2 / I3 / Cl5 / L5 | drift(mid) | light | **일반화** |
+> | 6 full_complexity | 4종 | C5 / I8 / Cl9 / L9 | C3 / I5 / Cl6 / L6 | robustness_train | medium | **final** |
+>
+> (C=corridor, I=intersection, Cl=clutter, L=lobby. corridor는 모든 stage에서 static·humans가
+> 가장 적다 — 5.2 m 차선의 활성화 후보 상한 ~10 + 물리 배치 압박 때문.) 승급 임계값은
+> `train_tqc_curriculum_config.yaml`의 6-entry 리스트(7 stage → 6 promotion). 기존 5-stage
+> 대비: Stage 2의 "intersection+human+noise 동시 투입"을 구조→사람으로 분리, lobby를 마지막에만
+> 넣던 것을 Stage 5부터 재투입, 최종 static을 corridor 상한(10)에 붙이지 않도록 by_map로 분산.
+
 기존 stage는 장애물 수 / 사람 수 중심이다.
 새 구조에서는 맵 종류까지 함께 올린다.
 
-추천 예시는 아래와 같다.
+추천 예시는 아래와 같다. (※ 아래는 초기 5-stage 제안 — 현재는 위 7-stage 표가 source of truth.)
 
 ### Stage 0
 
@@ -1108,7 +1186,14 @@ clutter도 1차에는 `결정론적 벽 배치 + 검증된 free region` 위주�
 
 ---
 
-## 13. 구현 현황 (안 B, 1차)
+## 13. 구현 현황 (안 B, 1차) — ※ 이후 25×25로 확장됨
+
+> **갱신 (2026-06):** 아래 §13.x는 **1차 구현 = 안 B(19×19)** 시점의 기록이다.
+> 이후 `안 A`를 "균일 25×25"로 채택해 **`drl_arena.world` 외벽을 ±12.5로 확장**하고
+> `goal_obstacle_*=±11.5`, `map_inner_*=±12.5`(wall centreline), `parking_slot_*`를
+> ±14~±18로 옮겼다. 따라서 이 절의 "19×19 / ±9.5 / ±11~±17 parking" 수치는
+> **과거(1차) 상태**이며, 현재 좌표 계약은 §2.1 상단 "현재 구현 상태" 블록과
+> `drl_arena.world` 주석이 source of truth다. (구조/정책/coverage 설계 자체는 그대로 유효.)
 
 이 문서를 source of truth로 삼아 `안 B`(기존 `drl_arena.world` 19×19 유지) 기준으로 1차 구현을 완료했다.
 
@@ -1161,8 +1246,10 @@ clutter도 1차에는 `결정론적 벽 배치 + 검증된 free region` 위주�
 - 맵 정책: 허용키 전부 카탈로그에 존재, banned 누수 없음, `bookstore_desk_b`는 lobby 전용
 - 커버리지: 15키로 4개 맵 × (small/medium/large) 타깃(=5) 전부 충족, 모든 stage의
   active_static을 worst-map 기준으로도 만족(최소 corridor 10 후보 ≥ active 9)
-- 레이아웃 기하: 모든 내부 벽이 ±9.5 외벽 안, free-region 사용가능 비율
-  lobby 1.00 / corridor 0.96 / intersection 0.97 / clutter 0.87
+- 레이아웃 기하 (※ 이 수치는 확장 전 19×19 / 외벽 ±9.5 기준의 과거 검증 기록):
+  모든 내부 벽이 ±9.5 외벽 안, free-region 사용가능 비율
+  lobby 1.00 / corridor 0.96 / intersection 0.97 / clutter 0.87.
+  (현재는 25×25 / 외벽 ±12.5 — §2.1 구현 상태 및 drl_arena.world 참고.)
 
 ### 13.4 리뷰 피드백 반영 (eval/large/start)
 
