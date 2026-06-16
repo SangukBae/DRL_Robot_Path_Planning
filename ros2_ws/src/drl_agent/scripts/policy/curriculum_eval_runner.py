@@ -62,9 +62,15 @@ class CurriculumEvalMixin:
                 "an eval_map_types evaluation. Check that environment_curriculum.py "
                 "is running and exposes curriculum_eval_mode."
             )
-        # try/finally so an exception mid-eval (reset/step/logging) can never leave
-        # the env stuck in eval mode — otherwise later TRAINING resets would keep
-        # cycling eval_map_types.
+        # The eval loop may fail for two independent reasons:
+        #   1. the rollout itself raises (reset/step/logging/service failure)
+        #   2. restoring curriculum_eval_mode=False fails afterwards
+        # We must NOT let (2) silently continue, because training resets would
+        # then keep cycling eval_map_types and corrupt the training map
+        # distribution. Capture both and re-raise the primary rollout failure
+        # first; otherwise fail-fast on the restore failure.
+        eval_error = None
+        restore_error = None
         try:
             for _ in range(self.eval_eps):
                 state    = self.reset()
@@ -152,15 +158,31 @@ class CurriculumEvalMixin:
                 if ep_psc is not None:
                     m["psc_sum"]  += float(ep_psc)
                     m["psc_n"]    += 1
-        finally:
-            # Always return the env to the training map distribution so the next
-            # training reset is NOT stuck on the eval round-robin — even if the
-            # eval loop raised. Warn if the restore itself fails.
+        except Exception as e:
+            eval_error = e
+
+        # Always return the env to the training map distribution so the next
+        # training reset is NOT stuck on the eval round-robin — even if the
+        # eval loop raised. A failed restore is a hard error, not a warning.
+        try:
             if not self._set_eval_mode(False):
-                self.get_logger().warn(
-                    "[Curriculum] ⚠ FAILED to clear curriculum_eval_mode — subsequent "
-                    "TRAINING resets may keep cycling eval_map_types until it clears."
+                restore_error = EnvServiceError(
+                    "Failed to clear curriculum_eval_mode after evaluation; "
+                    "refusing to continue because training resets may keep "
+                    "cycling eval_map_types."
                 )
+        except EnvServiceError as e:
+            restore_error = e
+
+        if eval_error is not None:
+            if restore_error is not None:
+                self.get_logger().warn(
+                    "[Curriculum] Eval loop raised and eval-mode restore also failed: "
+                    f"{restore_error}"
+                )
+            raise eval_error
+        if restore_error is not None:
+            raise restore_error
 
         n = self.eval_eps
         metrics = {
@@ -302,4 +324,3 @@ class CurriculumEvalMixin:
     # ------------------------------------------------------------------ #
     #  Override: train_online — adds stage advancement around eval          #
     # ------------------------------------------------------------------ #
-
