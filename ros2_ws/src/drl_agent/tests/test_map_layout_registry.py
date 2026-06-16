@@ -76,3 +76,20 @@ def test_geometry_scales_with_params():
         map_lobby_open_half_extent=2.5, map_start_band_depth=1.5,
     )["corridor"]["walls"][0]["cy"]
     assert abs(wide) > abs(narrow)
+
+
+def test_structured_lane_footprint_fit_helper():
+    assert reg.structured_lane_footprint_fits(
+        radius=0.35,
+        lane_width=5.2,
+        passage_width=1.6,
+        wall_clearance=0.55,
+        passage_safety_margin=0.25,
+    )
+    assert not reg.structured_lane_footprint_fits(
+        radius=0.55,
+        lane_width=5.2,
+        passage_width=1.6,
+        wall_clearance=0.55,
+        passage_safety_margin=0.25,
+    )

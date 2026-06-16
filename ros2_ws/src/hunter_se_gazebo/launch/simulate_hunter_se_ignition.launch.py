@@ -12,8 +12,9 @@ Starts:
 
 Supported worlds
 ─────────────────
-  drl_arena   (default) – 15×15m enclosed arena, world name="default". Compatible
-                          with ros2_gz_bridge_config.yaml and environment.py.
+  drl_arena   (default) – 25×25m enclosed arena (walls at ±12.5), world
+                          name="default". Compatible with ros2_gz_bridge_config.yaml
+                          and environment.py.
   hospital              – AWS hospital world, also world name="default".
   <full path>           – Any .world file whose SDF world name is "default".
 
@@ -28,6 +29,7 @@ NOTE: RGL plugin must be installed at:
 
 import os
 from os import environ
+from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -49,6 +51,39 @@ from launch.substitutions import (
     FindExecutable,
     LaunchConfiguration,
 )
+
+
+def _resolve_pkg_root_prefer_source(package_name: str, installed_share_dir: str) -> str:
+    """Prefer the editable source package root over install/share copies."""
+    candidates = []
+    src_hint = environ.get("DRL_AGENT_SRC_PATH", "").strip()
+    if src_hint:
+        src_hint = os.path.expanduser(src_hint)
+        candidates.extend([
+            src_hint,
+            os.path.join(src_hint, package_name),
+            os.path.join(src_hint, "src", package_name),
+            os.path.join(src_hint, "ros2_ws", "src", package_name),
+        ])
+
+    share_real = os.path.realpath(installed_share_dir)
+    token = f"{os.sep}install{os.sep}"
+    if token in share_real:
+        ws_root = share_real.split(token, 1)[0]
+        candidates.append(os.path.join(ws_root, "src", package_name))
+
+    here = Path(__file__).resolve()
+    parts = here.parts
+    for idx, part in enumerate(parts):
+        if part == "src" and idx + 1 < len(parts) and parts[idx + 1] == package_name:
+            candidates.append(str(Path(*parts[: idx + 2])))
+            break
+
+    for cand in candidates:
+        pkg_xml = os.path.join(cand, "package.xml")
+        if os.path.isfile(pkg_xml):
+            return os.path.realpath(cand)
+    return installed_share_dir
 
 
 def generate_launch_description():
@@ -84,7 +119,8 @@ def generate_launch_description():
     # ------------------------------------------------------------------ #
     # Package paths
     # ------------------------------------------------------------------ #
-    hunter_se_pkg = get_package_share_directory("hunter_se_gazebo")
+    hunter_se_share = get_package_share_directory("hunter_se_gazebo")
+    hunter_se_pkg = _resolve_pkg_root_prefer_source("hunter_se_gazebo", hunter_se_share)
     hunter_se_resource_root = os.path.dirname(hunter_se_pkg)
 
     hospital_world_file = os.path.join(

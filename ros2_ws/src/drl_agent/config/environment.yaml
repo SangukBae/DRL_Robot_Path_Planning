@@ -1,11 +1,12 @@
 environment:
-  # Robot training-start sampling region. Keep unchanged.
-  lower: -6.5
-  upper: 6.5
-  # Goal / obstacle sampling region for the enlarged 19 x 19 m arena.
-  # Walls are centered at +/-9.5 m; this keeps a 0.85 m margin to the inside face.
-  goal_obstacle_lower: -8.5
-  goal_obstacle_upper: 8.5
+  # Robot training-start sampling region (non-structured baseline).
+  lower: -9.0
+  upper: 9.0
+  # Goal / obstacle sampling region for the 25 x 25 m arena.
+  # Walls are centered at +/-12.5 m (drl_arena.world); _arena_wall_* =
+  # goal_obstacle_* +/- obstacle_wall_margin(1.0) = +/-12.5 lines up with them.
+  goal_obstacle_lower: -11.5
+  goal_obstacle_upper: 11.5
   # Dynamic obstacles removed from the code. To avoid silently changing the
   # non-curriculum baseline, this default stays static-only (num_of_humans: 0,
   # exactly as before minus the dynamic obstacles). Enable humans explicitly
@@ -123,11 +124,11 @@ environment:
   use_obstacle_pool: true
   obstacle_pool_static_size: 3     # total static slots;  >= num_of_static_obstacles
   obstacle_pool_human_size: 8      # human proxy pool (visual+proxy pairs); >= num_of_humans
-  # Parking slots: outside the 19 x 19 m walls but still on the floor plane.
-  # Pool obstacles are always spawned on the ground, then either activated in
-  # the arena or assigned to one of these parking slots via set_pose().
-  parking_slot_xs: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
-  parking_slot_ys: [-16.0, -14.0, -12.0, 12.0, 14.0, 16.0]
+  # Parking slots: outside the 25 x 25 m walls (±12.5) but still on the 50x50
+  # floor plane. Pool obstacles are always spawned on the ground, then either
+  # activated in the arena or assigned to one of these parking slots via set_pose().
+  parking_slot_xs: [-18.0, -16.0, -14.0, 14.0, 16.0, 18.0]
+  parking_slot_ys: [-18.0, -16.0, -14.0, 14.0, 16.0, 18.0]
   parking_z: 0.0
 
 threshold_parameters:

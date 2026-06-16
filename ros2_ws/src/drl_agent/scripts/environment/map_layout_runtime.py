@@ -34,6 +34,35 @@ from map_catalog import (
 
 
 class MapLayoutMixin:
+    def _static_key_fits_map_geometry(self, map_type: str, key: str) -> bool:
+        """Return whether a catalog key can ever fit the current map geometry.
+
+        This is stricter than the semantic policy in ``map_catalog``: a key may
+        be conceptually allowed for corridor/intersection yet still be
+        geometrically impossible once the active lane width, reserved passage and
+        wall-clearance settings are applied.
+        """
+        entry = self._catalog_by_key.get(key)
+        if entry is None:
+            return False
+        if map_type == "corridor":
+            return map_layout_registry.structured_lane_footprint_fits(
+                radius=float(entry.get("radius", 0.5)),
+                lane_width=self.map_corridor_width,
+                passage_width=self.map_corridor_passage_width,
+                wall_clearance=self.map_wall_clearance,
+                passage_safety_margin=self.map_passage_safety_margin,
+            )
+        if map_type == "intersection":
+            return map_layout_registry.structured_lane_footprint_fits(
+                radius=float(entry.get("radius", 0.5)),
+                lane_width=self.map_intersection_width,
+                passage_width=self.map_intersection_passage_width,
+                wall_clearance=self.map_wall_clearance,
+                passage_safety_margin=self.map_passage_safety_margin,
+            )
+        return True
+
     def _robot_collision_radius(self) -> float:
         """Conservative 2D radius for start/goal clearance checks."""
         return max(
@@ -55,9 +84,11 @@ class MapLayoutMixin:
         Return True when the robot is within *margin* of an actual arena wall AND its
         heading points toward that wall.
 
-        Uses self._arena_wall_lower / _arena_wall_upper (≈ ±9.5 m), which are
-        derived from goal_obstacle bounds + obstacle_wall_margin.  This is the
-        true arena inner-face boundary, NOT the start-sampling box (self.lower/upper).
+        Uses self._arena_wall_lower / _arena_wall_upper (≈ ±12.5 m on the 25×25
+        arena), derived from goal_obstacle bounds + obstacle_wall_margin. This is
+        the arena wall CENTRELINE (the SDF wall pose), NOT the start-sampling box
+        (self.lower/upper). The ~0.15 m wall half-thickness is a negligible
+        over-reach for this heading-rejection heuristic.
 
         "Heading toward the wall" means the dot-product of the heading vector
         with the outward wall normal is positive (angle < 90° from outward normal).
@@ -142,10 +173,23 @@ class MapLayoutMixin:
 
         Delegates to the pure, ROS-free ``map_layout_registry.build_map_layouts``;
         only the node's ``map_*`` geometry scalars are forwarded so the layout DATA
-        construction stays unit-testable and free of node state."""
+        construction stays unit-testable and free of node state.
+
+        Outer-wall correction: ``map_inner_*`` is the arena wall CENTRELINE (e.g.
+        ±12.5 for the 25×25 world). The OUTER world walls are NOT part of any
+        layout's internal-wall list, so ``_point_in_walls`` does not keep poses off
+        them; the structured samplers only shrink a free region by the footprint
+        radius. We therefore feed the registry the NAVIGABLE extent = wall inner
+        FACE (centre − half the wall thickness) shrunk by ``map_wall_clearance`` —
+        the same clearance internal walls already enforce — so every sampled
+        footprint edge clears the outer wall instead of overestimating the gap by
+        the wall's half-thickness. (The world outer walls share map_wall_thickness;
+        see drl_arena.world.) ``map_inner_*`` itself stays the wall centreline so
+        parking exclusion and the "25×25" arena size remain intuitive."""
+        outer_margin = 0.5 * self.map_wall_thickness + self.map_wall_clearance
         return map_layout_registry.build_map_layouts(
-            map_inner_lower=self.map_inner_lower,
-            map_inner_upper=self.map_inner_upper,
+            map_inner_lower=self.map_inner_lower + outer_margin,
+            map_inner_upper=self.map_inner_upper - outer_margin,
             map_wall_thickness=self.map_wall_thickness,
             map_corridor_width=self.map_corridor_width,
             map_corridor_passage_width=self.map_corridor_passage_width,
@@ -173,7 +217,13 @@ class MapLayoutMixin:
             return []
         size_of = {k: static_size_group(float(self._catalog_by_key[k].get("radius", 0.5)))
                    for k in avail}
-        allowed = {m: (MAP_TYPE_ALLOWED_STATIC_KEYS[m] & set(avail)) for m in MAP_TYPES}
+        allowed = {
+            m: {
+                k for k in (MAP_TYPE_ALLOWED_STATIC_KEYS[m] & set(avail))
+                if self._static_key_fits_map_geometry(m, k)
+            }
+            for m in MAP_TYPES
+        }
         # (map, size_group) pairs that actually have candidates, with their target.
         pairs = {}
         for m in MAP_TYPES:
@@ -220,7 +270,12 @@ class MapLayoutMixin:
         ]
         if len(self.parking_slots) >= want:
             return
-        vals = list(np.arange(-17.0, 17.0 + 1e-6, 1.6))
+        # Ring extent scales with the arena: reach a few metres past the exclusion
+        # band so the corner bands have enough slots, but stay on the ground plane
+        # (drl_arena.world floor is 50x50 -> |xy| <= 25). Previously hard-coded to
+        # ±17 (only valid for the old 19x19 arena).
+        lim = round(min(24.0, excl + 4.5), 1)
+        vals = list(np.arange(-lim, lim + 1e-6, 1.6))
         ring = [(float(x), float(y), self.parking_z)
                 for x in vals for y in vals
                 if abs(x) >= excl or abs(y) >= excl]
@@ -419,9 +474,14 @@ class MapLayoutMixin:
         yaw = nominal + rot_sign * offset
         return geom.wrap_to_pi(yaw)
 
-    def _sample_xy_in_regions(self, regions, radius: float):
+    def _sample_xy_in_regions(self, regions, radius: float, rng=None):
         """Uniformly sample (x, y) in an area-weighted random region, shrinking
-        each region by `radius` so the footprint stays inside it."""
+        each region by `radius` so the footprint stays inside it.
+
+        ``rng`` selects the RNG: None (default) → global np.random (goal / robot
+        start / static-obstacle callers, unchanged); a HUMAN caller threads in
+        ``self._human_np_rng`` so pedestrian spawn stays off the global stream."""
+        r = rng if rng is not None else np.random
         usable = []
         weights = []
         for (x_lo, x_hi, y_lo, y_hi) in regions:
@@ -434,9 +494,9 @@ class MapLayoutMixin:
         if not usable:
             return None
         w = np.asarray(weights, dtype=float)
-        idx = int(np.random.choice(len(usable), p=w / w.sum()))
+        idx = int(r.choice(len(usable), p=w / w.sum()))
         ax_lo, ax_hi, ay_lo, ay_hi = usable[idx]
-        return float(np.random.uniform(ax_lo, ax_hi)), float(np.random.uniform(ay_lo, ay_hi))
+        return float(r.uniform(ax_lo, ax_hi)), float(r.uniform(ay_lo, ay_hi))
 
     def _segment_hits_wall(self, x0: float, y0: float, x1: float, y1: float,
                            clearance: float, samples: int = 12) -> bool:
@@ -471,4 +531,3 @@ class MapLayoutMixin:
                 for gy in np.linspace(ay_lo, ay_hi, ny):
                     pts.append((float(gx), float(gy)))
         return pts
-

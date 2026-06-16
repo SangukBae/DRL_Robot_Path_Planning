@@ -9,6 +9,29 @@ shared by ``map_layout_runtime.MapLayoutMixin`` (which calls it with the node's
 """
 
 
+def structured_lane_footprint_fits(
+    *,
+    radius: float,
+    lane_width: float,
+    passage_width: float,
+    wall_clearance: float,
+    passage_safety_margin: float,
+) -> bool:
+    """Return whether a circular footprint can exist OFF the reserved passage.
+
+    Corridor / intersection maps keep a central reserved passage clear while
+    also requiring every sampled pose to stay off the side walls by
+    ``wall_clearance``. When the lane is too narrow for a given obstacle radius,
+    no legal centre point exists and the obstacle would only generate
+    ``no free pose`` warnings at runtime.
+    """
+    half = lane_width / 2.0
+    passage_half = passage_width / 2.0
+    max_cross = half - (wall_clearance + radius)
+    min_cross = passage_half + radius + passage_safety_margin
+    return max_cross > min_cross
+
+
 def build_map_layouts(
     *,
     map_inner_lower,
