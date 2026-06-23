@@ -1,68 +1,92 @@
-# AUX_PRED (v2): optional temporal / history extension for the auxiliary head.
+# AUX_PRED (v2): aux-ONLY temporal context over recent state history.
 #
-# STATUS: SCAFFOLD ONLY -- NOT WIRED INTO TRAINING OR INFERENCE.
-#   tqc_agent.py never constructs TemporalContextEncoder, the replay buffer does
-#   not sample stacked states / history, and the aux head does not receive a
-#   temporal context.  AuxPredConfig parses temporal_enabled / temporal_mode /
-#   history_len / state_stack_len, but setting them has NO effect today.  This
-#   file only fixes the intended interface so the feature can be finished later
-#   (needs: buffer stacked-state sampling + concatenating the context onto the
-#   aux-head input only, leaving the v1 actor/critic path unchanged).
+# STATUS: WIRED (opt-in via AuxPredConfig.temporal_enabled).
+#   tqc_agent.py constructs TemporalContextEncoder when temporal is enabled, the
+#   replay buffer samples a boundary-safe backward state window
+#   (LAP.get_last_state_history), and the encoded context is concatenated onto
+#   the AUX-HEAD input ONLY.  The actor/critic path is NOT recurrent and never
+#   sees this context, so off-policy i.i.d. stability is preserved.
 #
-# This is a SECOND-STAGE, opt-in module.  The primary single-step path in
-# tqc_agent.py + aux_prediction.py does NOT import or depend on anything here;
-# everything is gated behind AuxPredConfig.temporal_enabled so the default
-# (v1) training path is untouched.
-#
-# Rather than forcing the shared encoder to become a recurrent network (which
-# would change the actor/critic input path and hurt off-policy stability), the
-# temporal signal is provided as a small, separate branch:
-#
-#   - "state_stack": the caller stacks the last `state_stack_len` observations
-#     and feeds the concatenation to TemporalContextEncoder, producing a small
-#     context vector that is concatenated onto the shared latent ONLY for the
-#     auxiliary head (not for actor/critic).  This keeps the v1 actor/critic
-#     path byte-for-byte identical.
+# Why a GRU over latents (not a temporal-conv, not a recurrent encoder):
+#   - The action-conditioned aux head already uses a GRU + masked self-attention
+#     with a leading-valid boundary mask.  Reusing that exact pattern keeps ONE
+#     well-tested masking contract in the codebase instead of inventing a second.
+#   - History length is short (N≈4) and VARIABLE (an episode boundary / the
+#     buffer seam truncates it).  A GRU with a per-row valid_len gather handles a
+#     variable window naturally; a fixed-kernel temporal conv would need extra
+#     padding-mask bookkeeping for the same guarantee.
+#   - We deliberately do NOT make the shared encoder recurrent: that would change
+#     the actor/critic input path and hurt off-policy replay stability.  Instead
+#     the SAME shared encoder is applied per-step to the history states and a
+#     SEPARATE small GRU summarises the latent sequence for the aux head only.
 #
 # Provenance: Falcon uses an LSTM over the rollout to forecast future human
-# trajectories; here we approximate that temporal cue with a light MLP over a
-# short stack of recent states, which is compatible with i.i.d. off-policy
-# replay sampling when the buffer also stores the stacked observation.
+# motion.  Here the temporal cue is backward-looking (recent state history) and
+# confined to the aux branch, so it enriches the shared representation without
+# turning the policy into an RNN.
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class TemporalContextEncoder(nn.Module):
-    """AUX_PRED (v2): small MLP over a stack of recent states -> context vec.
+    """AUX_PRED (v2): GRU over the shared-encoder latents of the last N states.
 
-    Input : (B, state_stack_len * state_dim)
-    Output: (B, context_dim)
+    Input
+    -----
+    z_seq      : (B, N, latent_dim)  REVERSE-time latent window: index 0 is the
+                 CURRENT state s_t (always valid), index k is s_{t-k}; steps past
+                 the episode start / buffer seam are zero-padded.
+    valid_len  : (B,) long in [1, N]  number of LEADING valid (in-episode) steps.
+
+    Output
+    ------
+    (B, out_dim) temporal context, or (B, 0) when disabled (so an unconditional
+    ``cat`` is a no-op and the v1 path is byte-for-byte unchanged).
+
+    Boundary safety mirrors ActionConditionedAuxHead exactly: out-of-episode
+    steps (k >= valid_len) are key-padding masked in the optional self-attention
+    and excluded by the valid_len-1 gather, so padded / cross-boundary states can
+    never influence the context (locked by tests).
     """
 
-    def __init__(self, state_dim: int, cfg, context_dim: int = 64):
+    def __init__(self, latent_dim: int, cfg, context_dim: int = None):
         super().__init__()
-        self.enabled = bool(cfg.temporal_enabled)
-        self.mode = cfg.temporal_mode
-        self.stack_len = max(1, int(cfg.state_stack_len))
-        self.context_dim = context_dim
+        self.enabled = bool(getattr(cfg, "temporal_enabled", False))
+        self.history_len = max(1, int(getattr(cfg, "history_len", 4)))
         if not self.enabled:
             self.out_dim = 0
             return
-        in_dim = state_dim * self.stack_len
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, 128),
-            nn.ELU(),
-            nn.Linear(128, context_dim),
-            nn.ELU(),
-        )
-        self.out_dim = context_dim
 
-    def forward(self, stacked_state):
-        if not self.enabled:
-            # Caller should not use the output, but return an empty tensor with
-            # a valid batch dim so accidental concatenation is a no-op.
-            b = stacked_state.shape[0]
-            return stacked_state.new_zeros((b, 0))
-        return self.net(stacked_state)
+        self.context_dim = int(context_dim or cfg.temporal_context_dim)
+        self.gru = nn.GRU(latent_dim, self.context_dim, batch_first=True)
+
+        # Optional Falcon-style masked self-attention over the GRU output
+        # sequence (same block as the action path). heads must divide
+        # context_dim; fall back to 1 head otherwise.
+        self.attention = None
+        if bool(getattr(cfg, "temporal_attention", False)):
+            heads = int(getattr(cfg, "action_condition_attention_heads", 4))
+            if self.context_dim % heads != 0:
+                heads = 1
+            self.attention = nn.MultiheadAttention(
+                self.context_dim, heads, batch_first=True)
+            self.attn_norm = nn.LayerNorm(self.context_dim)
+        self.out_dim = self.context_dim
+
+    def forward(self, z_seq, valid_len):
+        b = z_seq.shape[0]
+        out_seq, _ = self.gru(z_seq)                    # (B, N, context_dim)
+        if self.attention is not None:
+            n = out_seq.shape[1]
+            ar = torch.arange(n, device=out_seq.device).unsqueeze(0)   # (1, N)
+            key_padding_mask = ar >= valid_len.unsqueeze(1)            # (B, N)
+            attn_out, _ = self.attention(
+                out_seq, out_seq, out_seq,
+                key_padding_mask=key_padding_mask, need_weights=False)
+            out_seq = self.attn_norm(out_seq + attn_out)
+        # Gather the output AFTER consuming exactly the valid (in-episode) steps.
+        # valid_len >= 1, so index 0 (the current state) is always in-episode and
+        # never masked, keeping the gathered position finite.
+        idx = (valid_len - 1).clamp(min=0)              # (B,)
+        return out_seq[torch.arange(b, device=out_seq.device), idx]  # (B, ctx)

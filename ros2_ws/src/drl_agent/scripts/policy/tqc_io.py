@@ -37,6 +37,12 @@ def save(agent, directory, filename):
         torch.save(agent.checkpoint_encoder.state_dict(), f"{directory}/{filename}_checkpoint_encoder.pth")
         if agent.aux_head is not None:
             torch.save(agent.aux_head.state_dict(), f"{directory}/{filename}_aux_head.pth")
+        # AUX_PRED (v2): aux-only temporal encoder (training-only, like the head).
+        if getattr(agent, "temporal_encoder", None) is not None:
+            torch.save(
+                agent.temporal_encoder.state_dict(),
+                f"{directory}/{filename}_temporal_encoder.pth",
+            )
 
     # Entropy coefficient
     if agent.ent_coef_auto:
@@ -151,6 +157,35 @@ def load(
                     f"(both will retrain). Details: {e}"
                 )
 
+        # AUX_PRED (v2): aux-only temporal encoder (training-only). Same graceful
+        # contract as the aux head: load strictly when the checkpoint carries a
+        # matching module; on a missing file (resuming a PRE-temporal checkpoint)
+        # or an architecture mismatch keep the freshly-initialised temporal
+        # encoder and rebuild the critic optimizer (its params share that group),
+        # so the encoder/actor/critic still resume and only the temporal branch
+        # retrains. Logged either way so the fresh-init path is never silent.
+        if getattr(agent, "temporal_encoder", None) is not None:
+            p = f"{directory}/{filename}_temporal_encoder.pth"
+            if os.path.exists(p):
+                try:
+                    agent.temporal_encoder.load_state_dict(_torch_load(p))
+                except (RuntimeError, KeyError) as e:
+                    agent.critic_optimizer = agent._make_critic_optimizer()
+                    print(
+                        "[AUX_PRED] temporal-encoder checkpoint is incompatible "
+                        "with the current aux config; keeping a freshly-"
+                        "initialised temporal encoder AND fresh critic-optimizer "
+                        f"moments (both retrain). Details: {e}"
+                    )
+            else:
+                agent.critic_optimizer = agent._make_critic_optimizer()
+                print(
+                    "[AUX_PRED] no temporal-encoder file in this checkpoint "
+                    "(resuming a run saved before the temporal context was "
+                    "enabled); using a freshly-initialised temporal encoder and "
+                    "fresh critic-optimizer moments."
+                )
+
     # Entropy coefficient
     if agent.ent_coef_auto:
         p = f"{directory}/{filename}_log_ent_coef.pth"
@@ -172,7 +207,26 @@ def load(
     if load_replay_buffer:
         buf_path = f"{directory}/{filename}_replay_buffer"
         if os.path.isfile(buf_path + ".npz"):
-            agent.replay_buffer.load(buf_path)
+            # AUX_PRED: buffer.load() FAIL-FASTS (RuntimeError) when this run needs
+            # per-transition episode boundaries (track_traj — action-conditioned
+            # and/or temporal aux) but the saved buffer predates them and has no
+            # 'traj_end'. That low-level guard is correct: loading those zeros
+            # would silently splice future-action / state-history walks across
+            # episode boundaries. Here, at the RESUME orchestrator level, we don't
+            # let it abort the whole model load (the actor/critic/encoder already
+            # loaded above and DRIVE the policy): we degrade to a FRESH buffer and
+            # log it loudly. So a pre-boundary checkpoint still resumes the model;
+            # only the replay buffer restarts (warmup refills it). A direct
+            # buffer.load() caller still gets the hard error.
+            try:
+                agent.replay_buffer.load(buf_path)
+            except RuntimeError as e:
+                print(
+                    "[AUX_PRED] replay-buffer checkpoint is incompatible with the "
+                    "current aux config (it has no episode boundaries this run "
+                    "needs); resuming the MODEL with a FRESH replay buffer "
+                    f"(warmup will refill it). Details: {e}"
+                )
 
 
 def load_encoder_for_inference(agent, actor_path):

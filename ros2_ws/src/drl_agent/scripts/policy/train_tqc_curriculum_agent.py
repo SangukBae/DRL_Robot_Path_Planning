@@ -285,6 +285,10 @@ class TrainTQCCurriculum(
         self._aux_eval_action_conditioned = bool(
             getattr(self.rl_agent, "aux_action_conditioned", False))
         self._aux_eval_ac_steps = int(getattr(_aux_cfg, "action_conditioned_steps", 4)) if _aux_cfg else 4
+        # AUX_PRED (v2): temporal-context eval flags (faithful backward history).
+        self._aux_eval_temporal = bool(
+            getattr(self.rl_agent, "aux_temporal_enabled", False))
+        self._aux_eval_hist_len = int(getattr(_aux_cfg, "history_len", 4)) if _aux_cfg else 4
         self._aux_eval_cfg = {
             "aux_eval_on": self._aux_eval_on,
             "h_coll_available": self._h_coll_available,
@@ -295,13 +299,15 @@ class TrainTQCCurriculum(
             "lidar_clearance_radius_m": _lcr if _lcr > 0 else 0.5,
             "risk_distance_scale": self._label_Dc,
             "action_conditioned": self._aux_eval_action_conditioned,
+            "temporal": self._aux_eval_temporal,
         }
         self.get_logger().info(
             f"[AUX_EVAL] aux_head_metrics={self._aux_eval_on} | "
             f"label_human_metrics(H-Coll/PSC)={self._h_coll_available} | "
             f"H={self._label_H} K={self._label_K} D_c={self._label_Dc:.2f}m | "
             f"near_event<{self._aux_near_event_threshold_m:.2f}m "
-            f"action_cond={self._aux_eval_action_conditioned}"
+            f"action_cond={self._aux_eval_action_conditioned} "
+            f"temporal={self._aux_eval_temporal}"
         )
         _env_cfg = _envp.get("loaded_config_path", "")
         if not _env_cfg:

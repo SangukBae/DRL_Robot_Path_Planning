@@ -16,6 +16,9 @@ from aux_prediction import (
     AuxPredConfig, SharedEncoder, AuxiliaryHead, ActionConditionedAuxHead,
 )
 from aux_prediction_losses import compute_aux_loss
+# AUX_PRED (v2): aux-only temporal context (GRU over recent in-episode states).
+# Disabled -> out_dim 0, so the head is built exactly as the single-step v1 head.
+from aux_prediction_temporal import TemporalContextEncoder
 
 
 # Network definitions + TQC loss now live in tqc_networks.py; checkpoint I/O in
@@ -99,6 +102,21 @@ class Agent(object):
                 "aux_prediction.action_conditioned_steps must be >= 1 "
                 f"(got {self.aux_cfg.action_conditioned_steps})."
             )
+        # AUX_PRED (v2): aux-only temporal context. Same fail-fast contract as the
+        # action-conditioned variant: it requires the shared encoder (enabled).
+        self.aux_temporal_enabled = bool(
+            self.aux_enabled and self.aux_cfg.temporal_enabled
+        )
+        if self.aux_cfg.temporal_enabled and not self.aux_enabled:
+            raise RuntimeError(
+                "aux_prediction.temporal_enabled=true requires "
+                "aux_prediction.enabled=true."
+            )
+        if self.aux_temporal_enabled and self.aux_cfg.history_len < 1:
+            raise RuntimeError(
+                "aux_prediction.history_len must be >= 1 "
+                f"(got {self.aux_cfg.history_len})."
+            )
 
         self.encoder = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
         self.encoder_target = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
@@ -107,16 +125,30 @@ class Agent(object):
         self.checkpoint_encoder.load_state_dict(self.encoder.state_dict())
         latent_dim = self.encoder.out_dim
 
+        # AUX_PRED (v2): aux-only temporal context encoder (GRU over the shared
+        # latents of the last history_len in-episode states). out_dim == 0 when
+        # disabled, so the aux head trunk width is unchanged from v1. The
+        # actor/critic NEVER consume this context -> the policy stays non-recurrent.
+        self.temporal_encoder = (
+            TemporalContextEncoder(latent_dim, self.aux_cfg).to(self.device)
+            if self.aux_temporal_enabled else None
+        )
+        temporal_dim = self.temporal_encoder.out_dim if self.temporal_encoder else 0
+
         # AUX_PRED: training-only auxiliary head (dropped at inference).  The
         # action-conditioned head adds an action-sequence GRU; both emit the same
-        # output dict so the loss (compute_aux_loss) is identical.
+        # output dict so the loss (compute_aux_loss) is identical. temporal_dim>0
+        # appends the temporal context to the head input only.
         if not self.aux_enabled:
             self.aux_head = None
         elif self.aux_action_conditioned:
             self.aux_head = ActionConditionedAuxHead(
-                latent_dim, action_dim, self.aux_cfg).to(self.device)
+                latent_dim, action_dim, self.aux_cfg, temporal_dim=temporal_dim
+            ).to(self.device)
         else:
-            self.aux_head = AuxiliaryHead(latent_dim, self.aux_cfg).to(self.device)
+            self.aux_head = AuxiliaryHead(
+                latent_dim, self.aux_cfg, temporal_dim=temporal_dim
+            ).to(self.device)
 
         # ----------------------------
         # Networks & Optimizers
@@ -173,9 +205,10 @@ class Agent(object):
             prioritized=self.prioritized,
             # AUX_PRED: store the future-risk label alongside each transition.
             aux_dim=(self.aux_cfg.label_dim if self.aux_enabled else 0),
-            # AUX_PRED: track episode boundaries only for the action-conditioned
-            # aux (so future-action lookups never cross episodes).
-            track_traj=self.aux_action_conditioned,
+            # AUX_PRED: track episode boundaries when EITHER the action-conditioned
+            # aux (future-action lookup) OR the temporal context (backward
+            # state-history lookup) is on, so neither walk crosses an episode.
+            track_traj=(self.aux_action_conditioned or self.aux_temporal_enabled),
         )
 
         # ----------------------------
@@ -284,7 +317,45 @@ class Agent(object):
             trunk_params += list(self.encoder.parameters())
         if self.aux_head is not None:
             trunk_params += list(self.aux_head.parameters())
+        # AUX_PRED (v2): the temporal encoder is part of the aux trunk; its grads
+        # flow with critic + aux loss (never the actor) -> same optimizer group.
+        if getattr(self, "temporal_encoder", None) is not None:
+            trunk_params += list(self.temporal_encoder.parameters())
         return torch.optim.Adam(trunk_params, lr=self.critic_lr)
+
+    def _current_aux_beta(self):
+        """AUX_PRED: effective trunk-level aux weight at this step.
+
+        Linearly ramps 0 -> loss_weight over aux_beta_warmup_steps so a noisy,
+        freshly-initialised aux head does not perturb early critic learning.
+        Returns the constant loss_weight when the warmup is disabled (== 0).
+
+        ``train()`` increments ``training_steps`` BEFORE the aux block runs, so the
+        first update has ``training_steps == 1``; the ``-1`` makes that first
+        update's beta exactly 0 (a true 0 -> loss_weight ramp) and reaches the
+        full weight after ``w`` updates (at ``training_steps == w + 1``)."""
+        w = self.aux_cfg.aux_beta_warmup_steps
+        if w <= 0:
+            return self.aux_beta
+        return self.aux_beta * min(1.0, max(0, self.training_steps - 1) / float(w))
+
+    def _compute_temporal_ctx(self):
+        """AUX_PRED (v2): temporal context for the just-sampled batch, or None.
+
+        Walks the replay buffer backward (boundary-safe) for the last
+        history_len in-episode states, encodes them through the SHARED encoder
+        (so the temporal aux loss also shapes the encoder) and summarises the
+        latent window with the temporal GRU. Returns (context, hist_valid_len) or
+        None when temporal is off / history is unavailable."""
+        if self.temporal_encoder is None:
+            return None
+        hist = self.replay_buffer.get_last_state_history(self.aux_cfg.history_len)
+        if hist is None:
+            return None
+        hist_states, hist_valid = hist                 # (B, N, S), (B,)
+        b, n, s = hist_states.shape
+        z_seq = self.encoder(hist_states.reshape(b * n, s)).reshape(b, n, -1)
+        return self.temporal_encoder(z_seq, hist_valid), hist_valid
 
     def select_action(self, state, use_checkpoint=False, use_exploration=True):
         """상태로부터 정규화 action [-1, 1] 선택"""
@@ -317,7 +388,8 @@ class Agent(object):
         """True when an auxiliary head exists and can be queried for eval."""
         return bool(self.aux_enabled and self.aux_head is not None)
 
-    def aux_predict_eval(self, states, future_actions=None, valid_len=None):
+    def aux_predict_eval(self, states, future_actions=None, valid_len=None,
+                         state_history=None, hist_valid_len=None):
         """Run encoder + aux head on a batch of states (no grad) and return the
         prediction as NumPy, for the formal aux eval metrics.
 
@@ -330,6 +402,13 @@ class Agent(object):
                         only in-episode actions, zero-padded past the episode end.
         valid_len     : array-like [N] (long) in [1, K], number of leading
                         in-episode actions.  Required for action-conditioned.
+        state_history : array-like [N, H, state_dim] or None.  REVERSE-time state
+                        window (index 0 == current state) for the temporal
+                        context; only used when the head is temporal.  When
+                        omitted on a temporal head, a length-1 history (current
+                        state only) is used — a valid but minimal context.
+        hist_valid_len: array-like [N] (long) in [1, H], leading-valid history
+                        length; defaults to all-1 when state_history is omitted.
 
         Returns
         -------
@@ -345,6 +424,10 @@ class Agent(object):
             s_np = s_np.reshape(s_np.shape[0], -1)
             s_t = torch.from_numpy(s_np).to(self.device)
             z = self.encoder(s_t)
+
+            # AUX_PRED (v2): build the eval temporal context (None on a v1 head).
+            temporal_ctx = self._temporal_ctx_for_eval(z, state_history, hist_valid_len)
+
             if self.aux_action_conditioned:
                 if future_actions is None or valid_len is None:
                     return None
@@ -354,13 +437,35 @@ class Agent(object):
                 vl = torch.from_numpy(
                     np.asarray(valid_len, dtype=np.int64)
                 ).to(self.device)
-                out = self.aux_head(z, fa, vl)
+                out = self.aux_head(z, fa, vl, temporal_ctx=temporal_ctx)
             else:
-                out = self.aux_head(z)
+                out = self.aux_head(z, temporal_ctx=temporal_ctx)
             res = {"risk_map": out["risk_map"].cpu().numpy().astype(np.float32)}
             if "min_dist" in out:
                 res["min_dist"] = out["min_dist"].cpu().numpy().astype(np.float32)
             return res
+
+    def _temporal_ctx_for_eval(self, z, state_history, hist_valid_len):
+        """AUX_PRED (v2): temporal context for an eval batch, or None on a v1
+        head. Mirrors training: encode the (reverse-time) history window through
+        the shared encoder and summarise it with the temporal GRU. Falls back to
+        a length-1 (current-state-only) window when no history is supplied."""
+        if self.temporal_encoder is None:
+            return None
+        b = z.shape[0]
+        n = self.aux_cfg.history_len
+        if state_history is None:
+            z_seq = z.new_zeros((b, n, z.shape[1]))
+            z_seq[:, 0, :] = z
+            vl = torch.ones(b, dtype=torch.long, device=self.device)
+        else:
+            h_np = np.asarray(state_history, dtype=np.float32)
+            h_t = torch.from_numpy(h_np).to(self.device)        # (b, n, S)
+            z_seq = self.encoder(h_t.reshape(b * n, -1)).reshape(b, n, -1)
+            vl = (torch.ones(b, dtype=torch.long, device=self.device)
+                  if hist_valid_len is None else
+                  torch.from_numpy(np.asarray(hist_valid_len, dtype=np.int64)).to(self.device))
+        return self.temporal_encoder(z_seq, vl)
 
     def train(self):
         """Train the agent for one step"""
@@ -432,6 +537,15 @@ class Agent(object):
         aux_logs = {}
         total_trunk_loss = critic_loss
         if self.aux_enabled and self.aux_head is not None and aux_target is not None:
+            # AUX_PRED (v2): aux-only temporal context (recent in-episode state
+            # history). None when temporal is off -> the head ignores it and the
+            # v1 path is unchanged. Shares the encoder graph so it shapes E_psi.
+            temporal_ctx = None
+            tctx = self._compute_temporal_ctx()
+            if tctx is not None:
+                temporal_ctx, hist_valid = tctx
+                aux_logs["aux/hist_len_mean"] = float(hist_valid.float().mean().item())
+
             if self.aux_action_conditioned:
                 # Same target L_i (future risk from s_i), but conditioned on the
                 # upcoming in-episode action sequence [a_i, .., a_{i+K-1}].
@@ -440,18 +554,21 @@ class Agent(object):
                 aux_pred = None
                 if fa is not None:
                     future_actions, valid_len = fa
-                    aux_pred = self.aux_head(z, future_actions, valid_len)
+                    aux_pred = self.aux_head(
+                        z, future_actions, valid_len, temporal_ctx=temporal_ctx)
                     aux_logs["aux/valid_len_mean"] = float(valid_len.float().mean().item())
             else:
-                aux_pred = self.aux_head(z)
+                aux_pred = self.aux_head(z, temporal_ctx=temporal_ctx)
 
             if aux_pred is not None:
                 aux_loss, _logs = compute_aux_loss(
                     aux_pred, aux_target, self.aux_cfg, self.device
                 )
                 aux_logs.update(_logs)
-                total_trunk_loss = critic_loss + self.aux_beta * aux_loss
+                beta = self._current_aux_beta()
+                total_trunk_loss = critic_loss + beta * aux_loss
                 aux_loss_val = float(aux_loss.detach().item())
+                aux_logs["aux/beta"] = float(beta)
 
         self.critic_optimizer.zero_grad()
         total_trunk_loss.backward()

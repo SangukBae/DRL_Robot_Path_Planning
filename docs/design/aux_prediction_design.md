@@ -32,31 +32,39 @@ tagged `AUX_PRED` for easy discovery / removal.
 
 ## 3. v1 (default) vs v2 (opt-in)
 
-| | v1 (primary path) | v2 (options, off by default) |
+| | v1 (primary path) | v2 (options) |
 |---|---|---|
-| Encoder | `87 -> 256 -> 128` (ELU), shared | same |
+| Encoder | `87 -> 256 -> 128` (ELU), shared | same (**deliberately unchanged** — feeds actor/critic) |
+| Aux head trunk | 1× `Linear -> ELU` | configurable depth/width + LayerNorm (`aux_trunk_layers`, `aux_trunk_hidden_dim`, `aux_head_layernorm`) |
 | Aux head output | risk map `H x K` (sigmoid) | + future min-distance `H`; + distributional risk `H x K x Q` |
-| Loss | MSE on risk map | + `min_distance_loss_weight * MSE`; + quantile/pinball on risk |
-| Temporal | none | **scaffold only, NOT wired** (`aux_prediction_temporal.py`) |
+| Action context | action-embed + GRU last hidden | + 1-block masked self-attention over the GRU sequence (`action_condition_attention`) |
+| Loss | MSE on risk map | + `min_distance_loss_weight * MSE`; + `distributional_loss_weight *` quantile/pinball on risk; + optional `aux_beta_warmup_steps` ramp |
+| Temporal (state history) | none | **WIRED, opt-in**: GRU over recent in-episode states, aux-head input only (`aux_prediction_temporal.py`, Section 3d) |
 
-**Implemented and wired today:** v1 risk-map MSE, the future min-distance head
-(`min_distance_loss_weight > 0`), the distributional risk option
-(`use_distributional_aux`), and the **action-conditioned** variant
-(`action_conditioned_aux`, see Section 3b). These are exercised by the unit
-tests.
+**Implemented and wired today:** v1 risk-map MSE; the future min-distance head
+(`min_distance_loss_weight > 0`, **on in the curriculum config**); the
+distributional risk option (`use_distributional_aux`, wired, default off, now
+weighted by `distributional_loss_weight`); the **action-conditioned** variant
+(`action_conditioned_aux`, see Section 3b); the **configurable deeper/LayerNorm
+aux trunk** and the **action-GRU self-attention block** (Section 3c); the
+**aux-only temporal context** over recent state history (`temporal_enabled`,
+**on in the curriculum config**, Section 3d); the **beta warmup schedule**
+(`aux_beta_warmup_steps`) and an **optional shared-encoder LayerNorm**
+(`encoder_layernorm`, default off, Section 3e). All are exercised by
+`tests/test_aux_prediction.py`, `tests/test_buffer_state_history.py` and
+`tests/test_tqc_agent_temporal.py`.
 
-**Not wired (scaffold only):** the temporal branch. `temporal_enabled`,
-`temporal_mode`, `history_len`, `state_stack_len` are parsed into
-`AuxPredConfig` and `aux_prediction_temporal.py` defines
-`TemporalContextEncoder`, but nothing constructs it, samples a stacked
-state/history from the replay buffer, or concatenates a temporal context into
-the aux head. Setting `temporal_enabled: true` therefore has **no effect**
-today; finishing it requires (a) buffer support for stacked-state sampling and
-(b) concatenating the temporal context onto the aux-head input only. Listed
-here as future work so the flag is not mistaken for a working feature.
+**Aux-branch-only by design.** Everything in this round adds parameters to the
+**aux head**, never to the shared encoder or the actor/critic. The shared encoder
+is kept at `256/128` ON PURPOSE: `latent_dim` is the actor/critic input width, so
+growing it is an actor/critic change and breaks strict checkpoint resume of those
+nets. Concentrating capacity in the aux branch keeps the off-policy actor/critic
+path stable (the encoder grows the aux head 6.8× — ~101k → ~690k params — while
+the encoder stays 55k and actor/critic are byte-for-byte unchanged).
 
 The wired v2 options never change the v1 actor/critic path: extra heads are
-additive and gated by config flags.
+additive and gated by config flags. The temporal context (Section 3d) likewise
+feeds **only** the aux head — the actor/critic stay non-recurrent.
 
 ## 3b. Action-conditioned auxiliary (Proximity-Aware style)
 
@@ -105,11 +113,19 @@ together with the encoder. The actor loss leaks no gradient into the encoder or
 the aux head (verified by the gradient-isolation tests).
 
 **Resume / ablation compatibility.**
-- *Replay buffer:* loading a pre-action-conditioned buffer checkpoint (no
-  `traj_end`) into an action-conditioned run is **refused with a fail-fast**
-  error in `buffer.load()` — silently zero boundaries would splice future-action
-  sequences across old episode boundaries. Resume with `load_replay_buffer=False`
-  (fresh buffer) or disable `action_conditioned_aux`.
+- *Replay buffer:* a buffer checkpoint saved WITHOUT episode boundaries (no
+  `traj_end`, i.e. it predates action-conditioned/temporal aux) cannot be loaded
+  into a run that needs them — silently zero boundaries would splice the
+  future-action / state-history walks across old episode boundaries. This is
+  enforced at two levels: `buffer.load()` **fail-fasts** (`RuntimeError`) as the
+  authoritative low-level guard, and the resume orchestrator `tqc_io.load`
+  **catches that and degrades to a FRESH buffer with a loud log** so the MODEL
+  still resumes (the actor/critic/encoder drive the policy; warmup refills the
+  buffer). So full `load_replay_buffer=True` resume is **graceful** for ANY old
+  checkpoint — but the replay buffer is only *carried over* when the old buffer
+  already had boundaries (it did whenever action-conditioned or temporal aux was
+  on); otherwise it restarts empty. A direct `buffer.load()` caller still gets
+  the hard error.
 - *Aux head / optimizer:* the aux head is training-only and its architecture
   differs between the single-step `AuxiliaryHead` and `ActionConditionedAuxHead`
   (and it lives in the same optimizer param group as the encoder/critic). When a
@@ -121,17 +137,151 @@ the aux head (verified by the gradient-isolation tests).
 
 **Config (`hyperparameters_tqc.yaml`, requires `enabled: true`).**
 `action_conditioned_aux` (master, default false), `action_conditioned_steps`
-(K), `action_embed_dim`, `action_condition_hidden_dim` (GRU hidden). A
-contradictory config (`action_conditioned_aux` true while `enabled` false, or
+(K), `action_embed_dim`, `action_condition_hidden_dim` (GRU hidden), plus the
+strengthening keys in Section 3c (`action_condition_attention`,
+`action_condition_attention_heads`, `aux_trunk_*`). A contradictory config
+(`action_conditioned_aux` true while `enabled` false, or
 `action_conditioned_steps < 1`) raises at agent construction.
+
+## 3c. Strengthened aux branch (Falcon-inspired, aux-only)
+
+The action-conditioned head was deepened to bring in Falcon's "LSTM + attention
++ richer prediction" idea while keeping every change inside the aux branch.
+
+**Self-attention over the action-GRU sequence.** Falcon applies a
+`MultiheadAttention` over its LSTM output sequence. Here, when
+`action_condition_attention: true`, ONE `nn.MultiheadAttention` block
+(residual + `LayerNorm`) is applied to the GRU's per-step outputs `out_seq`
+`(B, K, H_gru)` **before** the boundary-safe gather:
+
+```
+out_seq = GRU(embed(a_0..a_{K-1}))
+attn    = MultiheadAttention(out_seq, key_padding_mask = [k >= valid_len])
+out_seq = LayerNorm(out_seq + attn)        # residual block
+ctx     = out_seq[ valid_len - 1 ]         # gather as before
+```
+
+The `key_padding_mask` hides every out-of-episode step (`k >= valid_len`), so the
+context can weigh the whole **in-episode** action window yet **padded /
+cross-boundary actions still never influence the prediction**. This preserves the
+replay-buffer boundary contract from Section 3b: `valid_len >= 1`, so index 0 is
+always unmasked and the gathered position is finite. The masking contract is
+locked by `test_padded_actions_do_not_change_output` /
+`test_padded_actions_have_zero_gradient` (asserted with attention ON and OFF:
+perturbing or differentiating w.r.t. the padded actions changes nothing).
+`action_condition_attention_heads` must divide `H_gru`; it silently falls back to
+1 head otherwise.
+
+**Deeper aux trunk.** `_build_aux_trunk` builds `aux_trunk_layers` blocks of
+`Linear [-> LayerNorm] -> ELU` at width `aux_trunk_hidden_dim`, shared by both
+`AuxiliaryHead` and `ActionConditionedAuxHead`. The defaults (1 layer, no
+LayerNorm, `hidden = max(latent_dim, 128)`) reproduce the original single
+`Linear -> ELU` trunk exactly, so configs that do not set the new keys — and the
+`enabled: false` baseline — are unchanged. The curriculum config opts into
+`aux_trunk_layers: 2`, `aux_trunk_hidden_dim: 256`, `aux_head_layernorm: true`.
+
+**Capacity (curriculum config).** Encoder unchanged (~55k). Action-conditioned
+aux head ~101k -> ~690k params (`action_embed_dim 32->64`,
+`action_condition_hidden_dim 128->256`, +attention block, 2-layer LayerNorm
+trunk, +min-distance head). Actor/critic param count and input width unchanged
+(`latent_dim` still 128). New keys:
+`action_condition_attention`, `action_condition_attention_heads`,
+`aux_trunk_hidden_dim`, `aux_trunk_layers`, `aux_head_layernorm`.
+
+**Resume.** The aux head lives in the same optimizer param group as the
+encoder/critic and is training-only; on a checkpoint whose aux-head architecture
+no longer matches, `tqc_agent.load()` keeps the fresh aux head + fresh
+critic-optimizer moments (with a warning) — so this architecture change resumes
+the encoder/actor/critic cleanly and just retrains the aux head (Section 3b).
+
+## 3d. Aux-only temporal context (recent state history)
+
+**Why.** Falcon runs an LSTM over the rollout to forecast future human motion. A
+single state `s_t` cannot express where obstacles are *heading*; a short history
+`[s_t, s_{t-1}, ...]` can. The temporal branch gives the encoder/aux-head that
+backward-looking cue **without making the policy recurrent**.
+
+**What is wired.** When `temporal_enabled: true` (requires `enabled: true`):
+- `LAP.get_last_state_history(N)` returns, for each sampled transition `i`, the
+  REVERSE-time window `[s_i, s_{i-1}, ..., s_{i-N+1}]` (`N = history_len`) plus a
+  `valid_len` count. It walks BACKWARD with the **same boundary-safety contract**
+  as `get_last_future_actions`: it stops at an episode boundary (`traj_end`) and
+  at the circular-buffer seam (the oldest written slot), zero-padding the rest.
+  Index 0 is always the current state, so `valid_len >= 1`.
+- Each history state is encoded by the **shared encoder** (so the temporal loss
+  also shapes `E_psi`); `TemporalContextEncoder` (a small GRU, with optional
+  masked self-attention) summarises the latent window into a context vector
+  gathered at `valid_len - 1` — identical leading-valid masking to the action
+  path, so padded / cross-boundary states never influence the output.
+- The context is **concatenated** onto the aux-head input only:
+  `feat = trunk([z_t, action_ctx?, temporal_ctx])`. Concatenation (not
+  cross-attention) is deliberate — it is the same stable fusion already used for
+  `z_t + action_ctx`, avoiding the instability/compute of cross-attending three
+  heterogeneous vectors. The actor (`z.detach()`) and critic (`z, action`) paths
+  are byte-for-byte unchanged.
+
+**Why a GRU over latents (not a temporal conv, not a recurrent encoder).** The
+window is short (`N≈4`) and variable (a boundary truncates it); a GRU with a
+per-row `valid_len` gather handles that exactly as the existing action GRU does,
+so there is ONE masking contract in the codebase. A recurrent *encoder* was
+rejected on purpose: it would change the actor/critic input path and hurt
+off-policy i.i.d. replay stability.
+
+**Replay/boundary safety.** `track_traj` is enabled whenever EITHER the
+action-conditioned OR the temporal branch is on, so the buffer always carries the
+`traj_end` flags both walks need. The eval path
+(`curriculum_aux_eval._build_state_history`) reconstructs the same backward
+window inside one finished episode, so formal aux metrics use a faithful temporal
+context (a length-1 window is the safe fallback when no history is supplied).
+
+**Resume.** The temporal encoder is **training-only** (dropped at inference) and
+saved as `<prefix>_temporal_encoder.pth`. On resume `tqc_io.load` loads it
+strictly when present and matching; on an architecture mismatch OR a missing file
+(resuming a pre-temporal checkpoint) it keeps a freshly-initialised temporal
+encoder and rebuilds the critic optimizer (its params share that group), logging
+the fresh-init either way — the encoder/actor/critic still resume cleanly and only
+the temporal branch retrains. The matching replay-buffer policy (carry over when
+the old buffer had boundaries, else degrade to a fresh buffer) is in Section 3b.
+
+## 3e. Shared-encoder polish + loss balancing
+
+**Encoder LayerNorm (opt-in, default off).** `encoder_layernorm: true` inserts a
+`LayerNorm` after each hidden pre-activation in `SharedEncoder`. **`out_dim`
+stays `latent_dim`**, so the actor/critic input width — and their checkpoints —
+never move. It is left OFF by default and NOT enabled in the shipped config
+because it changes the encoder `state_dict`: a strict encoder load on resume
+would then mismatch (`tqc_io` falls back to a fresh encoder with a logged
+warning and rebuilds the optimizer). Flip it on only for a FRESH run.
+
+**Why `latent_dim` itself is NOT grown.** `latent_dim` is the actor/critic input
+width. Growing it is an actor/critic architectural change that breaks strict
+checkpoint resume of those nets and alters the policy input contract — exactly
+the off-policy-stability risk this work avoids. All added capacity therefore goes
+into the **aux branch** (deeper trunk, action GRU + attention, temporal GRU),
+never the shared latent.
+
+**Loss balancing.**
+- `distributional_loss_weight` (default 1.0) now multiplies the pinball term
+  (previously an implicit 1.0). The risk target is in `[0,1]` and the pinball
+  uses `kappa=1.0`, so `|td| <= 1` keeps it in the quadratic-Huber regime — it
+  largely echoes the MSE with added quantile spread. That is why it stays **off
+  by default** (low marginal value for the cost) yet is a balanced, tested option
+  (`use_distributional_aux: true`, weight `0.5` in the config when enabled).
+- `aux_beta_warmup_steps` (curriculum config: 5000) linearly ramps the
+  trunk-level `beta_aux` from 0 to `loss_weight`, so a noisy freshly-initialised
+  aux head does not perturb early critic learning. 0 disables the schedule
+  (constant `beta`, the previous behaviour). Logged as `aux/beta`.
 
 ## 4. File structure
 
 New (all `AUX_PRED`-tagged):
-- `policy/aux_prediction.py` — `AuxPredConfig`, `SharedEncoder`, `AuxiliaryHead`,
-  `ActionConditionedAuxHead` (action-embed + GRU, Section 3b).
+- `policy/aux_prediction.py` — `AuxPredConfig`, `SharedEncoder`, `_build_aux_trunk`
+  (shared deeper/LayerNorm trunk), `AuxiliaryHead`, `ActionConditionedAuxHead`
+  (action-embed + GRU + optional masked self-attention, Sections 3b/3c).
 - `policy/aux_prediction_losses.py` — `compute_aux_loss`, `quantile_pinball_loss`.
-- `policy/aux_prediction_temporal.py` — v2 `TemporalContextEncoder` (opt-in).
+- `policy/aux_prediction_temporal.py` — v2 `TemporalContextEncoder` (WIRED,
+  opt-in): GRU over recent in-episode state latents, aux-head input only
+  (Section 3d).
 - `environment/aux_prediction_labels.py` — `AuxLabelConfig`,
   `compute_future_risk_labels` (privileged label generation).
 - `docs/design/aux_prediction_design.md` — this file.
@@ -139,7 +289,14 @@ New (all `AUX_PRED`-tagged):
 Minimally edited:
 - `policy/tqc_agent.py` — encoder insertion + aux loss in `train()` + save/load
   + `load_encoder_for_inference()` (restores the encoder for actor-only paths).
-- `utils/buffer.py` — optional `aux_dim` target storage (backward compatible).
+- `utils/buffer.py` — optional `aux_dim` target storage + `track_traj` episode
+  boundaries; `get_last_future_actions` (action-conditioned) and
+  `get_last_state_history` (temporal) boundary-safe index walks (backward
+  compatible; arrays allocated only when the matching aux feature is on).
+- `policy/aux_prediction_losses.py` — `distributional_loss_weight` on the pinball
+  term (Section 3e).
+- `policy/tqc_io.py` — save/load the training-only temporal encoder with the same
+  graceful fresh-init-on-mismatch contract as the aux head (Section 3d).
 - `environment/environment_interface.py` — **common layer**: `get_dimensions()`
   caches the RL state dim; `reset()/step()` slice the appended label off for
   EVERY client and expose it as `self.last_aux_label` (no-op when aux disabled).
@@ -197,10 +354,16 @@ v1 (single-step risk map) requires BOTH switches on, with **matching**
 - `config/environment_curriculum.yaml` -> `aux_prediction.enabled: true`
 
 v2 add-ons (any subset):
-- `min_distance_loss_weight: > 0`  (future min-distance head) -- wired
-- `use_distributional_aux: true`   (quantile/pinball risk) -- wired
-- `temporal_enabled: true`, `temporal_mode: state_stack` -- **scaffold only,
-  has no effect yet** (see the v1/v2 section)
+- `min_distance_loss_weight: > 0`  (future min-distance head) -- wired (ON in the
+  curriculum config; the env always emits the min-dist label block, so no env
+  change is needed)
+- `use_distributional_aux: true`   (quantile/pinball risk) -- wired, default off
+- `action_condition_attention: true` + `aux_trunk_layers`/`aux_trunk_hidden_dim`/
+  `aux_head_layernorm` -- wired aux-branch strengthening (Section 3c)
+- `temporal_enabled: true` (+ `history_len`, `temporal_context_dim`,
+  `temporal_attention`) -- aux-only recent-state context, WIRED (Section 3d)
+- `aux_beta_warmup_steps`, `distributional_loss_weight`, `encoder_layernorm`
+  -- loss balancing / encoder polish (Section 3e)
 
 With both switches off (default) the system is byte-for-byte baseline TQC.
 

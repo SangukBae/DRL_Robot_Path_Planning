@@ -59,12 +59,18 @@ def compute_aux_loss(pred, label, cfg, device):
         logs["aux/min_dist_mse"] = float(md_loss.detach().item())
 
     # --- v2: distributional risk (optional) ---
+    # Weighted by distributional_loss_weight (was an implicit 1.0) so the pinball
+    # term can be balanced against the risk-map MSE. The risk target lives in
+    # [0, 1] and the pinball uses kappa=1.0, so |td| <= 1 keeps it in the
+    # quadratic Huber regime — i.e. it largely echoes the MSE signal with added
+    # quantile spread. That is exactly why it stays OFF by default (it buys
+    # little for the cost) yet remains a balanced, tested option when wanted.
     if "risk_quant" in pred and cfg.use_distributional_aux:
         tau = torch.as_tensor(
             cfg.distributional_quantiles, dtype=torch.float32, device=device
         )
         dist_loss = quantile_pinball_loss(pred["risk_quant"], risk_target, tau)
-        total = total + dist_loss
+        total = total + cfg.distributional_loss_weight * dist_loss
         logs["aux/risk_quantile"] = float(dist_loss.detach().item())
 
     logs["aux/loss"] = float(total.detach().item())

@@ -180,6 +180,56 @@ class LAP(object):
             torch.tensor(vlen, dtype=torch.long, device=self.device),
         )
 
+    def get_last_state_history(self, n_steps):
+        """AUX_PRED: REVERSE-time state window for the last sample()'s indices.
+
+        For each sampled index i returns the states [s_i, s_{i-1}, ..., s_{i-N+1}]
+        (index 0 == the current state, always valid), walking BACKWARD and
+        stopping at an episode boundary or the buffer seam.  Steps past the stop
+        are zero-padded.  Used ONLY by the aux-branch temporal context — the
+        actor/critic never see it.
+
+        Returns (history_states, valid_len) or None when boundary tracking is off:
+          history_states : (B, N, state_dim) float tensor
+          valid_len      : (B,) long tensor in [1, N]  (number of leading valid
+                           in-episode states; index 0 is always valid)
+
+        Boundary rule (symmetric to get_last_future_actions): stepping from the
+        newer neighbour ``prev=(i-k+1)`` to the older slot ``cur=(i-k)`` is valid
+        only while we have not already reached the oldest written slot
+        (``prev == oldest`` stops, where oldest == ``ptr`` for a full buffer else
+        0 — this is the circular seam) AND transition ``cur`` is not an episode
+        end (``traj_end[cur]==0``; a 1 there means s_prev is a fresh reset state,
+        so s_cur is the PREVIOUS episode and must not be spliced in).
+        """
+        if self.traj_end is None or n_steps < 1:
+            return None
+        ind = getattr(self, "ind", None)
+        if ind is None:
+            return None
+        ind = np.asarray(ind)
+        B = ind.shape[0]
+        S = self.state.shape[1]
+        M = self.max_size
+        oldest = self.ptr if self.size == self.max_size else 0
+
+        hist = np.zeros((B, n_steps, S), dtype=np.float32)
+        vlen = np.ones(B, dtype=np.int64)
+        valid = np.ones(B, dtype=bool)
+        hist[:, 0, :] = self.state[ind]   # k = 0 is the current state, always valid
+        for k in range(1, n_steps):
+            prev = (ind - (k - 1)) % M
+            cur = (ind - k) % M
+            step_ok = valid & (prev != oldest) & (self.traj_end[cur, 0] == 0.0)
+            valid = valid & step_ok
+            if valid.any():
+                hist[valid, k, :] = self.state[cur[valid]]
+                vlen[valid] += 1
+        return (
+            torch.tensor(hist, dtype=torch.float, device=self.device),
+            torch.tensor(vlen, dtype=torch.long, device=self.device),
+        )
+
     def update_priority(self, priority):
         self.priority[self.ind] = priority.reshape(-1).detach()
         self.max_priority = max(float(priority.max()), self.max_priority)

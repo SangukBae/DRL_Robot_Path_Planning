@@ -61,6 +61,26 @@ class CurriculumAuxEvalMixin:
                 fut[i, j] = np.asarray(actions_list[i + j], dtype=np.float32)
         return fut, vlen
 
+    def _build_state_history(self, states_list):
+        """Boundary-safe REVERSE-time state window for temporal aux eval.
+
+        states_list[i] = s_i, all within ONE eval episode. For step i returns
+        [s_i, s_{i-1}, .., s_{i-H+1}] zero-padded past the episode start, and
+        hist_valid_len[i] = min(H, i+1) (>= 1) — the exact training-time
+        backward alignment (LAP.get_last_state_history), kept inside one episode
+        so it never splices across a boundary."""
+        H = max(1, int(getattr(self, "_aux_eval_hist_len", 4)))
+        T = len(states_list)
+        sdim = len(states_list[0]) if T > 0 else 0
+        hist = np.zeros((T, H, sdim), dtype=np.float32)
+        vlen = np.ones((T,), dtype=np.int64)
+        for i in range(T):
+            n = min(H, i + 1)
+            vlen[i] = max(1, n)
+            for k in range(n):
+                hist[i, k] = np.asarray(states_list[i - k], dtype=np.float32)
+        return hist, vlen
+
     def _aux_eval_episode(self, acc, states_list, labels_list, actions_list, map_type):
         """Run the aux head over one finished eval episode and add the batch to
         the accumulator (single-step OR action-conditioned, boundary-safe)."""
@@ -68,11 +88,17 @@ class CurriculumAuxEvalMixin:
             return
         states = np.asarray(states_list, dtype=np.float32)
         labels = np.asarray(labels_list, dtype=np.float64)
+        # AUX_PRED (v2): faithful backward state history for the temporal head
+        # (None-safe on a non-temporal head -> aux_predict_eval ignores it).
+        sh, shl = (self._build_state_history(states_list)
+                   if getattr(self, "_aux_eval_temporal", False) else (None, None))
         if self._aux_eval_action_conditioned:
             fut, vlen = self._build_future_actions(actions_list)
-            preds = self.rl_agent.aux_predict_eval(states, fut, vlen)
+            preds = self.rl_agent.aux_predict_eval(
+                states, fut, vlen, state_history=sh, hist_valid_len=shl)
         else:
-            preds = self.rl_agent.aux_predict_eval(states)
+            preds = self.rl_agent.aux_predict_eval(
+                states, state_history=sh, hist_valid_len=shl)
         if preds is None:
             return
         risk_gt, md_gt = split_label(labels, self._aux_eval_H, self._aux_eval_K)

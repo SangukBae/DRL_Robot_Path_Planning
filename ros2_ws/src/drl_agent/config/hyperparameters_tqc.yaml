@@ -54,6 +54,10 @@ hyperparameters:
     enabled: true                   # master switch (agent side)
     version: 1                      # 1 = single-step risk-map (primary path)
     # --- shared encoder ---
+    # Kept at 256/128 ON PURPOSE: latent_dim feeds the actor/critic input width,
+    # so growing it is an actor/critic change (and breaks strict checkpoint resume
+    # of those nets). This round concentrates the extra capacity in the AUX BRANCH
+    # only (below), leaving the actor/critic path stable. See aux_prediction_design.md.
     encoder_hidden_dim: 256
     latent_dim: 128
     # --- label geometry (keep in sync with env) ---
@@ -61,10 +65,16 @@ hyperparameters:
     horizons_sec: [0.5, 1.0, 1.5]
     # --- v1 loss ---
     loss_weight: 0.1                # beta_aux on the risk-map MSE
-    # --- v2 options (off by default) ---
-    min_distance_loss_weight: 0.0   # >0 enables the future min-distance head
-    use_distributional_aux: false   # quantile (pinball) risk prediction
+    aux_beta_warmup_steps: 5000     # ramp beta_aux 0->loss_weight over N steps (0=off)
+    # --- v2 options ---
+    min_distance_loss_weight: 0.1   # >0 enables the future min-distance head (WIRED)
+    use_distributional_aux: false   # quantile (pinball) risk prediction (wired, off)
     distributional_quantiles: [0.1, 0.5, 0.9]
+    distributional_loss_weight: 0.5 # weight on the pinball term when it is enabled
+    # --- aux-head trunk (aux branch only; actor/critic untouched) ---
+    aux_trunk_hidden_dim: 256       # widened from the implicit 128
+    aux_trunk_layers: 2             # 2x (Linear -> LayerNorm -> ELU)
+    aux_head_layernorm: true
     # Action-conditioned aux (Proximity-Aware style): predict the SAME future
     # risk target from z_t AND the upcoming action sequence [a_t..a_{t+K-1}].
     # Only the aux branch changes; actor/critic paths are untouched.  Requires
@@ -72,11 +82,26 @@ hyperparameters:
     # never crosses episodes.
     action_conditioned_aux: true
     action_conditioned_steps: 4       # K: future actions used to condition (>=1)
-    action_embed_dim: 32
-    action_condition_hidden_dim: 128  # GRU hidden size for the action context
-    # Temporal branch: SCAFFOLD ONLY, not wired yet -- these keys are parsed but
-    # currently have NO effect (see docs/aux_prediction_tqc_design.md).
-    temporal_enabled: false
-    temporal_mode: "none"           # "none" | "state_stack"
-    history_len: 4
-    state_stack_len: 1
+    action_embed_dim: 64              # widened 32 -> 64
+    action_condition_hidden_dim: 256  # GRU hidden size for the action context (128 -> 256)
+    # Falcon-style 1-block self-attention over the GRU output sequence (masked at
+    # the episode boundary). Aux branch only.
+    action_condition_attention: true
+    action_condition_attention_heads: 4
+    # --- shared encoder polish (aux-branch-safe; default off) ---
+    # LayerNorm inside the shared encoder. Keeps out_dim==latent_dim (actor/critic
+    # width unchanged) but DOES change the encoder state_dict, so a strict resume
+    # of an old encoder falls back to fresh init (logged). Left OFF so in-flight
+    # runs resume cleanly; flip on for a fresh run if the latent needs stabilising.
+    encoder_layernorm: false
+    # --- aux-ONLY temporal context (WIRED) ---
+    # Small GRU over the shared latents of the last `history_len` in-episode
+    # states; its output is concatenated onto the AUX-HEAD input only. The
+    # actor/critic stay non-recurrent (off-policy stability). The replay buffer
+    # samples a boundary-safe BACKWARD window so it never crosses an episode.
+    temporal_enabled: true
+    temporal_mode: "none"           # retained for back-compat; temporal_enabled is the switch
+    history_len: 4                  # N recent states summarised (>=1)
+    temporal_context_dim: 64        # GRU hidden / context width fed to the aux head
+    temporal_attention: false       # optional masked self-attention over the GRU sequence
+    state_stack_len: 1              # legacy key (unused by the GRU path)

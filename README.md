@@ -135,7 +135,7 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 
 **이미 구현되어 기본 설정에 포함된 TQC 확장**(별도 작업 불필요, config 플래그로 on/off):
 
-- **Auxiliary future-risk prediction**: 공유 인코더 + aux head로 미래 충돌 위험을 예측하는 보조 과제. **single-step** 및 **action-conditioned**(`[a_t..a_{t+K-1}]`로 조건화) 두 형태 모두 구현. env가 privileged future-risk 라벨을 생성하고, 평가 루프가 `aux_risk_rmse / aux_min_dist_mae_m / aux_peak_sector_acc / aux_near_event_f1`를 산출한다. 끄면(`aux_prediction.enabled=false`) baseline TQC와 byte-단위 동일하게 동작한다. → [Aux Prediction Design](docs/design/aux_prediction_design.md), [Aux Metric Schema](docs/reference/metrics_reference.md)
+- **Auxiliary future-risk prediction**: 공유 인코더 + aux head로 미래 충돌 위험을 예측하는 보조 과제. **single-step**, **action-conditioned**(`[a_t..a_{t+K-1}]`로 조건화), 그리고 **aux-only temporal context**(최근 `history_len` in-episode state를 GRU로 요약해 aux head 입력에만 concat — actor/critic은 비순환 유지) 세 형태 모두 구현. temporal/action context는 replay buffer에서 episode 경계를 넘지 않는 boundary-safe walk로 샘플링한다. env가 privileged future-risk 라벨을 생성하고, 평가 루프가 `aux_risk_rmse / aux_min_dist_mae_m / aux_peak_sector_acc / aux_near_event_f1`를 산출한다. 끄면(`aux_prediction.enabled=false`) baseline TQC와 byte-단위 동일하게 동작한다. → [Aux Prediction Design](docs/design/aux_prediction_design.md), [Aux Metric Schema](docs/reference/metrics_reference.md)
 - **Structured map curriculum**: lobby/corridor/intersection/clutter 4종 맵을 stage별로 샘플링. → [Map Curriculum](docs/design/map_curriculum_design.md)
 - **Localization-noise emulation**: 상관(OU) 노이즈 + drift + latency + map-type별 강도(+ corridor 이방성) + 드문 jump.
 
