@@ -187,9 +187,21 @@ class MapLayoutMixin:
         see drl_arena.world.) ``map_inner_*`` itself stays the wall centreline so
         parking exclusion and the "25×25" arena size remain intuitive."""
         outer_margin = 0.5 * self.map_wall_thickness + self.map_wall_clearance
+        # NAVIGABLE extent = the exact box every structured region (free_regions,
+        # start_regions, goal_regions) is built INSIDE. Store it so the start sampler
+        # can use it as the dead-zone "in-map" bound. It is NOT the legacy ±lower/upper
+        # start box (which sits INSIDE the end/arm bands and so rejects every band
+        # candidate). It is also the principled choice over goal_obstacle_lower/upper:
+        # map_inner may exceed goal_obstacle (±12.5 vs ±11.5 in the curriculum config),
+        # so the band rects extend past goal_obstacle; goal_obstacle only avoids
+        # clipping when the footprint-radius shrink happens to pull samples back inside
+        # it, whereas this extent is BY CONSTRUCTION the band box and can never reject
+        # a valid band candidate under any lane width / band depth / robot size.
+        self.map_navigable_lower = self.map_inner_lower + outer_margin
+        self.map_navigable_upper = self.map_inner_upper - outer_margin
         return map_layout_registry.build_map_layouts(
-            map_inner_lower=self.map_inner_lower + outer_margin,
-            map_inner_upper=self.map_inner_upper - outer_margin,
+            map_inner_lower=self.map_navigable_lower,
+            map_inner_upper=self.map_navigable_upper,
             map_wall_thickness=self.map_wall_thickness,
             map_corridor_width=self.map_corridor_width,
             map_corridor_passage_width=self.map_corridor_passage_width,

@@ -133,6 +133,20 @@
 >    까지 줄인 결과라 기능 영향은 없다. 없애려면 registry에서 **wall geometry용 extent**
 >    (외벽 face까지)와 **free/start/goal region용 extent**(navigable ±11.8)를 분리하면
 >    된다. 우선순위 낮음(보류).
+>
+> **수정됨 (2026-06): structured start의 dead-zone bounds 계약 불일치.**
+> start band(예: corridor 우측 band `x∈[9.3, 11.8]`)는 navigable extent 안에 만들어지는데,
+> `_sample_train_start_pose`의 `check_dead_zone(...)`이 bounds를 안 넘겨 legacy 기본값
+> `self.lower/upper = ±9.0`(scatter용 start box)으로 평가했다. band 후보가 전부 `|x|≥9.3 > 9.0`
+> 이라 **100% 탈락** → 500+200 try 소진 → 매 episode `deterministic start-region centre` fallback
+> (로그의 `Start-pose ... exhausted` 경고). 수정: `_build_map_layouts`가 navigable extent를
+> `self.map_navigable_lower/upper`로 저장하고, structured(start) 경로의 dead-zone 3곳
+> (메인 500 / relaxed 200 / centre fallback)이 이 값을 `lower/upper_bound`로 넘긴다. `goal_obstacle
+> ±11.5`이 아니라 **navigable ±11.8**을 쓰는 이유: band는 navigable로 만들어지므로 어떤 lane width/
+> band depth/robot 크기에서도 valid band 후보를 절대 자르지 않는다(goal_obstacle은 footprint shrink가
+> 우연히 표본을 ±11.5 안으로 당길 때만 안전). goal sampler / intersection 3-arm 규칙은 무변경
+> (`start_sampler.py`에 국한). 회귀 잠금: `tests/test_start_pose_feasibility.py`의 navigable-bounds
+> 계약 테스트(이전엔 `check_dead_zone`을 `False`로 stub해 이 버그가 가려져 있었음).
 
 기준 맵은 현재 두 안 중 하나로 확정해야 한다.
 

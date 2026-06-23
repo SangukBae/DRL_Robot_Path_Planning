@@ -120,6 +120,23 @@ class StartSamplerMixin:
         start_regions = layout.get("start_regions") if layout else None
         self._current_start_region = None
 
+        # Dead-zone "in-map" bound for THIS sampler. Structured maps build their
+        # end/arm start bands inside the NAVIGABLE extent (e.g. corridor right band
+        # x∈[9.3, 11.8]); the legacy default bound (self.lower/upper = ±9.0) lies
+        # INSIDE those bands, so check_dead_zone rejected every band candidate,
+        # exhausting the 500/200 budgets and forcing the deterministic-centre fallback
+        # EACH episode (the warnings in the training log). We pass the navigable extent
+        # (the exact box the bands were built within), which can never reject a valid
+        # band candidate. goal_obstacle_lower/upper would also stop the storm in THIS
+        # config (the footprint shrink keeps samples inside ±11.5), but it is < map_inner
+        # and not the band-construction box, so it is not robust to lane/band/robot
+        # changes. Legacy scatter (layout is None) keeps self.lower/upper unchanged.
+        if layout is not None:
+            dz_lower = getattr(self, "map_navigable_lower", self.goal_obstacle_lower)
+            dz_upper = getattr(self, "map_navigable_upper", self.goal_obstacle_upper)
+        else:
+            dz_lower, dz_upper = self.lower, self.upper
+
         def _sample_structured_start():
             """Pick a start region and a uniform pose inside it (footprint kept off
             the lane walls). Returns (x, y, region) or None."""
@@ -158,7 +175,8 @@ class StartSamplerMixin:
                 start_x, start_y = _sample_start_xy()
 
             # 1. Dead-zone
-            if self.check_dead_zone(start_x, start_y, use_cross_mask=False):
+            if self.check_dead_zone(start_x, start_y, use_cross_mask=False,
+                                    lower_bound=dz_lower, upper_bound=dz_upper):
                 continue
             # 1b. Internal-wall clearance (structured maps only)
             if layout is not None and self._point_in_walls(
@@ -215,7 +233,8 @@ class StartSamplerMixin:
                     start_x, start_y = _sample_start_xy()
             else:
                 start_x, start_y = _sample_start_xy()
-            if self.check_dead_zone(start_x, start_y, use_cross_mask=False):
+            if self.check_dead_zone(start_x, start_y, use_cross_mask=False,
+                                    lower_bound=dz_lower, upper_bound=dz_upper):
                 continue
             if layout is not None and self._point_in_walls(
                     start_x, start_y, self.map_wall_clearance + robot_radius):
@@ -252,7 +271,8 @@ class StartSamplerMixin:
             chosen = None
             for region in start_regions:
                 cx, cy = _band_centre(region)
-                if self.check_dead_zone(cx, cy, use_cross_mask=False):
+                if self.check_dead_zone(cx, cy, use_cross_mask=False,
+                                        lower_bound=dz_lower, upper_bound=dz_upper):
                     continue
                 if self._point_in_walls(cx, cy, self.map_wall_clearance + robot_radius):
                     continue

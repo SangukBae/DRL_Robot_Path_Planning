@@ -92,10 +92,19 @@ def _robot_collision_radius(sr: dict) -> float:
     )
 
 
+def _navigable_extent(env: dict):
+    """Mirror map_layout_runtime._build_map_layouts: the NAVIGABLE extent the
+    structured regions are built within (map_inner shrunk by the outer-wall margin)."""
+    outer_margin = 0.5 * float(env["map_wall_thickness"]) + float(env["map_wall_clearance"])
+    return (float(env["map_inner_lower"]) + outer_margin,
+            float(env["map_inner_upper"]) - outer_margin)
+
+
 def _build_layouts(env: dict) -> dict:
+    nav_lower, nav_upper = _navigable_extent(env)
     return reg.build_map_layouts(
-        map_inner_lower=float(env["map_inner_lower"]),
-        map_inner_upper=float(env["map_inner_upper"]),
+        map_inner_lower=nav_lower,
+        map_inner_upper=nav_upper,
         map_wall_thickness=float(env["map_wall_thickness"]),
         map_corridor_width=float(env["map_corridor_width"]),
         map_corridor_passage_width=float(env["map_corridor_passage_width"]),
@@ -138,19 +147,41 @@ class _SamplerNode(start_sampler.StartSamplerMixin, map_layout_runtime.MapLayout
         self.start_edge_heading_margin = float(env["start_edge_heading_margin_m"])
         self.start_front_clearance = float(env["start_front_clearance_m"])
         self.start_front_fov_deg = float(env["start_front_fov_deg"])
-        self.lower = float(env["map_inner_lower"])
-        self.upper = float(env["map_inner_upper"])
+        # Mirror the REAL environment: self.lower/upper come from the legacy start
+        # box (env["lower"]/["upper"] = ±9.0), NOT map_inner. The previous test set
+        # them to map_inner and stubbed check_dead_zone to False, which masked the
+        # bounds-mismatch bug entirely.
+        self.lower = float(env["lower"])
+        self.upper = float(env["upper"])
+        self.goal_obstacle_lower = float(env["goal_obstacle_lower"])
+        self.goal_obstacle_upper = float(env["goal_obstacle_upper"])
+        # Navigable extent = the exact box the structured bands are built within.
+        # Mirrors map_layout_runtime._build_map_layouts.
+        outer_margin = 0.5 * float(env["map_wall_thickness"]) + float(env["map_wall_clearance"])
+        self.map_navigable_lower = float(env["map_inner_lower"]) + outer_margin
+        self.map_navigable_upper = float(env["map_inner_upper"]) - outer_margin
         self.current_map_type = map_type
         self.current_layout_spec = layouts[map_type]
         self.spawned_obstacle_records = records
         self.use_obstacle_pool = use_pool
         self._logger = _Logger()
+        self._dead_zone_bounds_seen = []
 
     def get_logger(self):
         return self._logger
 
-    def check_dead_zone(self, x, y, use_cross_mask=False, **kw):
-        return False   # structured maps have no dead zone inside the bands
+    def check_dead_zone(self, x, y, use_cross_mask=False,
+                        lower_bound=None, upper_bound=None):
+        """Faithful mirror of Environment.check_dead_zone (use_cross_mask=False
+        path): an "outside the map bounds" test. Records the bounds it was called
+        with so contract tests can assert the sampler passes the navigable extent
+        (not the legacy ±9.0 box)."""
+        self._dead_zone_bounds_seen.append((lower_bound, upper_bound))
+        lo = self.lower if lower_bound is None else lower_bound
+        hi = self.upper if upper_bound is None else upper_bound
+        if x < lo or x > hi or y < lo or y > hi:
+            return True
+        return False   # structured maps have no cross-mask dead zone inside bands
 
 
 def _band_rects(spec):
@@ -346,3 +377,87 @@ def test_structured_start_bands_have_nonempty_sampling_box():
                 f"{map_type} band {region['name']} empty after margins"
             )
             assert (ax_hi - ax_lo) * (ay_hi - ay_lo) > 0.25
+
+
+# ──────────────────────────────────────────────────────────────────────────
+#  Structured start dead-zone bounds contract (the ±9.0 legacy-box bug)
+# ──────────────────────────────────────────────────────────────────────────
+def test_structured_start_passes_navigable_bounds_not_legacy_box():
+    """Contract: on a structured map the sampler must hand check_dead_zone the
+    NAVIGABLE extent — never the legacy ±lower/upper start box (which sits inside
+    the end/arm bands). Every recorded dead-zone call uses the navigable bounds, and
+    sampled starts reach beyond ±lower/upper (so the legacy box would have rejected
+    them), with NO fallback taken."""
+    env = _load_cfg()["environment"]
+    layouts = _build_layouts(env)
+    spec = layouts["corridor"]
+    node = _SamplerNode(layouts, "corridor", {}, use_pool=True)
+
+    # Sanity: this config is exactly the case where the legacy box is inside the
+    # band (band starts at |x| ~ 9.3 > upper 9.0) so the bug would 100%-clip.
+    assert node.map_navigable_upper > node.upper
+    band_inner = min(r["rect"][0] for r in spec["start_regions"] if r["name"] == "right")
+    assert band_inner > node.upper, (band_inner, node.upper)
+
+    np.random.seed(2024)
+    max_abs_x = 0.0
+    for _ in range(300):
+        x, y, yaw = node._sample_train_start_pose()
+        assert _in_any_band(x, y, spec, tol=0.05)
+        assert math.isfinite(yaw)
+        max_abs_x = max(max_abs_x, abs(x))
+
+    # No fallback path was taken.
+    assert getattr(node, "_start_relaxed_fallback_count", 0) == 0
+    assert getattr(node, "_start_centre_fallback_count", 0) == 0
+    assert node.get_logger().warns == []
+    # Starts genuinely live beyond the legacy ±9.0 box (the band the old bound clipped).
+    assert max_abs_x > node.upper
+    # Every dead-zone call used the navigable extent, not the legacy box / None / goal.
+    assert node._dead_zone_bounds_seen
+    for lo, hi in node._dead_zone_bounds_seen:
+        assert lo == node.map_navigable_lower and hi == node.map_navigable_upper
+
+
+def test_legacy_box_clips_band_navigable_does_not():
+    """Mechanism proof, bound-by-bound, for a far-edge corridor band point: the
+    legacy ±lower/upper box AND a default-bound call reject it; the navigable extent
+    accepts it. This is the exact rejection that fired every episode pre-fix."""
+    env = _load_cfg()["environment"]
+    layouts = _build_layouts(env)
+    node = _SamplerNode(layouts, "corridor", {}, use_pool=True)
+
+    # A point inside the right band but outside the legacy ±9.0 box.
+    px = 0.5 * (node.upper + node.map_navigable_upper)   # e.g. ~10.4, between 9.0 and 11.8
+    assert px > node.upper and px < node.map_navigable_upper
+
+    # Legacy default bound (self.lower/upper) → rejected (the bug).
+    assert node.check_dead_zone(px, 0.0, use_cross_mask=False) is True
+    # Explicit legacy bounds → rejected.
+    assert node.check_dead_zone(px, 0.0, use_cross_mask=False,
+                                lower_bound=node.lower, upper_bound=node.upper) is True
+    # Navigable extent → accepted (the fix).
+    assert node.check_dead_zone(px, 0.0, use_cross_mask=False,
+                                lower_bound=node.map_navigable_lower,
+                                upper_bound=node.map_navigable_upper) is False
+
+
+def test_navigable_extent_is_band_construction_box():
+    """Why navigable, not goal_obstacle: the band rects are built from the navigable
+    extent, which here exceeds goal_obstacle_upper — so navigable is the only bound
+    guaranteed to contain every band rect. (goal_obstacle only avoids clipping when
+    the footprint shrink keeps samples inside it, which is config-contingent.)"""
+    env = _load_cfg()["environment"]
+    layouts = _build_layouts(env)
+    node = _SamplerNode(layouts, "corridor", {}, use_pool=True)
+
+    assert node.map_navigable_upper > node.goal_obstacle_upper
+    assert node.map_navigable_lower < node.goal_obstacle_lower
+    # Every structured band rect lies within [navigable_lower, navigable_upper].
+    for mt in ("corridor", "intersection"):
+        for region in layouts[mt]["start_regions"]:
+            x_lo, x_hi, y_lo, y_hi = region["rect"]
+            assert node.map_navigable_lower - 1e-6 <= x_lo
+            assert x_hi <= node.map_navigable_upper + 1e-6
+            assert node.map_navigable_lower - 1e-6 <= y_lo
+            assert y_hi <= node.map_navigable_upper + 1e-6
