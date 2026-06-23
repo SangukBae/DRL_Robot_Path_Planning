@@ -77,8 +77,8 @@ corridor / intersection / clutter / lobby 값이다.
 | 2 | add_intersection | corridor, intersection | C3 / I6 | 0 | clean |
 | 3 | first_human | corridor, intersection | C4 / I6 | C1 / I1 | weak loc |
 | 4 | add_clutter | + clutter | C4 / I7 / Cl8 | C1 / I2 / Cl3 | weak loc + light proprio |
-| 5 | generalize | + lobby (4종) | C5 / I7 / Cl9 / L8 | C2 / I3 / Cl5 / L5 | drift loc + light proprio |
-| 6 | full_complexity | 4종 | C5 / I8 / Cl9 / L9 | C3 / I5 / Cl6 / L6 | robustness_train + medium proprio |
+| 5 | generalize | + lobby (4종) | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | drift loc + light proprio |
+| 6 | full_complexity | 4종 | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | robustness_train + medium proprio |
 
 > 움직이는 장애물 = 사람뿐(동적 장애물 제거됨). 스테이지 이름은 `environment_curriculum.yaml`의
 > `name:` 값이다. corridor는 5.2 m 차선이라 배치 상한(활성화 후보 ~10)이 빡빡해 모든

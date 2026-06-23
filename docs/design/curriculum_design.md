@@ -22,8 +22,8 @@ corridor / intersection / clutter / lobby 값.
 | 2 | add_intersection | C3 / I6 | 0 | corridor+intersection | clean | **구조** |
 | 3 | first_human | C4 / I6 | C1 / I1 | corridor+intersection | weak_goal_noise | **사람** |
 | 4 | add_clutter | C4 / I7 / Cl8 | C1 / I2 / Cl3 | +clutter | weak + light proprio | **지형** |
-| 5 | generalize | C5 / I7 / Cl9 / L8 | C2 / I3 / Cl5 / L5 | 4종 전부 | drift + light proprio | **일반화** |
-| 6 | full_complexity | C5 / I8 / Cl9 / L9 | C3 / I5 / Cl6 / L6 | 4종 전부 | robustness_train + medium proprio | **final** |
+| 5 | generalize | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | 4종 전부 | drift + light proprio | **일반화** |
+| 6 | full_complexity | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | 4종 전부 | robustness_train + medium proprio | **final** |
 
 > 움직이는 장애물 = 사람뿐(동적 장애물은 코드에서 제거). 맵 종류는 [map_curriculum_design](map_curriculum_design.md) 참고.
 > localization noise는 Stage 0~2 clean, **Stage 3부터** ramp-up. corridor는 5.2 m 차선의

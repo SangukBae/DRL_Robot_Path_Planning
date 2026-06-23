@@ -507,8 +507,8 @@ curriculum:
     - name: generalize
       active_static: 8
       active_humans: 5
-      active_static_by_map: {corridor: 5, intersection: 7, clutter: 9, lobby: 8}
-      active_humans_by_map: {corridor: 2, intersection: 3, clutter: 5, lobby: 5}
+      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 8}
+      active_humans_by_map: {corridor: 2, intersection: 3, clutter: 4, lobby: 5}
       human_scan_noise_std: 0.045
       human_scan_dropout_prob: 0.025
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
@@ -527,12 +527,14 @@ curriculum:
     - name: full_complexity
       active_static: 9
       active_humans: 7
-      active_static_by_map: {corridor: 5, intersection: 8, clutter: 9, lobby: 9}
-      active_humans_by_map: {corridor: 3, intersection: 5, clutter: 6, lobby: 6}
+      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 9}
+      active_humans_by_map: {corridor: 3, intersection: 4, clutter: 4, lobby: 6}
       human_scan_noise_std: 0.06
       human_scan_dropout_prob: 0.04
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
-      map_type_probs: [0.25, 0.25, 0.25, 0.25]
+      # Slightly de-emphasize the hardest maps during final-stage training to
+      # reduce collapse from dynamic crowd density while keeping all four maps active.
+      map_type_probs: [0.30, 0.30, 0.20, 0.20]
       allowed_static_groups: ["small", "medium", "large"]
       eval_map_types: ["lobby", "corridor", "intersection", "clutter"]
       # full behaviour mix (all four modes)

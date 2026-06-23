@@ -55,7 +55,7 @@ xhost +local:
 > **localization noise emulation**(상관 노이즈 + drift + map-type별 강도),
 > **auxiliary future-risk prediction**(공유 인코더 + aux head, env 라벨)이 **기본 활성화**되어 있다.
 > 현재 기본값은 corridor를 가장 가볍게 두도록 조정되어 있으며, 예를 들어 최종 Stage 6의
-> 맵별 활성 개수는 `static: C5 / I8 / Cl9 / L9`, `humans: C3 / I5 / Cl6 / L6`이다.
+> 맵별 활성 개수는 `static: C5 / I7 / Cl8 / L9`, `humans: C3 / I4 / Cl4 / L6`이다.
 > 단, localization noise는 base가 off이고 **Stage 3부터 per-stage로 ramp-up**된다
 > (Stage 0~2는 clean; 전체 비활성화는 각 stage의 `localization_profile`을 `clean`으로 두거나
 > base `localization.enabled: false`로).

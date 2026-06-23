@@ -836,8 +836,8 @@ clutter에서만 최소 경로 폭 heuristic을 적용하는 것이 현실적이
 > | 2 add_intersection | corridor,intersection | C3 / I6 | 0 | clean | – | **구조** 추가 |
 > | 3 first_human | corridor,intersection | C4 / I6 | C1 / I1 | weak | – | **사람** 추가 |
 > | 4 add_clutter | +clutter | C4 / I7 / Cl8 | C1 / I2 / Cl3 | weak | light | **지형** 추가 |
-> | 5 generalize | +lobby (4종) | C5 / I7 / Cl9 / L8 | C2 / I3 / Cl5 / L5 | drift(mid) | light | **일반화** |
-> | 6 full_complexity | 4종 | C5 / I8 / Cl9 / L9 | C3 / I5 / Cl6 / L6 | robustness_train | medium | **final** |
+> | 5 generalize | +lobby (4종) | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | drift(mid) | light | **일반화** |
+> | 6 full_complexity | 4종 | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | robustness_train | medium | **final** |
 >
 > (C=corridor, I=intersection, Cl=clutter, L=lobby. corridor는 모든 stage에서 static·humans가
 > 가장 적다 — 5.2 m 차선의 활성화 후보 상한 ~10 + 물리 배치 압박 때문.) 승급 임계값은
