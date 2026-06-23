@@ -80,6 +80,7 @@ install(
     scripts/environment/zone_tracker.py          # ZoneMixin (legacy zone tracking)
     scripts/environment/observation_builder.py   # ObservationMixin (state assembly)
     scripts/environment/gazebo_entity_manager.py # GazeboEntityMixin (spawn/delete)
+    scripts/environment/gazebo_service_wait.py   # Gazebo service wait helpers
     scripts/environment/map_layout_runtime.py    # MapLayoutMixin (layout selection/walls)
     scripts/environment/start_sampler.py         # StartSamplerMixin
     scripts/environment/goal_sampler.py          # GoalSamplerMixin

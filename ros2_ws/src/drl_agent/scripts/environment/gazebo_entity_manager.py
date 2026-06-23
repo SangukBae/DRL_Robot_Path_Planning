@@ -52,18 +52,22 @@ def _human_group_prefix(name: str):
 
 
 class GazeboEntityMixin:
-    def _await_future(self, future, timeout: float = 3.0):
+    def _await_future(self, future, timeout: float = 3.0, op: str = "service"):
         """Poll a service future until done or timed out.
 
         Safe to call from inside a service callback when the node runs under
         MultiThreadedExecutor: the other executor threads keep processing ROS
         callbacks (including the service response) while this thread sleeps.
-        Returns the result, or None on timeout.
+        Returns the result, or None on timeout. ``op`` is a short label
+        (pause/unpause/reset/set_pose/spawn/delete) so a timeout log says WHICH
+        call's response never arrived — distinguishing a wait-stage stall (logged
+        by ``_wait_for_srv``) from a response-stage stall (logged here).
         """
         deadline = time.time() + timeout
         while not future.done():
             if time.time() > deadline:
-                self.get_logger().warn(f"Service future timed out after {timeout:.1f}s")
+                self.get_logger().warn(
+                    f"[gazebo] {op}: response future timed out after {timeout:.1f}s")
                 return None
             time.sleep(0.05)
         return future.result()

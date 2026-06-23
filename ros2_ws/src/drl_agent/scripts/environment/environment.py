@@ -72,6 +72,9 @@ from human_spawn_sampler import HumanSpawnMixin
 from human_motion_manager import HumanMotionMixin
 from gazebo_entity_manager import GazeboEntityMixin
 from obstacle_catalog_spawner import ObstacleMixin
+# Bounded Gazebo-service wait + the failure type the callbacks propagate, so a
+# dead Gazebo control/set_pose service never hangs /step or /reset forever.
+from gazebo_service_wait import GazeboServiceError, bounded_wait_for_service
 
 
 class Environment(
@@ -869,6 +872,21 @@ class Environment(
             .get_parameter_value()
             .string_value
         )
+        # Bounded-wait budgets for the Gazebo world-control / set_pose service
+        # calls made INSIDE the /step and /reset callbacks. These replace the old
+        # unbounded `while not wait_for_service` loop: if Gazebo dies the callback
+        # raises GazeboServiceError after at most ~wait+call seconds instead of
+        # hanging forever. Kept well under the trainer's service_call_timeout_sec
+        # (30s) so the gym node fails FIRST and the trainer sees a clean timeout.
+        self.declare_parameter("gazebo_service_wait_timeout_sec", 5.0)
+        self.declare_parameter("gazebo_service_wait_poll_sec", 1.0)
+        self.declare_parameter("gazebo_service_call_timeout_sec", 5.0)
+        self._gz_wait_timeout = float(
+            self.get_parameter("gazebo_service_wait_timeout_sec").value)
+        self._gz_wait_poll = float(
+            self.get_parameter("gazebo_service_wait_poll_sec").value)
+        self._gz_call_timeout = float(
+            self.get_parameter("gazebo_service_call_timeout_sec").value)
         # /world/<world_name>/control  (pause / reset 등)
         self.world_control = self.create_client(
             ControlWorld,
@@ -1623,49 +1641,76 @@ class Environment(
     # ----------------------------------------------------------------------------------------------
     # ====================================Ignition Start============================================
     # ----------------------------------------------------------------------------------------------
-    def _wait_for_srv(self, client, name: str):
-        """공통: 서비스가 뜰 때까지 대기"""
-        while not client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info(
-                f"Service {name} not available, waiting again..."
-            )
+    def _wait_for_srv(self, client, name: str, op: str) -> bool:
+        """Bounded wait for a Gazebo service to become available.
+
+        Replaces the old unbounded ``while not wait_for_service`` loop: probes at
+        most ``gazebo_service_wait_timeout_sec`` (cadence
+        ``gazebo_service_wait_poll_sec``) and ALWAYS returns. Returns True when
+        the service is up; on exhaustion logs WHICH op/service timed out after
+        how long and returns False (the caller raises GazeboServiceError).
+        ``op`` is a short label (pause/unpause/reset/set_pose) for the logs."""
+        ok, elapsed = bounded_wait_for_service(
+            lambda step: client.wait_for_service(timeout_sec=step),
+            self._gz_wait_timeout,
+            self._gz_wait_poll,
+            on_wait=lambda waited: self.get_logger().warn(
+                f"[gazebo] {op}: service {name} not available, waiting "
+                f"({waited:.1f}/{self._gz_wait_timeout:.1f}s)..."),
+        )
+        if not ok:
+            self.get_logger().error(
+                f"[gazebo] {op}: service {name} UNAVAILABLE after {elapsed:.1f}s "
+                f"(wait budget {self._gz_wait_timeout:.1f}s) — failing fast")
+        return ok
+
+    def _call_world_service(self, client, req, srv_name: str, op: str):
+        """Shared bounded call path for a Gazebo world/set_pose service.
+
+        Raises GazeboServiceError (never hangs, never sys.exit) when the service
+        is unavailable within the wait budget, when the response future does not
+        arrive within the call budget, or when the call itself raises. A
+        ``success=false`` reply is logged but NOT treated as fatal (it is not a
+        hang and matches the previous warn-and-continue behaviour). Returns the
+        result on success."""
+        t0 = time.time()
+        if not self._wait_for_srv(client, srv_name, op):
+            raise GazeboServiceError(
+                f"{srv_name} ({op}): service unavailable after "
+                f"{time.time() - t0:.1f}s wait")
+        try:
+            future = client.call_async(req)
+            result = self._await_future(
+                future, timeout=self._gz_call_timeout, op=op)
+        except Exception as e:
+            raise GazeboServiceError(
+                f"{srv_name} ({op}): call raised after "
+                f"{time.time() - t0:.1f}s: {e}") from e
+        if result is None:
+            raise GazeboServiceError(
+                f"{srv_name} ({op}): no response within "
+                f"{self._gz_call_timeout:.1f}s (future timed out after "
+                f"{time.time() - t0:.1f}s total)")
+        if not result.success:
+            self.get_logger().warn(
+                f"[gazebo] {op}: {srv_name} returned success=false (continuing)")
+        return result
 
     def pause_world(self, pause: bool):
-        """Ignition 월드 일시정지 / 재개"""
+        """Ignition 월드 일시정지 / 재개 — Gazebo 서비스 실패 시 즉시 상위로 전파."""
+        op = "pause" if pause else "unpause"
         srv_name = f"/world/{self.world_name}/control"
-        self._wait_for_srv(self.world_control, srv_name)
-
         req = ControlWorld.Request()
         req.world_control.pause = bool(pause)
-        try:
-            future = self.world_control.call_async(req)
-            result = self._await_future(future)
-            if result is None:
-                self.get_logger().warn(f"{srv_name} (pause={pause}): timed out")
-            elif not result.success:
-                self.get_logger().warn(f"{srv_name} (pause={pause}): success=false")
-        except Exception as e:
-            self.get_logger().error(f"{srv_name} service call failed: {e}")
-            sys.exit(-1)
+        self._call_world_service(self.world_control, req, srv_name, op)
 
     def reset_world(self):
-        """Ignition 월드 리셋 (모델만, 시간은 유지)."""
+        """Ignition 월드 리셋 (모델만, 시간은 유지) — 실패 시 상위로 전파."""
         srv_name = f"/world/{self.world_name}/control"
-        self._wait_for_srv(self.world_control, srv_name)
-
         req = ControlWorld.Request()
         req.world_control.reset.model_only = True
         req.world_control.pause = True
-        try:
-            future = self.world_control.call_async(req)
-            result = self._await_future(future)
-            if result is None:
-                self.get_logger().warn(f"{srv_name} (reset): timed out")
-            elif not result.success:
-                self.get_logger().warn(f"{srv_name} (reset): success=false")
-        except Exception as e:
-            self.get_logger().error(f"{srv_name} (reset) service call failed: {e}")
-            sys.exit(-1)
+        self._call_world_service(self.world_control, req, srv_name, "reset")
 
     def _publish_zero_command(self):
         """Stop the robot command stream before teleporting models during reset."""
@@ -1687,10 +1732,8 @@ class Environment(
         self.goal_marker_spawned = False
 
     def set_entity_pose_ignition(self, name, x, y, z, qx, qy, qz, qw):
-        """Ignition 월드에서 특정 모델을 텔레포트"""
+        """Ignition 월드에서 특정 모델을 텔레포트 — 실패 시 상위로 전파."""
         srv_name = f"/world/{self.world_name}/set_pose"
-        self._wait_for_srv(self.set_entity_pose, srv_name)
-
         req = SetEntityPose.Request()
         req.entity.name = str(name)
         req.entity.type = GzEntity.MODEL
@@ -1703,24 +1746,21 @@ class Environment(
         req.pose.orientation.z = float(qz)
         req.pose.orientation.w = float(qw)
 
-        try:
-            future = self.set_entity_pose.call_async(req)
-            result = self._await_future(future)
-            if result is None:
-                self.get_logger().warn(f"{srv_name} (entity={name}): timed out")
-            elif not result.success:
-                self.get_logger().warn(f"{srv_name} (entity={name}): success=false")
-        except Exception as e:
-            self.get_logger().error(f"{srv_name} service call failed: {e}")
-            sys.exit(-1)
+        self._call_world_service(
+            self.set_entity_pose, req, srv_name, f"set_pose[{name}]")
 
     def propagate_state(self, time_delta):
-        """Ignition 월드를 time_delta초 동안 돌렸다가 다시 pause"""
-        # 시뮬레이션 재개
+        """Ignition 월드를 time_delta초 동안 돌렸다가 다시 pause.
+
+        unpause→sleep→pause 의 각 경계에 로그를 남겨 /step 이 정확히 어느
+        Gazebo 호출에서 멎는지 바로 보이게 한다. pause_world 가 실패하면
+        GazeboServiceError 가 콜백 밖으로 전파된다(여기서 삼키지 않는다)."""
+        self.get_logger().debug(
+            f"[gazebo] propagate: unpause → run {time_delta:.3f}s")
         self.pause_world(False)
         time.sleep(time_delta)
-        # 다시 일시정지
         self.pause_world(True)
+        self.get_logger().debug("[gazebo] propagate: re-paused")
     # ----------------------------------------------------------------------------------------------
     # ====================================Ignition Finish===========================================
     # ----------------------------------------------------------------------------------------------
@@ -1766,6 +1806,21 @@ class Environment(
         return state_list
 
     def step_callback(self, request, response):
+        """/step entrypoint. Wraps the implementation so a Gazebo service failure
+        (GazeboServiceError from propagate_state → pause_world) is logged with the
+        episode/step context and re-raised. Re-raising means NO response is sent:
+        the trainer's bounded /step call times out and raises EnvServiceError,
+        triggering its checkpoint-on-failure path. The env then stops cleanly via
+        main()'s GazeboServiceError handler — no infinite hang, no sys.exit."""
+        try:
+            return self._step_callback_impl(request, response)
+        except GazeboServiceError as e:
+            self.get_logger().error(
+                f"[gym_node] /step ABORTED (episode {self._episode_count}, "
+                f"step {self.current_episode_step}): {e}")
+            raise
+
+    def _step_callback_impl(self, request, response):
         target = False
         action = request.action  # 정규화 [-1,1]
         self.current_episode_step += 1
@@ -1963,7 +2018,20 @@ class Environment(
                 f"static={self.num_of_static_obstacles} humans={self.num_of_humans}"
             )
 
-    def reset_callback(self, _, response):
+    def reset_callback(self, request, response):
+        """/reset entrypoint. Wraps the implementation so a Gazebo service failure
+        (GazeboServiceError from _prepare_episode_reset / set_entity_pose_ignition
+        / propagate_state) is logged with the episode context and re-raised. As
+        with /step, re-raising sends no response → the trainer's bounded /reset
+        call times out → checkpoint-on-failure → clean shutdown via main()."""
+        try:
+            return self._reset_callback_impl(request, response)
+        except GazeboServiceError as e:
+            self.get_logger().error(
+                f"[gym_node] /reset ABORTED (episode {self._episode_count}): {e}")
+            raise
+
+    def _reset_callback_impl(self, _, response):
         """Resets the state of the environment and returns an initial observation, state"""
         # Stop the obstacle-motion timer and wait for any in-flight iteration to finish.
         # 1) Set the flag so the timer won't enter a new iteration.
@@ -2377,6 +2445,16 @@ def main(args=None):
         executor.spin()
     except KeyboardInterrupt:
         pass
+    except GazeboServiceError as e:
+        # A /step or /reset callback hit a dead Gazebo world-control / set_pose
+        # service. rclpy re-raises callback exceptions out of spin(); catch it
+        # here so the gym node stops with a clear FATAL line instead of an opaque
+        # traceback. The trainer's in-flight call times out and its
+        # checkpoint-on-failure path runs — fail-fast on BOTH ends.
+        environment.get_logger().error(
+            f"[gym_node] FATAL: stopping — Gazebo service failure: {e}. "
+            "The trainer's /step or /reset will time out and trigger its "
+            "checkpoint-on-failure path.")
     finally:
         environment.get_logger().info("gym_node, shutting down...")
         environment.destroy_node()
