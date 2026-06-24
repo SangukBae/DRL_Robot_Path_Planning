@@ -127,6 +127,28 @@ environment:
   human_social_avoid_strength: 0.6  # blend weight repulsion vs goal (stage-overridable)
   human_social_avoid_max_heading_offset_deg: 25.0  # cap on the avoidance nudge
 
+  # ── Human-only DYNAMIC-RISK reward shaping (reward_calculator) ─────────────
+  # A pedestrian-specific collision-risk penalty, SEPARATE from the static
+  # obstacle-proximity penalty (w_obs). Computed from privileged GT robot+human
+  # kinematics (training-time shaping), so it can reward direction-/closing-aware
+  # caution a single nearest-distance reading cannot. Three additive terms,
+  # aggregated over the SINGLE most-dangerous human (bounded regardless of crowd
+  # size). The penalty is exactly 0 when no humans are active, so the human-free
+  # stages 0-2 are unaffected. Defaults are conservative so existing driving is
+  # not disrupted; raise the weights to push harder on social safety.
+  # OPT-IN: the code defaults this OFF when the whole block is absent (so older /
+  # external configs are byte-for-byte unchanged); this curriculum config turns it
+  # ON explicitly below.
+  human_risk_penalty:
+    enabled: true
+    w_personal_space: 0.4        # weight on max(0, 1 - d/d_ps)^2 inside d_ps
+    personal_space_radius_m: 1.0 # d_ps: personal-space radius [m]
+    w_approach_rate: 0.25        # weight on clamp(closing/v_ref, 0, 1) while closing
+    approach_radius_m: 2.0       # d_app: approach term only applies within this [m]
+    approach_v_ref_mps: 1.0      # v_ref: closing-speed normaliser [m/s]
+    w_ttc: 0.3                   # weight on max(0, 1 - ttc/ttc_safe)^2
+    ttc_safe_s: 2.0              # ttc_safe: TTC term only when closing & ttc < this [s]
+
   # Episode-level pedestrian behaviour-mode mix. Each human is assigned ONE mode
   # at spawn and keeps it for the episode. Weights need not sum to 1 (normalised
   # internally); empty/absent → uniform. Per-mode kinematics live in code

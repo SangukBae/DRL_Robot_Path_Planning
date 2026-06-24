@@ -418,6 +418,26 @@ class Environment(
         self.human_social_avoid_max_heading_offset = math.radians(float(  # cap on the nudge
             self.environment_config.get("human_social_avoid_max_heading_offset_deg", 25.0)))
 
+        # ── Human-only dynamic-risk reward shaping (reward_calculator) ─────────
+        # Separate from the static obstacle-proximity penalty: penalises closing
+        # on pedestrians using GT robot+human kinematics (personal-space + approach
+        # rate + TTC). OPT-IN: when the `human_risk_penalty` block is ABSENT this
+        # defaults to DISABLED, so every pre-existing config — including legacy
+        # human-bearing configs, external configs, and the non-curriculum
+        # environment.yaml — keeps its EXACT prior reward (truly backward
+        # compatible). The curriculum config opts in explicitly (enabled: true).
+        # Even when enabled the penalty is exactly 0 whenever no humans are active,
+        # so the human-free stages (0-2) are unaffected either way.
+        _hrp = dict(self.environment_config.get("human_risk_penalty", {}) or {})
+        self.human_risk_enabled  = bool(_hrp.get("enabled", False))
+        self.human_risk_w_ps     = float(_hrp.get("w_personal_space", 0.4))
+        self.human_risk_d_ps     = float(_hrp.get("personal_space_radius_m", 1.0))
+        self.human_risk_w_app    = float(_hrp.get("w_approach_rate", 0.25))
+        self.human_risk_d_app    = float(_hrp.get("approach_radius_m", 2.0))
+        self.human_risk_v_ref    = float(_hrp.get("approach_v_ref_mps", 1.0))
+        self.human_risk_w_ttc    = float(_hrp.get("w_ttc", 0.3))
+        self.human_risk_ttc_safe = float(_hrp.get("ttc_safe_s", 2.0))
+
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
         self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
@@ -1580,6 +1600,9 @@ class Environment(
             "penalty_step",
             "penalty_smooth",
             "penalty_wp_smooth",
+            "penalty_human_personal_space",
+            "penalty_human_approach_rate",
+            "penalty_human_ttc",
             "reward_terminal",
             "reward",
             "collision", "target", "done",
@@ -1930,6 +1953,27 @@ class Environment(
         w_max = v_max * math.tan(self.vehicle_steering_limit_rad) / max(self.vehicle_wheelbase_m, 1e-6)
         prev_waypoint_theta = float(getattr(self, "_prev_waypoint_theta", 0.0))
 
+        # Human-only dynamic-risk penalty (privileged GT human + robot state).
+        # None when disabled; the penalty is naturally 0 when no humans are active
+        # (human_states empty), so early/human-free stages are unaffected.
+        human_risk_terms = None
+        if self.human_risk_enabled:
+            with self._human_lock:
+                _humans = [
+                    {"x": s["x"], "y": s["y"],
+                     "yaw": s.get("yaw", 0.0), "v": s.get("v", 0.0)}
+                    for s in self.human_states.values()
+                ]
+            human_risk_terms = reward_calculator.compute_human_risk_penalty(
+                self.gt_x, self.gt_y, self.gt_yaw,
+                self.latest_actual_signed_speed,
+                _humans,
+                w_ps=self.human_risk_w_ps, d_ps=self.human_risk_d_ps,
+                w_app=self.human_risk_w_app, d_app=self.human_risk_d_app,
+                v_ref=self.human_risk_v_ref,
+                w_ttc=self.human_risk_w_ttc, ttc_safe=self.human_risk_ttc_safe,
+            )
+
         reward, reward_terms = self.get_reward(
             target, collision,
             v, w_reward,
@@ -1940,6 +1984,7 @@ class Environment(
             v_max=v_max, w_max=w_max,
             waypoint_theta=theta,
             prev_waypoint_theta=prev_waypoint_theta,
+            human_risk_terms=human_risk_terms,
             return_terms=True,
         )
         self._prev_waypoint_theta = theta
@@ -1974,6 +2019,9 @@ class Environment(
                 round(float(reward_terms["step_pen"]), 6),
                 round(float(reward_terms["smooth"]), 6),
                 round(float(reward_terms["wp_smooth"]), 6),
+                round(float(reward_terms["human_personal_space_penalty"]), 6),
+                round(float(reward_terms["human_approach_rate_penalty"]), 6),
+                round(float(reward_terms["human_ttc_penalty"]), 6),
                 round(float(reward_terms["terminal"]), 6),
                 round(float(reward), 6),
                 int(bool(collision)), int(bool(target)), int(bool(done)),
