@@ -110,6 +110,7 @@ install(
     scripts/policy/aux_prediction_losses.py     # AUX_PRED
     scripts/policy/aux_prediction_temporal.py   # AUX_PRED
     scripts/environment/aux_prediction_labels.py # AUX_PRED
+    scripts/environment/obs_time_context.py      # observation time-context (frame stacking)
     scripts/utils/aux_ablation_logging.py       # AUX_ABLATION
     scripts/utils/aux_ablation_summary.py       # AUX_ABLATION
     scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics

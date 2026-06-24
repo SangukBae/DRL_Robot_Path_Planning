@@ -296,6 +296,24 @@ class TrainTQCCurriculum(
         self._aux_eval_temporal = bool(
             getattr(self.rl_agent, "aux_temporal_enabled", False))
         self._aux_eval_hist_len = int(getattr(_aux_cfg, "history_len", 4)) if _aux_cfg else 4
+        # Observation time-context (frame stacking) is detectable here as a
+        # state_dim wider than one [obs+agent] frame (the env reports the stacked
+        # state_dim, per-frame environment_dim/agent_dim unchanged). When BOTH the
+        # actor-visible obs stacking AND the aux-only temporal branch are on, the
+        # aux temporal GRU now summarises a window of ALREADY-stacked states — a
+        # history-of-histories whose marginal value is small and largely redundant
+        # with the actor's own stacked input. Kept available for ablation, but
+        # warn so the redundancy is explicit (consider disabling temporal_enabled
+        # once obs stacking is on). See aux_prediction_temporal.py header.
+        self._obs_time_context_on = (
+            int(self.state_dim) > int(self.environment_dim) + int(self.agent_dim))
+        if self._obs_time_context_on and self._aux_eval_temporal:
+            self.get_logger().warn(
+                "[AUX_PRED] observation time-context (frame stacking) AND the "
+                "aux-only temporal branch are BOTH enabled — the temporal GRU now "
+                "operates on already-stacked states (redundant). Consider "
+                "aux_prediction.temporal_enabled=false now that the actor sees "
+                "time context directly.")
         self._aux_eval_cfg = {
             "aux_eval_on": self._aux_eval_on,
             "h_coll_available": self._h_coll_available,

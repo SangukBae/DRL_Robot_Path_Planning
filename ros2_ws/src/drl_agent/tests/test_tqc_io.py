@@ -64,11 +64,12 @@ class FakeBuffer:
 
 
 class FakeAgent:
-    def __init__(self, *, aux=False, aux_head_raises=False, ent_auto=True):
+    def __init__(self, *, aux=False, aux_head_raises=False, ent_auto=True,
+                 actor_raises=False, critic_raises=False):
         self.device = "cpu"
-        self.actor = FakeModule(tag="actor")
+        self.actor = FakeModule(raise_on_load=actor_raises, tag="actor")
         self.actor_optimizer = FakeModule(tag="actor_opt")
-        self.critic = FakeModule(tag="critic")
+        self.critic = FakeModule(raise_on_load=critic_raises, tag="critic")
         self.critic_target = FakeModule(tag="critic_target")
         self.critic_optimizer = FakeModule(tag="critic_opt")
         self.checkpoint_actor = FakeModule(tag="ckpt_actor")
@@ -160,6 +161,35 @@ def test_aux_head_mismatch_rebuilds_critic_optimizer(tmp_path):
     tqc_io.load(dst, str(tmp_path), "ckpt")
     assert dst._rebuilt == 1
     assert dst.critic_optimizer.tag == "critic_opt_rebuilt"
+
+
+def test_actor_state_dim_mismatch_keeps_fresh_and_syncs_checkpoint_actor(tmp_path):
+    # Simulate a state_dim change (frame stacking toggled) on an aux-DISABLED
+    # policy: the actor load raises. The resume must NOT abort; the actor stays
+    # fresh, its optimizer state is skipped, and checkpoint_actor is SYNCED from
+    # the fresh actor (not left as an independent random net) so the
+    # use_checkpoint=True path reads the same weights.
+    src = FakeAgent(aux=False)
+    tqc_io.save(src, str(tmp_path), "ckpt")
+    dst = FakeAgent(aux=False, actor_raises=True)
+    tqc_io.load(dst, str(tmp_path), "ckpt")             # must not raise
+    assert dst.actor.loaded is None                     # load was rejected → fresh
+    assert dst.actor_optimizer.loaded is None           # stale optimizer skipped
+    # checkpoint_actor mirrored from the fresh actor's state_dict (same object
+    # the fake returns each call, so identity check avoids tensor-eq ambiguity).
+    assert dst.checkpoint_actor.loaded is dst.actor.state_dict()
+
+
+def test_critic_state_dim_mismatch_keeps_fresh_and_skips_optimizer(tmp_path):
+    src = FakeAgent(aux=False)
+    tqc_io.save(src, str(tmp_path), "ckpt")
+    dst = FakeAgent(aux=False, critic_raises=True)
+    tqc_io.load(dst, str(tmp_path), "ckpt")             # must not raise
+    assert dst.critic.loaded is None                    # fresh critic
+    assert dst.critic_target.loaded is None             # not reached → fresh
+    assert dst.critic_optimizer.loaded is None          # stale optimizer skipped
+    # Actor side unaffected (loaded normally).
+    assert dst.actor.loaded is not None
 
 
 def test_load_encoder_for_inference_baseline_true():

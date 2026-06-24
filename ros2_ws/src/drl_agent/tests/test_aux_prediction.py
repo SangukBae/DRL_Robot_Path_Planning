@@ -412,3 +412,84 @@ def test_distributional_loss_weight_scales_term():
     total, logs = apl.compute_aux_loss(pred, label, c, torch.device("cpu"))
     assert "aux/risk_quantile" in logs
     assert abs(float(total.detach()) - logs["aux/risk_mse"]) < 1e-6
+
+
+# --------------------------------------------------------------------------- #
+#  v2 direct dynamic-avoidance heads: TTC + hazard sector
+# --------------------------------------------------------------------------- #
+def test_config_label_dim_grows_with_ttc_and_hazard():
+    c = _cfg(ttc_head_enabled=True,
+             hazard_sector_head_enabled=True, hazard_sector_bins=3)
+    assert c.ttc_len == 1
+    assert c.hazard_len == 3
+    # H*K risk + H min_dist + 1 ttc + 3 hazard
+    assert c.label_dim == 16 * 3 + 3 + 1 + 3
+    # disabled -> exactly the v1 label_dim (append-only / backward compatible)
+    c0 = _cfg(ttc_head_enabled=False, hazard_sector_head_enabled=False)
+    assert c0.ttc_len == 0 and c0.hazard_len == 0
+    assert c0.label_dim == 16 * 3 + 3
+
+
+@pytest.mark.parametrize("ttc,hazard", [(False, False), (True, False),
+                                        (False, True), (True, True)])
+def test_heads_emit_ttc_hazard_only_when_enabled(ttc, hazard):
+    c = _cfg(ttc_head_enabled=ttc,
+             hazard_sector_head_enabled=hazard, hazard_sector_bins=3)
+    head = ap.AuxiliaryHead(c.latent_dim, c)
+    out = head(torch.randn(5, c.latent_dim))
+    assert ("ttc" in out) == ttc
+    assert ("hazard" in out) == hazard
+    if ttc:
+        assert out["ttc"].shape == (5, 1)
+        assert torch.all((out["ttc"] >= 0) & (out["ttc"] <= 1))  # sigmoid
+    if hazard:
+        assert out["hazard"].shape == (5, 3)                     # raw logits
+    # the new heads are absent (None) when disabled -> no extra params/keys
+    assert (getattr(head, "ttc_head", None) is not None) == ttc
+    assert (getattr(head, "hazard_head", None) is not None) == hazard
+
+
+def test_action_conditioned_head_also_emits_ttc_hazard():
+    c = _cfg(ttc_head_enabled=True, hazard_sector_head_enabled=True)
+    head = ap.ActionConditionedAuxHead(c.latent_dim, ACTION_DIM, c)
+    b, k = 4, c.action_conditioned_steps
+    out = head(torch.randn(b, c.latent_dim), torch.randn(b, k, ACTION_DIM),
+               torch.full((b,), k, dtype=torch.long))
+    assert out["ttc"].shape == (b, 1)
+    assert out["hazard"].shape == (b, c.hazard_sector_bins)
+
+
+def test_compute_aux_loss_includes_ttc_and_hazard_terms():
+    c = _cfg(ttc_head_enabled=True, ttc_loss_weight=0.5,
+             hazard_sector_head_enabled=True, hazard_sector_bins=3,
+             hazard_sector_loss_weight=0.5)
+    head = ap.AuxiliaryHead(c.latent_dim, c)
+    b = 6
+    pred = head(torch.randn(b, c.latent_dim))
+    label = torch.rand(b, c.label_dim)
+    label[:, -3:] = (label[:, -3:] > 0.5).float()   # hazard block is {0,1}
+    loss, logs = apl.compute_aux_loss(pred, label, c, torch.device("cpu"))
+    assert "aux/ttc_mse" in logs
+    assert "aux/hazard_bce" in logs
+    assert loss.requires_grad and np.isfinite(logs["aux/loss"])
+
+
+def test_loss_label_slicing_offsets_are_correct():
+    """A label that is zero except in the TTC slot drives ONLY the ttc term."""
+    c = _cfg(min_distance_loss_weight=0.0, ttc_head_enabled=True,
+             ttc_loss_weight=1.0, hazard_sector_head_enabled=True,
+             hazard_sector_bins=3, hazard_sector_loss_weight=1.0)
+    risk, H, K = c.risk_dim, c.num_horizons, c.num_sectors
+    # craft a prediction dict directly so we control every block
+    b = 3
+    pred = {
+        "risk_map": torch.zeros(b, risk),
+        "min_dist": torch.zeros(b, H),
+        "ttc": torch.zeros(b, 1),
+        "hazard": torch.zeros(b, 3),     # logits 0 -> sigmoid 0.5
+    }
+    label = torch.zeros(b, c.label_dim)
+    label[:, risk + H] = 1.0             # ttc target = 1 -> ttc MSE = 1
+    _, logs = apl.compute_aux_loss(pred, label, c, torch.device("cpu"))
+    assert abs(logs["aux/ttc_mse"] - 1.0) < 1e-6
+    assert abs(logs["aux/risk_mse"]) < 1e-9   # risk target untouched (all zero)

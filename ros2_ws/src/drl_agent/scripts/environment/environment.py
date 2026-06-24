@@ -40,6 +40,7 @@ from collision_checker import RectSafetyChecker
 from localization_noise import LocalizationNoiseModel, ProprioNoiseModel
 # AUX_PRED: privileged future-risk label generation (training-only).
 import aux_prediction_labels as aux_labels
+from obs_time_context import ObsTimeContext
 from sensor_msgs.msg import LaserScan
 
 from ros_gz_interfaces.msg import Contacts
@@ -219,6 +220,31 @@ class Environment(
         self.environment_dim = self.environment_config["environment_state_dim"]
         self.agent_dim = self.environment_config["agent_state_dim"]
         self.agent_name = self.environment_config["agent_name"]
+
+        # ── Observation time-context (actor-visible frame stacking) ────────────
+        # Stacks the last N `obs_state` frames (the 80-D front-180° RL scan — NOT
+        # the raw point cloud, NOT the 360° collision `environment_state`) so the
+        # ACTOR sees short-horizon temporal context through the shared encoder,
+        # WITHOUT any recurrence. Layout keeps the current full state FIRST so the
+        # 87-D baseline layout is byte-for-byte preserved (state[:80]=current obs,
+        # state[80]=goal_dist) and only OLDER obs frames are appended:
+        #   [obs_t(80), agent_t(7), obs_{t-1}(80), ..., obs_{t-(N-1)}(80)]
+        # By default agent_state is kept current-only (obs-only history); set
+        # stack_agent_state=true to store the full 87-D frame per step instead.
+        # OFF by default → state stays the exact 87-D vector, so every existing
+        # config / checkpoint is unaffected. Reported via get_dimensions so the
+        # agent (encoder/buffer/actor/critic, all sized from state_dim) adapts with
+        # NO agent-side code change; train and inference share one contract.
+        _otc = dict(self.environment_config.get("observation_time_context", {}) or {})
+        self._otc = ObsTimeContext(
+            self.environment_dim, self.agent_dim,
+            enabled=bool(_otc.get("enabled", False)),
+            obs_frame_stack=int(_otc.get("obs_frame_stack", 1)),
+            stack_agent_state=bool(_otc.get("stack_agent_state", False)),
+        )
+        self.obs_time_context_enabled = self._otc.enabled
+        self.obs_frame_stack = self._otc.obs_frame_stack
+        self.obs_stack_agent_state = self._otc.stack_agent_state
         # Dynamic obstacles removed: moving obstacles are humans only; static obstacles are fixed.
         self.num_of_static_obstacles  = int(self.environment_config.get("num_of_static_obstacles", 0))
 
@@ -1409,13 +1435,35 @@ class Environment(
         return response
 
     def get_dimensions_callback(self, _, response):
-        """Returns the dimensions of the state, action, and maximum action value"""
-        response.state_dim = self.environment_dim + self.agent_dim
+        """Returns the dimensions of the state, action, and maximum action value.
+
+        state_dim reflects observation time-context stacking when enabled (the
+        agent sizes its encoder/buffer/actor/critic from this single number).
+        environment_dim / agent_dim stay the PER-FRAME sizes (80 / 7) so paper
+        metrics that read the current frame (state[:environment_dim],
+        state[environment_dim]) are unaffected — the current frame is always first.
+        """
+        response.state_dim = self.stacked_state_dim()
         response.action_dim = self.action_dim
         response.max_action = self.max_action
         response.environment_dim = self.environment_dim
         response.agent_dim = self.agent_dim
         return response
+
+    # ------------------------------------------------------------------ #
+    #  Observation time-context (frame stacking) — delegate to ObsTimeContext #
+    # ------------------------------------------------------------------ #
+    def stacked_state_dim(self) -> int:
+        """Full RL state width on the wire (current frame + appended history)."""
+        return self._otc.stacked_state_dim()
+
+    def _reset_obs_history(self, obs_state, agent_state):
+        """Seed the obs history with the first frame at episode start (repeat)."""
+        self._otc.reset(obs_state, agent_state)
+
+    def _assemble_state(self, obs_state, agent_state, advance=True):
+        """Build the (optionally stacked) RL state and advance the history."""
+        return self._otc.assemble(obs_state, agent_state, advance=advance)
 
     @staticmethod
     def _odom_xyyaw(odom):
@@ -1811,10 +1859,16 @@ class Environment(
                     }
                     for s in self.human_states.values()
                 ]
+            # GT robot world-frame velocity (for the v2 TTC / hazard targets):
+            # signed forward speed projected on the GT heading. No-op for the
+            # v1 risk/min_dist blocks (they ignore robot_vel).
+            _rv = float(self.latest_actual_signed_speed)
+            robot_vel = (_rv * math.cos(self.gt_yaw), _rv * math.sin(self.gt_yaw))
             label = aux_labels.compute_future_risk_labels(
                 humans,
                 (self.gt_x, self.gt_y, self.gt_yaw),
                 self._aux_label_cfg,
+                robot_vel=robot_vel,
             )
         except Exception as exc:  # never let label gen break the RL step
             self.get_logger().warn(f"[AUX_PRED] label generation failed: {exc}")
@@ -1905,7 +1959,9 @@ class Environment(
         _gt_dist, _gt_theta = self._goal_metrics(self.gt_x, self.gt_y, self.gt_yaw)
 
         agent_state[2], agent_state[3] = float(action[0]), float(action[1])
-        state = np.append(obs_state, agent_state)
+        # Observation time-context: append the last (N-1) obs frames and advance
+        # the history (no-op 87-D passthrough when disabled).
+        state = self._assemble_state(obs_state, agent_state, advance=True)
 
         # 6) 충돌/완료 판단 (full 360° environment_state 사용)
         done, collision, min_used = self.check_collision(environment_state)
@@ -2230,8 +2286,13 @@ class Environment(
         if self._sim_val is not None:
             self._sim_val.note_reset(self._episode_count, int(getattr(self, "_current_stage", -1)),
                                      float(agent_state[0]), float(agent_state[1]), self.loc_noise)
+        # Observation time-context: (re)seed the obs history with the first frame
+        # (first-frame repeat), then assemble WITHOUT advancing — the seeded deque
+        # already represents this episode's "past". No-op 87-D when disabled.
+        self._reset_obs_history(obs_state, agent_state)
+        state0 = self._assemble_state(obs_state, agent_state, advance=False)
         # AUX_PRED: append privileged future-risk label (no-op when disabled).
-        response.state = self._append_aux_labels(np.append(obs_state, agent_state))
+        response.state = self._append_aux_labels(state0)
         return response
 
     def change_goal(self, start_x=0.0, start_y=0.0):

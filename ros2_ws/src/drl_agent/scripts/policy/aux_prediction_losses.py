@@ -15,10 +15,21 @@ import torch.nn.functional as F
 
 
 def _split_label(label, cfg):
-    """AUX_PRED: slice the canonical label into (risk, min_dist) blocks."""
-    risk = label[:, : cfg.risk_dim]
-    min_dist = label[:, cfg.risk_dim : cfg.risk_dim + cfg.num_horizons]
-    return risk, min_dist
+    """AUX_PRED: slice the canonical label into its blocks (append-only layout
+    [risk (H*K)][min_dist (H)][ttc (T)][hazard (S)]).
+
+    Returns (risk, min_dist, ttc, hazard); ttc / hazard are None when the
+    corresponding head is disabled (their blocks are absent from the label)."""
+    o = 0
+    risk = label[:, o : o + cfg.risk_dim]; o += cfg.risk_dim
+    min_dist = label[:, o : o + cfg.num_horizons]; o += cfg.num_horizons
+    ttc = None
+    if cfg.ttc_len:
+        ttc = label[:, o : o + cfg.ttc_len]; o += cfg.ttc_len
+    hazard = None
+    if cfg.hazard_len:
+        hazard = label[:, o : o + cfg.hazard_len]; o += cfg.hazard_len
+    return risk, min_dist, ttc, hazard
 
 
 def quantile_pinball_loss(pred_quant, target, quantiles, kappa=1.0):
@@ -45,7 +56,7 @@ def compute_aux_loss(pred, label, cfg, device):
 
     Returns (loss_tensor, log_dict).  log_dict holds detached float metrics.
     """
-    risk_target, min_dist_target = _split_label(label, cfg)
+    risk_target, min_dist_target, ttc_target, hazard_target = _split_label(label, cfg)
 
     # --- v1: risk-map regression (always on) ---
     risk_loss = F.mse_loss(pred["risk_map"], risk_target)
@@ -72,6 +83,23 @@ def compute_aux_loss(pred, label, cfg, device):
         dist_loss = quantile_pinball_loss(pred["risk_quant"], risk_target, tau)
         total = total + cfg.distributional_loss_weight * dist_loss
         logs["aux/risk_quantile"] = float(dist_loss.detach().item())
+
+    # --- v2: direct TTC regression (optional) ---
+    # MSE on the normalized min time-to-contact (both in [0, 1], 1 = safe). A
+    # direct, low-variance closing-risk signal for the shared encoder.
+    if "ttc" in pred and ttc_target is not None and cfg.ttc_loss_weight > 0.0:
+        ttc_loss = F.mse_loss(pred["ttc"], ttc_target)
+        total = total + cfg.ttc_loss_weight * ttc_loss
+        logs["aux/ttc_mse"] = float(ttc_loss.detach().item())
+
+    # --- v2: hazard-sector classification (optional) ---
+    # Per-sector binary imminent-hazard target -> BCE-with-logits (pred["hazard"]
+    # is raw logits). Multi-label (independent sectors), stable when all-zero
+    # (no humans / no hazard).
+    if "hazard" in pred and hazard_target is not None and cfg.hazard_sector_loss_weight > 0.0:
+        hz_loss = F.binary_cross_entropy_with_logits(pred["hazard"], hazard_target)
+        total = total + cfg.hazard_sector_loss_weight * hz_loss
+        logs["aux/hazard_bce"] = float(hz_loss.detach().item())
 
     logs["aux/loss"] = float(total.detach().item())
     return total, logs

@@ -125,3 +125,48 @@ def test_traj_end_survives_save_load(tmp_path):
     buf2.ind = np.array([2])
     _, vlen = buf2.get_last_state_history(4)
     assert int(vlen[0]) == 1            # boundary at transition 1 preserved
+
+
+# --------------------------------------------------------------------------- #
+#  state-width / aux-dim guard on load (frame stacking / aux layout toggled)
+# --------------------------------------------------------------------------- #
+def test_load_rejects_mismatched_state_dim(tmp_path):
+    """A buffer saved at one state_dim must not silently load into another
+    (observation time-context / frame stacking toggled) — it fail-fasts so
+    tqc_io.load can degrade to a fresh buffer instead of a numpy broadcast error."""
+    buf = _mk()
+    for i in range(5):
+        _add(buf, i, done=(i == 4))
+    path = str(tmp_path / "rb")
+    buf.save(path)
+
+    wider = buffer.LAP(SDIM + 240, ADIM, torch.device("cpu"), max_size=64,
+                       batch_size=4, normalize_actions=False, prioritized=False,
+                       track_traj=True)
+    with pytest.raises(RuntimeError, match="state_dim"):
+        wider.load(path)
+
+    # Same state_dim still loads fine.
+    same = _mk()
+    assert same.load(path) is not False
+    assert same.size == 5
+
+
+def test_load_rejects_mismatched_aux_dim(tmp_path):
+    """A buffer saved with one aux label width must not load into a run whose aux
+    layout changed (e.g. TTC / hazard heads toggled)."""
+    a = buffer.LAP(SDIM, ADIM, torch.device("cpu"), max_size=64, batch_size=4,
+                   normalize_actions=False, prioritized=False, track_traj=True,
+                   aux_dim=10)
+    for i in range(4):
+        a.add(np.full(SDIM, i, dtype=np.float32), np.zeros(ADIM),
+              np.full(SDIM, i, dtype=np.float32), 0.0, float(i == 3),
+              aux_target=np.zeros(10, dtype=np.float32))
+    path = str(tmp_path / "rb_aux")
+    a.save(path)
+
+    b = buffer.LAP(SDIM, ADIM, torch.device("cpu"), max_size=64, batch_size=4,
+                   normalize_actions=False, prioritized=False, track_traj=True,
+                   aux_dim=14)
+    with pytest.raises(RuntimeError, match="aux_dim"):
+        b.load(path)

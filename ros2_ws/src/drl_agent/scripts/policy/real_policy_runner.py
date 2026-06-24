@@ -9,7 +9,7 @@ training, but from real sensor topics — no /step or /reset services. It:
     /joint_states and /goal,
   • computes goal_distance / heading_error from TF (goal frame → base frame,
     works for goal frames `map` OR `odom`),
-  • assembles the 87-D state (80 LiDAR obs bins + 7 agent-state) at a fixed rate,
+  • assembles the state at a fixed rate following the SAME contract as training,
   • runs the actor (deterministic) and converts the action with the shared
     Pure-Pursuit helper into /cmd_vel (then the existing prefilter shapes it).
 
@@ -17,7 +17,7 @@ Safety: every input is freshness-guarded; if any required input is stale (or a
 TF lookup fails) the node either holds the last command or publishes zero
 (configurable), and a watchdog publishes zero when no fresh goal exists.
 
-State layout (must match training):
+State layout (must match training) — base 87-D frame:
   state[0:80]  LiDAR obs bins (front 180°, nearest range per angular bin)
   state[80]    goal distance [m]            (TF, base frame)
   state[81]    heading error [rad]          (TF, base frame)
@@ -25,6 +25,15 @@ State layout (must match training):
   state[84]    actual speed  [m/s]          (proprio odom)
   state[85]    actual yaw rate [rad/s]      (proprio odom)
   state[86]    center steering [rad]        (joint_states)
+
+Observation time-context (frame stacking): when the env config's
+`observation_time_context.enabled` is set, the state is the SAME stacked vector
+used in training — the current 87-D frame above, then the last (N-1) obs frames
+appended ([obs_t, agent_t, obs_{t-1}, ...]). The runner reuses the env's
+ObsTimeContext, re-seeding the history (first-frame repeat) on each new goal, so
+a stacked-policy checkpoint deploys with NO contract mismatch. Disabled -> the
+exact 87-D state above. Point env_config at the file the policy was TRAINED with;
+a mismatch is caught when the shared encoder fails to load.
 """
 
 import os
@@ -42,14 +51,18 @@ from geometry_msgs.msg import Twist, PoseStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan, JointState
 
-# Allow direct execution + ros2 run (utils/policy on path)
+# Allow direct execution + ros2 run (utils/policy/environment on path)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "utils"))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "environment"))
 
 import torch
 import pure_pursuit
 from file_manager import load_yaml
 from tqc_agent import Agent
+# Observation time-context (frame stacking): the SAME ROS-free helper the env
+# uses, so training and deployment build the identical stacked-state contract.
+from obs_time_context import ObsTimeContext
 
 
 def _yaw_from_quat(qx, qy, qz, qw):
@@ -119,10 +132,30 @@ class RealPolicyRunner(Node):
                          for i in range(self.env_dim)]
         self.obs_bins[-1] = (self.obs_bins[-1][0], self.obs_bins[-1][1] + obs_eps)
 
+        # ---- observation time-context (frame stacking) ----
+        # Deployment MUST follow the same stacked-state contract as training, so
+        # the actor/encoder receive a state of the exact width they were trained
+        # with. Read the SAME `observation_time_context` block from the env config
+        # the policy was trained with (point env_config at that file). Absent /
+        # disabled -> 87-D state, byte-for-byte the legacy runner behaviour. A
+        # config that disagrees with the checkpoint is caught loudly when the
+        # shared encoder (input width == state_dim) fails to load below.
+        _otc = dict(e.get("observation_time_context", {}) or {})
+        self._otc = ObsTimeContext(
+            self.env_dim, self.agent_dim,
+            enabled=bool(_otc.get("enabled", False)),
+            obs_frame_stack=int(_otc.get("obs_frame_stack", 1)),
+            stack_agent_state=bool(_otc.get("stack_agent_state", False)),
+        )
+        self._state_dim = self._otc.stacked_state_dim()
+        # Re-seed the obs history (first-frame repeat) on each new goal so a goal
+        # = one "episode", exactly as the env reset does.
+        self._needs_history_reset = True
+
         # ---- actor ----
         hp_cfg = self._find_config("hyperparameters_tqc.yaml", gp("hparams_config").string_value.strip())
         hp = load_yaml(hp_cfg)["hyperparameters"]
-        self.agent = Agent(self.env_dim + self.agent_dim, self.action_dim, self.max_action, hp)
+        self.agent = Agent(self._state_dim, self.action_dim, self.max_action, hp)
         self._load_actor(os.path.expanduser(self.actor_path))
 
         # ---- runtime state / caches ----
@@ -152,7 +185,8 @@ class RealPolicyRunner(Node):
         self.get_logger().info(
             f"[RealRunner] ready — actor={os.path.basename(self.actor_path)} "
             f"base_frame={self.base_frame} rate={self.rate_hz}Hz stale={self.stale_timeout}s "
-            f"({self.stale_action}) state_dim={self.env_dim + self.agent_dim}"
+            f"({self.stale_action}) state_dim={self._state_dim}"
+            f"{' (obs_frame_stack=%d)' % self._otc.obs_frame_stack if self._otc.enabled else ''}"
         )
 
     # ------------------------------------------------------------------ #
@@ -239,6 +273,9 @@ class RealPolicyRunner(Node):
     def _on_goal(self, msg: PoseStamped):
         self._goal = msg
         self._t_goal = self._now()
+        # New goal = new "episode": re-seed the obs history (first-frame repeat)
+        # on the next control step so the stacked state matches the env's reset.
+        self._needs_history_reset = True
         self.get_logger().info(
             f"[RealRunner] new goal in '{msg.header.frame_id}': "
             f"({msg.pose.position.x:.2f}, {msg.pose.position.y:.2f})"
@@ -311,13 +348,30 @@ class RealPolicyRunner(Node):
             self.get_logger().info("[RealRunner] goal reached → stop", throttle_duration_sec=2.0)
             return
 
-        # Assemble 87-D state (same layout as training).
+        # New goal = new "episode": match the env reset semantics EXACTLY. The env
+        # starts an episode with the previous-action slots at 0 (_rebuild_agent_state
+        # + per-episode memory clear), so zero _prev_action here BEFORE building the
+        # agent vector — otherwise the first inference state would still carry the
+        # last goal's final action.
+        if self._needs_history_reset:
+            self._prev_action = np.zeros(self.action_dim, dtype=np.float32)
+
+        # Assemble the (optionally stacked) state — SAME contract as training:
+        # current [obs, agent] frame first, older obs frames appended. Disabled
+        # -> exactly the 87-D vector. Mirrors env reset/step: on a new goal seed
+        # the history (first-frame repeat) and DON'T advance; otherwise advance.
         agent = np.array([
             goal_dist, heading_err,
             float(self._prev_action[0]), float(self._prev_action[1]),
             self._speed, self._yaw_rate, self._steer,
         ], dtype=np.float32)
-        state = np.concatenate([self._obs.astype(np.float32), agent])
+        obs = self._obs.astype(np.float32)
+        if self._needs_history_reset:
+            self._otc.reset(obs, agent)
+            state = self._otc.assemble(obs, agent, advance=False)
+            self._needs_history_reset = False
+        else:
+            state = self._otc.assemble(obs, agent, advance=True)
 
         # Deterministic actor inference.
         action = self.agent.select_action(state, use_checkpoint=False, use_exploration=False)

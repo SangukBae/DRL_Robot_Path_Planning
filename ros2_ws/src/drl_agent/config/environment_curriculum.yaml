@@ -44,6 +44,29 @@ environment:
     horizons_sec: [0.5, 1.0, 1.5]
     risk_distance_scale: 3.0        # D_c [m]: risk = clamp(1 - d/D_c, 0, 1)
     min_speed_for_motion: 0.05      # below this speed a human is treated static
+    # --- direct dynamic-avoidance label blocks (append-only v2 wire) ----------
+    # MUST match hyperparameters_tqc.yaml aux_prediction (ttc_*/hazard_*); the
+    # agent fail-fasts on a mismatch via the wire header. Disabled -> the env
+    # emits the v1 label CONTENT (risk_map + min_dist; the wire header is still v2
+    # with ttc_len=hazard_len=0), so it is content-compatible / backward compatible.
+    ttc_head_enabled: true          # emit normalized min time-to-contact target
+    ttc_horizon_sec: 3.0            # TTC clamp horizon [s] (target normaliser)
+    ttc_collision_radius: 0.5       # contact distance [m] (robot+human radius proxy)
+    hazard_sector_head_enabled: true
+    hazard_sector_bins: 3           # front / left / right (front-centred)
+    hazard_distance: 3.0            # [m] a closing human within this flags its sector
+  # ── Observation time-context (actor-visible obs_state frame stacking) ───────
+  # Stacks the last N obs_state (front-180° 80-D RL scan) frames so the ACTOR sees
+  # short-horizon temporal context through the shared encoder, with NO recurrence.
+  # Layout keeps the current 87-D frame FIRST (baseline-compatible indexing) and
+  # appends older obs frames. The env reports the stacked state_dim via
+  # get_dimensions, so the agent (encoder/buffer/actor/critic) sizes itself with
+  # no agent-side code change. Default OFF -> 87-D state (byte-for-byte baseline).
+  # This SUPERSEDES the aux-only temporal branch (set temporal_enabled=false).
+  observation_time_context:
+    enabled: true
+    obs_frame_stack: 4              # current + 3 history frames (80*4 + 7 = 327-D)
+    stack_agent_state: false        # obs-only history; current agent_state kept once
   action_dim: 2
   agent_name: "hunter_se"
   max_action: 1.0

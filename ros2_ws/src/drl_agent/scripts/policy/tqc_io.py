@@ -72,23 +72,52 @@ def load(
             # Older PyTorch versions do not support weights_only.
             return torch.load(path, map_location=maploc)
 
-    # Actor
+    # Actor.
+    # When aux is DISABLED the shared encoder is a parameter-free identity, so the
+    # actor/critic consume the RAW state_dim directly. Toggling observation
+    # time-context (frame stacking) then changes the actor/critic INPUT width and
+    # an old checkpoint no longer matches. That is a deliberate architecture
+    # change, so — like the encoder/aux-head paths — degrade gracefully: keep the
+    # freshly-initialised net (its __init__ optimizer is already bound to it) and
+    # SKIP loading the now-stale optimizer state, with a loud log, rather than
+    # aborting the whole resume. (Aux ENABLED: actor/critic take latent_dim, which
+    # stacking does not change, so this load just succeeds as before.)
+    actor_fresh = False
     p = f"{directory}/{filename}_actor.pth"
     if os.path.exists(p):
-        agent.actor.load_state_dict(_torch_load(p))
-    if load_optimizer_state:
+        try:
+            agent.actor.load_state_dict(_torch_load(p))
+        except (RuntimeError, KeyError) as e:
+            actor_fresh = True
+            print(
+                "[AUX_PRED] actor checkpoint is incompatible with the current "
+                "state_dim (observation time-context / frame stacking toggled on "
+                "an aux-DISABLED policy); keeping a freshly-initialised actor AND "
+                f"fresh actor-optimizer moments (they retrain). Details: {e}"
+            )
+    if load_optimizer_state and not actor_fresh:
         p = f"{directory}/{filename}_actor_optimizer.pth"
         if os.path.exists(p):
             agent.actor_optimizer.load_state_dict(_torch_load(p))
 
-    # Critic
+    # Critic (same graceful contract as the actor above).
+    critic_fresh = False
     p = f"{directory}/{filename}_critic.pth"
     if os.path.exists(p):
-        agent.critic.load_state_dict(_torch_load(p))
-    p = f"{directory}/{filename}_critic_target.pth"
-    if os.path.exists(p):
-        agent.critic_target.load_state_dict(_torch_load(p))
-    if load_optimizer_state:
+        try:
+            agent.critic.load_state_dict(_torch_load(p))
+            p = f"{directory}/{filename}_critic_target.pth"
+            if os.path.exists(p):
+                agent.critic_target.load_state_dict(_torch_load(p))
+        except (RuntimeError, KeyError) as e:
+            critic_fresh = True
+            print(
+                "[AUX_PRED] critic checkpoint is incompatible with the current "
+                "state_dim (observation time-context / frame stacking toggled on "
+                "an aux-DISABLED policy); keeping a freshly-initialised critic AND "
+                f"fresh critic-optimizer moments (they retrain). Details: {e}"
+            )
+    if load_optimizer_state and not critic_fresh:
         p = f"{directory}/{filename}_critic_optimizer.pth"
         if os.path.exists(p):
             # AUX_PRED: critic_optimizer also owns the encoder + aux-head
@@ -110,24 +139,59 @@ def load(
                     f"Details: {e}"
                 )
 
-    # Checkpoint actor
-    p = f"{directory}/{filename}_checkpoint_actor.pth"
-    if os.path.exists(p):
-        agent.checkpoint_actor.load_state_dict(_torch_load(p))
+    # Checkpoint actor. Its input width tracks the actor's (latent_dim, which
+    # equals raw state_dim when aux is disabled and the encoder is identity), so a
+    # state_dim change breaks this load too. When the actor went fresh — or the
+    # saved checkpoint actor itself mismatches — MIRROR the (fresh) actor into
+    # checkpoint_actor instead of leaving an independently-random net: the
+    # use_checkpoint=True select/eval path reads checkpoint_actor immediately on
+    # resume (before train_and_checkpoint() next syncs it), so it must hold the
+    # same weights the actor uses, not a different random init.
+    if actor_fresh:
+        agent.checkpoint_actor.load_state_dict(agent.actor.state_dict())
+    else:
+        p = f"{directory}/{filename}_checkpoint_actor.pth"
+        if os.path.exists(p):
+            try:
+                agent.checkpoint_actor.load_state_dict(_torch_load(p))
+            except (RuntimeError, KeyError) as e:
+                agent.checkpoint_actor.load_state_dict(agent.actor.state_dict())
+                print(
+                    "[AUX_PRED] checkpoint-actor is incompatible with the current "
+                    "state_dim (frame stacking toggled); syncing it from the "
+                    f"loaded actor instead. Details: {e}"
+                )
 
     # AUX_PRED: shared encoder + auxiliary head (only when this run uses aux
     # AND the checkpoint carries them; baseline checkpoints lack these files
     # and are loaded unchanged).
     if agent.encoder.has_params():
-        p = f"{directory}/{filename}_encoder.pth"
-        if os.path.exists(p):
-            agent.encoder.load_state_dict(_torch_load(p))
-        p = f"{directory}/{filename}_encoder_target.pth"
-        if os.path.exists(p):
-            agent.encoder_target.load_state_dict(_torch_load(p))
-        p = f"{directory}/{filename}_checkpoint_encoder.pth"
-        if os.path.exists(p):
-            agent.checkpoint_encoder.load_state_dict(_torch_load(p))
+        # The shared encoder's INPUT width == state_dim. Toggling observation
+        # time-context (frame stacking) changes state_dim, so an old checkpoint's
+        # encoder no longer matches. That is a deliberate architecture change, so
+        # mirror the aux-head contract: try a strict load; on a shape/key mismatch
+        # keep the freshly-initialised encoder(s) AND rebuild the critic optimizer
+        # (encoder params live in that trunk group) and log it, rather than
+        # aborting the whole resume. The actor/critic still load below and keep
+        # driving the policy; only the encoder retrains from the new input width.
+        try:
+            p = f"{directory}/{filename}_encoder.pth"
+            if os.path.exists(p):
+                agent.encoder.load_state_dict(_torch_load(p))
+            p = f"{directory}/{filename}_encoder_target.pth"
+            if os.path.exists(p):
+                agent.encoder_target.load_state_dict(_torch_load(p))
+            p = f"{directory}/{filename}_checkpoint_encoder.pth"
+            if os.path.exists(p):
+                agent.checkpoint_encoder.load_state_dict(_torch_load(p))
+        except (RuntimeError, KeyError) as e:
+            agent.critic_optimizer = agent._make_critic_optimizer()
+            print(
+                "[AUX_PRED] shared-encoder checkpoint is incompatible with the "
+                "current state_dim (observation time-context / frame stacking was "
+                "toggled); keeping freshly-initialised encoder(s) AND fresh "
+                f"critic-optimizer moments (they retrain). Details: {e}"
+            )
         p = f"{directory}/{filename}_aux_head.pth"
         if agent.aux_head is not None and os.path.exists(p):
             # AUX_PRED: the aux head is TRAINING-ONLY.  Its architecture

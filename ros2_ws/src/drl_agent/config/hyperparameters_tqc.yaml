@@ -88,6 +88,18 @@ hyperparameters:
     # the episode boundary). Aux branch only.
     action_condition_attention: true
     action_condition_attention_heads: 4
+    # --- direct dynamic-avoidance heads (append-only; MUST match env config) ---
+    # Small heads on the SAME aux trunk that give the shared encoder a MORE DIRECT
+    # closing-risk signal than the risk map. risk_map / min_dist are retained, so
+    # these are pure additions (ablation: flip enabled off -> v1 behaviour). The
+    # ttc_*/hazard_* keys MUST be identical to environment_curriculum.yaml's
+    # aux_prediction block (verified via the wire header; a mismatch fail-fasts).
+    ttc_head_enabled: true            # 1st priority: regress normalized min-TTC
+    ttc_horizon_sec: 3.0              # TTC clamp horizon (label normaliser)
+    ttc_loss_weight: 0.5
+    hazard_sector_head_enabled: true  # 2nd priority: low-dim front hazard classes
+    hazard_sector_bins: 3            # front / left / right (front-centred)
+    hazard_sector_loss_weight: 0.5
     # --- shared encoder polish (aux-branch-safe; default off) ---
     # LayerNorm inside the shared encoder. Keeps out_dim==latent_dim (actor/critic
     # width unchanged) but DOES change the encoder state_dict, so a strict resume
@@ -99,7 +111,13 @@ hyperparameters:
     # states; its output is concatenated onto the AUX-HEAD input only. The
     # actor/critic stay non-recurrent (off-policy stability). The replay buffer
     # samples a boundary-safe BACKWARD window so it never crosses an episode.
-    temporal_enabled: true
+    # NOW REDUNDANT with observation_time_context (actor-visible obs_state frame
+    # stacking, see environment_curriculum.yaml): when that is ON the stored state
+    # already carries the recent obs history, so this aux-only temporal GRU would
+    # summarise a history-of-histories. Default-OFF here in favour of the
+    # actor-visible stacking (the primary fix); flip ON only to ABLATE the aux
+    # temporal branch (the trainer warns if both are on).
+    temporal_enabled: false
     temporal_mode: "none"           # retained for back-compat; temporal_enabled is the switch
     history_len: 4                  # N recent states summarised (>=1)
     temporal_context_dim: 64        # GRU hidden / context width fed to the aux head

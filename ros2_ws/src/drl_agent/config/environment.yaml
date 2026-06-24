@@ -17,14 +17,30 @@ environment:
   agent_state_dim: 7
 
   # AUX_PRED: privileged future-risk label generation (env side, training-only).
-  # Disabled on this baseline config; see environment_curriculum.yaml for the
-  # full description.  Keep num_sectors / horizons_sec in sync with the agent.
+  # ENABLED here (matches the agent default). See environment_curriculum.yaml for
+  # the full description. Keep num_sectors / horizons_sec in sync with the agent.
+  # The v2 direct-head label blocks (ttc_head_enabled / hazard_sector_head_enabled
+  # and their params) are NOT set here -> OFF (v1 label content). If the deployed
+  # policy was trained with them ON, mirror those keys here AND in the agent.
   aux_prediction:
     enabled: true
     num_sectors: 16
     horizons_sec: [0.5, 1.0, 1.5]
     risk_distance_scale: 3.0
     min_speed_for_motion: 0.05
+  # Observation time-context (actor-visible obs_state frame stacking). OFF here:
+  # this non-curriculum config is also what real_policy_runner.py reads by
+  # default, and DEPLOYMENT MUST MATCH TRAINING. If a policy was trained with
+  # observation_time_context ON (see environment_curriculum.yaml), set the same
+  # values here (or point the runner's env_config at the training config) — the
+  # runner sizes the encoder/actor from this, and a mismatch is caught loudly when
+  # the shared encoder fails to load. The TTC/hazard aux keys (ttc_head_enabled,
+  # hazard_sector_head_enabled, ...) are likewise OFF here; mirror them too if the
+  # deployed policy was trained with them on.
+  observation_time_context:
+    enabled: false
+    obs_frame_stack: 1              # >=2 enables stacking (e.g. 4 = current + 3)
+    stack_agent_state: false
   action_dim: 2
   agent_name: "hunter_se"
   max_action: 1.0

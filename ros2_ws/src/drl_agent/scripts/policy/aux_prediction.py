@@ -118,6 +118,21 @@ class AuxPredConfig:
         self.aux_trunk_layers = int(cfg.get("aux_trunk_layers", 1))
         self.aux_head_layernorm = bool(cfg.get("aux_head_layernorm", False))
 
+        # ── Direct dynamic-avoidance heads (append-only, default OFF) ──────────
+        # These add SMALL output heads on the SAME aux trunk (training-only; the
+        # actor inference graph is untouched). They give the shared encoder a more
+        # direct supervisory signal for closing dynamic obstacles than the risk
+        # map alone. Keys / sizes MUST mirror the env AuxLabelConfig (verified via
+        # the wire header). risk_map / min_dist heads are unchanged & retained.
+        self.ttc_head_enabled = bool(cfg.get("ttc_head_enabled", False))
+        self.ttc_horizon_sec = float(cfg.get("ttc_horizon_sec", 3.0))
+        self.ttc_loss_weight = float(cfg.get("ttc_loss_weight", 1.0))
+        self.hazard_sector_head_enabled = bool(
+            cfg.get("hazard_sector_head_enabled", False))
+        self.hazard_sector_bins = int(cfg.get("hazard_sector_bins", 3))
+        self.hazard_sector_loss_weight = float(
+            cfg.get("hazard_sector_loss_weight", 1.0))
+
     # --- derived geometry -------------------------------------------------
     @property
     def num_horizons(self) -> int:
@@ -137,9 +152,19 @@ class AuxPredConfig:
         return self.num_horizons * self.num_sectors
 
     @property
+    def ttc_len(self) -> int:
+        return 1 if self.ttc_head_enabled else 0
+
+    @property
+    def hazard_len(self) -> int:
+        return self.hazard_sector_bins if self.hazard_sector_head_enabled else 0
+
+    @property
     def label_dim(self) -> int:
-        # Canonical env label = H*K risk + H min-dist (see aux_prediction_labels).
-        return self.risk_dim + self.num_horizons
+        # Canonical env label = H*K risk + H min-dist (+ optional ttc + hazard).
+        # MUST equal the env AuxLabelConfig.label_dim (checked via the wire header).
+        return (self.risk_dim + self.num_horizons
+                + self.ttc_len + self.hazard_len)
 
 
 class SharedEncoder(nn.Module):
@@ -246,6 +271,16 @@ def _build_output_heads(module: nn.Module, hidden: int, cfg: AuxPredConfig):
         if cfg.use_distributional_aux
         else None
     )
+    # Direct dynamic-avoidance heads (append-only, gated). Small Linears on the
+    # SAME trunk; absent (None) when disabled so the state_dict keys / param set
+    # are unchanged for a baseline / v1 config (strict checkpoint load still works).
+    module.ttc_head = (
+        nn.Linear(hidden, 1) if cfg.ttc_head_enabled else None
+    )
+    module.hazard_head = (
+        nn.Linear(hidden, cfg.hazard_sector_bins)
+        if cfg.hazard_sector_head_enabled else None
+    )
 
 
 def _apply_output_heads(module: nn.Module, feat, batch: int):
@@ -257,6 +292,12 @@ def _apply_output_heads(module: nn.Module, feat, batch: int):
         out["risk_quant"] = module.risk_quant_head(feat).view(
             batch, module.cfg.risk_dim, module.cfg.num_quantiles
         )
+    # ttc: scalar in [0, 1] (sigmoid; 1 = safe). hazard: per-sector LOGITS (the
+    # loss uses BCE-with-logits), shape (B, S).
+    if getattr(module, "ttc_head", None) is not None:
+        out["ttc"] = torch.sigmoid(module.ttc_head(feat))
+    if getattr(module, "hazard_head", None) is not None:
+        out["hazard"] = module.hazard_head(feat)
     return out
 
 

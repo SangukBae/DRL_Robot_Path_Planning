@@ -7,6 +7,16 @@
 #   the AUX-HEAD input ONLY.  The actor/critic path is NOT recurrent and never
 #   sees this context, so off-policy i.i.d. stability is preserved.
 #
+# REDUNDANCY NOTE (observation time-context / frame stacking):
+#   When the env's observation_time_context (actor-visible obs_state frame
+#   stacking) is ON, each STORED state already contains the recent obs history,
+#   so this aux-only temporal GRU then summarises a window of ALREADY-stacked
+#   states (a history-of-histories) — its marginal value is small and largely
+#   redundant with the actor's own time context. It is kept ON-by-config purely
+#   for ablation; the trainer logs a warning when both are enabled. Prefer the
+#   actor-visible stacking (the primary fix); disable temporal_enabled once it is
+#   on, unless you specifically want to ablate the aux temporal branch.
+#
 # Why a GRU over latents (not a temporal-conv, not a recurrent encoder):
 #   - The action-conditioned aux head already uses a GRU + masked self-attention
 #     with a leading-valid boundary mask.  Reusing that exact pattern keeps ONE

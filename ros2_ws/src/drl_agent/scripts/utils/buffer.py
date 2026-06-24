@@ -285,6 +285,28 @@ class LAP(object):
                 "action_conditioned_aux. Loading it as-is would silently corrupt "
                 "the auxiliary supervision."
             )
+        # State-width guard: a checkpoint saved with a different state_dim (e.g.
+        # observation time-context / frame stacking was toggled) cannot be loaded
+        # into this buffer. Fail-fast with RuntimeError so the resume orchestrator
+        # (tqc_io.load) degrades to a FRESH buffer instead of a numpy broadcast
+        # error mid-load. aux_target is checked the same way below.
+        saved_state_dim = int(d["state"].shape[1]) if d["state"].ndim == 2 else -1
+        if saved_state_dim != self.state.shape[1]:
+            raise RuntimeError(
+                f"[buffer] replay-buffer checkpoint state_dim={saved_state_dim} != "
+                f"current state_dim={self.state.shape[1]} (observation time-context "
+                "/ frame stacking likely toggled). Resume with load_replay_buffer="
+                "False or keep the stacking config unchanged."
+            )
+        if self.aux_target is not None and "aux_target" in d.files:
+            saved_aux_dim = int(d["aux_target"].shape[1]) if d["aux_target"].ndim == 2 else -1
+            if saved_aux_dim != self.aux_target.shape[1]:
+                raise RuntimeError(
+                    f"[buffer] replay-buffer checkpoint aux_dim={saved_aux_dim} != "
+                    f"current aux_dim={self.aux_target.shape[1]} (aux label layout "
+                    "changed, e.g. TTC / hazard heads toggled). Resume with "
+                    "load_replay_buffer=False."
+                )
         meta = d["meta"].tolist()
         ptr, size = int(meta[0]), int(meta[1])
         self.state[: size]      = d["state"]

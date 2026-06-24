@@ -170,6 +170,23 @@ class CurriculumAuxEvalMixin:
             raise RuntimeError(
                 f"[AUX_PRED] horizon values mismatch: env={env_h} agent={agent_h}. {hint}"
             )
+        # v2 append-only blocks: the env's ttc / hazard sizes must match the
+        # agent's enabled heads exactly (a mismatch means the configs disagree on
+        # which direct heads are on, or on hazard_sector_bins).
+        ttc_hint = ("Set ttc_head_enabled / hazard_sector_head_enabled / "
+                    "hazard_sector_bins IDENTICALLY in hyperparameters_tqc.yaml "
+                    "and environment_curriculum.yaml, then rebuild.")
+        if int(meta.get("ttc_len", 0)) != int(exp.ttc_len):
+            raise RuntimeError(
+                f"[AUX_PRED] TTC block mismatch: env ttc_len={meta.get('ttc_len', 0)} "
+                f"agent ttc_len={exp.ttc_len}. {ttc_hint}"
+            )
+        if int(meta.get("hazard_len", 0)) != int(exp.hazard_len):
+            raise RuntimeError(
+                f"[AUX_PRED] hazard block mismatch: env hazard_len="
+                f"{meta.get('hazard_len', 0)} agent hazard_len={exp.hazard_len}. "
+                f"{ttc_hint}"
+            )
         if lab.shape[0] != exp.label_dim:
             raise RuntimeError(
                 f"[AUX_PRED] label length mismatch: env sent {lab.shape[0]} but the "
