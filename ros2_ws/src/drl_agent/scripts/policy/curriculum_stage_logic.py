@@ -36,6 +36,10 @@ def should_advance_stage(
     pass_spl,
     pass_clear,
     metrics: dict,
+    pass_psc=None,
+    pass_h_coll=None,
+    pass_per_map_sr=None,
+    pass_per_map_cr=None,
 ):
     """Decide whether an eval pass should count toward stage promotion.
 
@@ -47,6 +51,22 @@ def should_advance_stage(
     The numerics mirror the original ``_check_stage_advance`` exactly: the SR /
     CR gates always apply, while the SPL / clearance gates apply only when their
     configured threshold is > 0 (so legacy success-only configs are unchanged).
+
+    Additional gates (all default-disabled, so omitting them reproduces the
+    legacy behaviour):
+      * ``pass_psc``        — min Personal-Space-Compliance fraction. Active only
+                              when its per-stage threshold is > 0 AND a PSC value
+                              exists (``metrics["psc"]`` is not None); a missing
+                              value (labels off) never blocks.
+      * ``pass_h_coll``     — max human-collision episode rate. Active only when
+                              its per-stage threshold is < 1.0 AND a value exists
+                              (``metrics["h_coll_rate"]`` is not None).
+      * ``pass_per_map_sr`` /
+        ``pass_per_map_cr`` — per-map_type success floor / collision cap. EVERY
+                              map in ``metrics["per_map"]`` must pass. Active only
+                              when configured; a fallback eval (the per-map
+                              breakdown is the training mix, ``eval_map_applied``
+                              False) BLOCKS rather than trusting bad data.
     """
     if not enabled:
         return False, []
@@ -84,6 +104,50 @@ def should_advance_stage(
         reasons.append(f"SPL {spl:.3f}<{req_spl:.2f}")
     if req_clear > 0.0 and clear < req_clear:
         reasons.append(f"clearance {clear:.3f}<{req_clear:.2f}")
+
+    # ── Human-safety HARD gates (only when configured AND the metric exists) ──
+    # PSC / H-Coll are label-derived: when the env emits no labels they are None,
+    # and a None value must NEVER block promotion (a label-free run keeps the
+    # legacy success/collision behaviour).
+    req_psc = per_stage_threshold(pass_psc, stage_idx, 0.0)        # 0.0 → disabled
+    if req_psc > 0.0:
+        psc_val = metrics.get("psc")
+        if psc_val is not None and float(psc_val) < req_psc:
+            reasons.append(f"PSC {float(psc_val):.3f}<{req_psc:.2f}")
+
+    req_hc = per_stage_threshold(pass_h_coll, stage_idx, 1.0)      # 1.0 → disabled
+    if req_hc < 1.0:
+        hc_val = metrics.get("h_coll_rate")
+        if hc_val is not None and float(hc_val) > req_hc:
+            reasons.append(f"H-Coll {float(hc_val)*100:.1f}%>{req_hc*100:.1f}%")
+
+    # ── Per-map FAIL-FAST gates: EVERY eval map_type must clear its floor/cap ──
+    req_pm_sr = per_stage_threshold(pass_per_map_sr, stage_idx, 0.0)   # 0.0 → off
+    req_pm_cr = per_stage_threshold(pass_per_map_cr, stage_idx, 1.0)   # 1.0 → off
+    per_map_active = (req_pm_sr > 0.0 or req_pm_cr < 1.0)
+    if per_map_active:
+        # A fallback eval (per-map breakdown is the training mix, not
+        # eval_map_types) cannot be trusted for a per-map gate → block.
+        if not bool(metrics.get("eval_map_applied", True)):
+            reasons.append(
+                "per-map gate blocked: eval ran on the training map mix "
+                "(eval_map_applied=false), per-map breakdown not trustworthy")
+        else:
+            per_map = metrics.get("per_map") or {}
+            for mt in sorted(per_map):
+                d = per_map[mt] or {}
+                # NB: avoid `x or default` — a legitimate 0.0 collision rate (the
+                # SAFEST case) must not fall back to the disabled default.
+                _sr = d.get("success_rate")
+                _cr = d.get("collision_rate")
+                m_sr = float(_sr) if _sr is not None else 0.0
+                m_cr = float(_cr) if _cr is not None else 1.0
+                if req_pm_sr > 0.0 and m_sr < req_pm_sr:
+                    reasons.append(
+                        f"map[{mt}] success {m_sr*100:.1f}%<{req_pm_sr*100:.0f}%")
+                if req_pm_cr < 1.0 and m_cr > req_pm_cr:
+                    reasons.append(
+                        f"map[{mt}] collision {m_cr*100:.1f}%>{req_pm_cr*100:.0f}%")
 
     if reasons:
         return False, reasons

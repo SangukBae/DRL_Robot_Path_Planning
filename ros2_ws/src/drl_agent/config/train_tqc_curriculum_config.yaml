@@ -12,25 +12,58 @@ curriculum_settings:
   # Early stages require high success because the task is simple; later stages
   # allow lower success as the environment becomes genuinely harder.
   # List length should equal (num_stages - 1): one entry per promotable stage.
-  # Curriculum is now 7 stages (0..6) → 6 promotable transitions (0→1 … 5→6).
+  # Curriculum is now 9 stages (0..8) → 8 promotable transitions (0→1 … 7→8).
   # curriculum_stage_logic clamps an out-of-range stage index to the LAST entry,
   # so a shorter list still runs without crashing.
-  #   stage idx:               0     1     2     3     4     5
-  pass_eval_success_rate:   [0.90, 0.88, 0.85, 0.80, 0.74, 0.70]
-  pass_eval_collision_rate: [0.05, 0.08, 0.10, 0.13, 0.17, 0.20]
+  #   stage idx:               0     1     2     3     4     5     6     7
+  pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.82, 0.80, 0.76, 0.74, 0.70]
+  pass_eval_collision_rate: [0.05, 0.07, 0.09, 0.11, 0.12, 0.15, 0.17, 0.20]
 
   # Quality gate (conservative): minimum SPL (Success weighted by Path Length)
   # required to PROMOTE, per stage. This stops "arrived but wandered" policies
   # from passing on success_rate alone. Values are deliberately mild (well below
   # a clean-run SPL) so they only catch clearly inefficient driving.
   # Empty list / 0.0 / omit → SPL gate disabled (legacy success-only behaviour).
-  #   stage idx:     0     1     2     3     4     5
-  pass_eval_spl:  [0.55, 0.55, 0.53, 0.50, 0.47, 0.45]
+  #   stage idx:     0     1     2     3     4     5     6     7
+  pass_eval_spl:  [0.55, 0.55, 0.54, 0.52, 0.50, 0.48, 0.47, 0.45]
 
   # Optional extra gate (default OFF): minimum LiDAR clearance rate before
   # promotion. Leave empty to disable; raise to require safer-distance driving.
   # Kept off by default to introduce one quality metric (SPL) at a time.
   pass_eval_lidar_clearance_rate: []
+
+  # ── Human-safety HARD gates (label-derived; only active when labels exist) ──
+  # PSC and H-Coll are NOT just training-signal reward terms — they are promotion
+  # blockers, so a policy that "succeeds" by skimming dangerously close to people
+  # cannot advance. Both gates self-disable when the metric is unavailable (env
+  # aux labels off → metrics["psc"]/["h_coll_rate"] is None), so a label-free run
+  # promotes exactly as before. List index = stage index (clamped to last entry).
+  #
+  # PSC = Personal-Space Compliance fraction (higher = safer). Gate = require
+  # psc >= threshold. 0.0 → disabled. Humans first appear in Stage 3, so 0..2 are
+  # disabled; the human stages ramp the requirement up toward "almost always
+  # outside personal space".
+  #   stage idx:        0    1    2    3     4     5     6     7
+  pass_eval_psc:     [0.0, 0.0, 0.0, 0.97, 0.98, 0.98, 0.99, 0.99]
+  # H-Coll = fraction of eval episodes containing a human collision (lower =
+  # safer). Gate = require h_coll_rate <= threshold. 1.0 → disabled. A hard 0.0 on
+  # every human stage means "no human contact at all" is required to promote.
+  #   stage idx:           0    1    2    3    4    5    6    7
+  pass_eval_h_coll_rate: [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+  # ── Per-map FAIL-FAST gates (require EVERY eval map_type to clear a floor) ──
+  # The global success/collision gates can hide ONE map collapsing behind a good
+  # average (e.g. corridor 95% masking clutter 40%). These require each map_type
+  # in metrics["per_map"] to individually pass. They are deliberately a touch
+  # LOOSER than the global gates (success floor a bit below, collision cap a bit
+  # above the global value): the global gate sets the average bar, the per-map
+  # gate only catches a single collapsing map without making promotion infeasible.
+  # Only active when eval ran on eval_map_types (eval_map_applied=true); a fallback
+  # eval (training mix) BLOCKS promotion with a clear reason rather than trusting
+  # an untrustworthy per-map breakdown. 0.0 / 1.0 → that sub-gate disabled.
+  #   stage idx:                       0     1     2     3     4     5     6     7
+  pass_eval_per_map_success_rate:   [0.85, 0.83, 0.80, 0.75, 0.72, 0.68, 0.66, 0.62]
+  pass_eval_per_map_collision_rate: [0.08, 0.10, 0.12, 0.15, 0.16, 0.19, 0.21, 0.24]
 
   # How many consecutive evaluations must pass the threshold before promotion.
   # Set to 1 for faster iteration, 2-3 for more conservative advancement.

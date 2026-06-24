@@ -143,6 +143,13 @@ class TrainTQCCurriculum(
         # SPL floor so "arrived but wandered" episodes don't pass on reward alone.
         self.cur_pass_spl        = list(cur.get("pass_eval_spl", []))
         self.cur_pass_clear      = list(cur.get("pass_eval_lidar_clearance_rate", []))
+        # Human-safety HARD gates + per-map fail-fast gates (all default-empty →
+        # disabled, so older curriculum configs promote exactly as before). These
+        # only block when configured AND the underlying metric is available.
+        self.cur_pass_psc         = list(cur.get("pass_eval_psc", []))
+        self.cur_pass_h_coll      = list(cur.get("pass_eval_h_coll_rate", []))
+        self.cur_pass_per_map_sr  = list(cur.get("pass_eval_per_map_success_rate", []))
+        self.cur_pass_per_map_cr  = list(cur.get("pass_eval_per_map_collision_rate", []))
         self.cur_consec_passes   = int(cur.get("consecutive_eval_passes", 2))
 
         # AUX_PRED: per-step auxiliary label tracking.  EnvInterface.reset()/
@@ -546,6 +553,10 @@ class TrainTQCCurriculum(
             pass_spl=self.cur_pass_spl,
             pass_clear=self.cur_pass_clear,
             metrics=metrics,
+            pass_psc=self.cur_pass_psc,
+            pass_h_coll=self.cur_pass_h_coll,
+            pass_per_map_sr=self.cur_pass_per_map_sr,
+            pass_per_map_cr=self.cur_pass_per_map_cr,
         )
         if reasons:
             self.get_logger().info(

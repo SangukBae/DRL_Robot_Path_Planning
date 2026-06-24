@@ -2,7 +2,7 @@
 # Identical to environment.yaml except:
 #   - Pool sizes are set to the maximum stage counts.
 #   - num_of_* base values reflect final-stage maximums (overridden per-episode by stage).
-#   - curriculum: block defines the 5 stages.
+#   - curriculum: block defines the 9 stages.
 #
 # Usage: pass as --ros-args -p config_file:=<path>/environment_curriculum.yaml
 #        when launching environment_curriculum.py
@@ -414,17 +414,29 @@ curriculum:
   enabled: true
   initial_stage: 0   # node starts here; trainer advances via curriculum_stage parameter
 
-  # Curriculum design (7 stages). ONE major axis changes per stage so training
-  # stays stable (vs. the old 5-stage layout that added intersection + humans +
-  # localization noise all at once). Mixed-map stages use active_static_by_map /
-  # active_humans_by_map so the NARROW corridor gets fewer obstacles/humans than
-  # the roomier intersection / clutter / lobby IN THE SAME STAGE — corridor's
-  # activatable static candidate ceiling is ~10 (only small + medium-with-r<0.5
-  # fit the 5.2 m lane) and physical packing is tighter still. Stages without a
-  # by-map dict keep the single active_static / active_humans (backward compatible).
-  # Per-axis intent: 0 base · 1 corridor static · 2 +intersection (structure) ·
-  # 3 +humans & weak loc-noise · 4 +clutter (terrain) & proprio · 5 +lobby & crowd
-  # (generalization, mid noise) · 6 final (full crowd + strongest TRAIN noise).
+  # Curriculum design (9 stages). ONE major axis changes per stage so training
+  # stays stable. Crucially, DYNAMIC-OBSTACLE (human) avoidance and OBSERVATION
+  # (localization / proprioception) robustness are now learned on SEPARATE stages
+  # so the credit-assignment signal for each is clean (vs. the old layout that
+  # bundled "first human + loc-noise" into one stage and "clutter + proprio-noise"
+  # into another). Mixed-map stages use active_static_by_map / active_humans_by_map
+  # so the NARROW corridor gets fewer obstacles/humans than the roomier
+  # intersection / clutter / lobby IN THE SAME STAGE — corridor's activatable
+  # static candidate ceiling is ~10 (only small + medium-with-r<0.5 fit the 5.2 m
+  # lane) and physical packing is tighter still. Stages without a by-map dict keep
+  # the single active_static / active_humans (backward compatible).
+  # Per-axis intent. Stages 3-6 are STRICTLY single-axis (exactly one new variable
+  # vs. the previous stage) so each robustness skill has a clean credit-assignment
+  # signal; stages 7-8 are INTEGRATION stages that scale several axes at once on
+  # purpose (their role is generalization, not isolation).
+  #   0 base (empty) · 1 corridor static · 2 +intersection (structure) ·
+  #   3 +humans (count 1, simplest modes), CLEAN obs — dynamic-avoidance only ·
+  #   4 SAME humans as 3 + weak loc-noise — localization robustness only ·
+  #   5 +clutter terrain; humans/modes/all-noise UNCHANGED from 4 — terrain only ·
+  #   6 SAME map/humans/scan as 5 + light proprio-noise — proprio robustness only ·
+  #   7 INTEGRATION: +lobby, scale crowd (1->5) + richer modes + drift loc-noise
+  #     + FIRST human-scan noise (generalization; multi-axis by design) ·
+  #   8 final integration (full crowd + strongest TRAIN noise).
   stages:
     # ── Stage 0: lobby, empty — basic goal reaching ─────────────────────
     # map_type per stage: structured map curriculum samples a map each episode
@@ -467,10 +479,34 @@ curriculum:
       eval_map_types: ["corridor", "intersection"]
       localization_profile: clean
 
-    # ── Stage 3: + first human (HUMAN axis) + weak localization noise ────
+    # ── Stage 3: + first human (DYNAMIC-AVOIDANCE axis), CLEAN observation ─
+    # First pedestrians, but observation stays ground-truth-clean (no loc/proprio
+    # noise) so the policy learns dynamic-obstacle avoidance with an UNCORRUPTED
+    # goal/state signal — clean credit assignment for the avoidance behaviour.
     # Easiest pedestrians (near-straight crossing / along_path). corridor keeps
     # just 1 human and fewer static than the intersection.
-    - name: first_human
+    - name: first_human_clean
+      active_static: 6
+      active_humans: 1
+      active_static_by_map: {corridor: 4, intersection: 6}
+      active_humans_by_map: {corridor: 1, intersection: 1}
+      human_scan_noise_std: 0.0
+      human_scan_dropout_prob: 0.0
+      allowed_map_types: ["corridor", "intersection"]
+      map_type_probs: [0.5, 0.5]
+      allowed_static_groups: ["small", "medium"]
+      eval_map_types: ["corridor", "intersection"]
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
+      human_social_avoid_strength: 0.3
+      human_goal_span_multiplier: 1.5
+      localization_profile: clean   # observation-noise introduced in Stage 4
+
+    # ── Stage 4: SAME humans as Stage 3 + weak localization noise ────────
+    # OBSERVATION-ROBUSTNESS axis: identical human/static distribution & motion to
+    # Stage 3 (so nothing about the dynamic task changes); the ONLY new variable is
+    # weak correlated goal-observation noise. Proprio + human-scan perception stay
+    # clean — those arrive together in Stage 6.
+    - name: first_human_noisy
       active_static: 6
       active_humans: 1
       active_static_by_map: {corridor: 4, intersection: 6}
@@ -486,24 +522,58 @@ curriculum:
       human_goal_span_multiplier: 1.5
       localization_profile: weak_goal_noise
 
-    # ── Stage 4: + clutter (TERRAIN axis) + light proprio noise ─────────
-    # corridor stays the lightest map for both static and humans.
-    - name: add_clutter
-      active_static: 7
-      active_humans: 3
-      active_static_by_map: {corridor: 4, intersection: 7, clutter: 8}
-      active_humans_by_map: {corridor: 1, intersection: 2, clutter: 3}
-      human_scan_noise_std: 0.03
-      human_scan_dropout_prob: 0.015
+    # ── Stage 5: + clutter (TERRAIN axis ONLY) ───────────────────────────
+    # Adds the clutter map. EVERYTHING else is held at the Stage-4 level: human
+    # count (1) + modes, weak localization noise, clean proprio + clean human-scan
+    # perception. So the SINGLE new variable is the terrain (plus the LARGE static
+    # group the clutter map intrinsically needs). The crowd is scaled up later, in
+    # the integration stage (7) — NOT here — so terrain stays the only change.
+    # corridor stays the lightest map.
+    - name: add_clutter_clean
+      active_static: 8
+      active_humans: 1
+      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8}
+      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1}
+      human_scan_noise_std: 0.0
+      human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection", "clutter"]
       map_type_probs: [0.34, 0.33, 0.33]
       allowed_static_groups: ["small", "medium", "large"]
       eval_map_types: ["corridor", "intersection", "clutter"]
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.25, slow_turn: 0.5}
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
+      human_social_avoid_strength: 0.3
+      human_goal_span_multiplier: 1.5
+      localization_profile: weak_goal_noise
+
+    # ── Stage 6: SAME map/humans as Stage 5 + light proprio noise (ONLY) ─
+    # PROPRIO-ROBUSTNESS axis: identical map mix, human count/modes AND human-scan
+    # perception (still clean) as Stage 5; the SINGLE new variable is light
+    # proprioception-observation noise. Localization noise unchanged. Human-scan
+    # perception noise is deferred to the integration stage (7) so it does not
+    # confound the proprio axis here.
+    - name: add_clutter_noisy
+      active_static: 8
+      active_humans: 1
+      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8}
+      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1}
+      human_scan_noise_std: 0.0
+      human_scan_dropout_prob: 0.0
+      allowed_map_types: ["corridor", "intersection", "clutter"]
+      map_type_probs: [0.34, 0.33, 0.33]
+      allowed_static_groups: ["small", "medium", "large"]
+      eval_map_types: ["corridor", "intersection", "clutter"]
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
+      human_social_avoid_strength: 0.3
+      human_goal_span_multiplier: 1.5
       localization_profile: weak_goal_noise
       proprio_noise_profile: light
 
-    # ── Stage 5: + lobby & bigger crowd (GENERALIZATION) + mid loc noise ─
+    # ── Stage 7: INTEGRATION / GENERALIZATION (multi-axis BY DESIGN) ──────
+    # The isolating single-axis stages (3-6) are done. This stage deliberately
+    # scales up to the full task at once: +lobby (4 maps), bigger crowd (1 -> 5)
+    # with richer behaviour modes, mid (drift) localization noise, light proprio,
+    # and the FIRST human-scan perception noise. Multiple axes change here on
+    # purpose — its role is generalization, not isolating a single variable.
     - name: generalize
       active_static: 8
       active_humans: 5
@@ -521,9 +591,9 @@ curriculum:
       localization_profile: drift_goal_noise
       proprio_noise_profile: light
 
-    # ── Stage 6: FINAL — full crowd + full behaviour mix + strongest TRAIN noise.
-    # Replaces the old Stage 4 'full_complexity' role. corridor remains lighter
-    # (static 5 / humans 3) than the open maps even at full difficulty.
+    # ── Stage 8: FINAL — full crowd + full behaviour mix + strongest TRAIN noise.
+    # corridor remains lighter (static 5 / humans 3) than the open maps even at
+    # full difficulty.
     - name: full_complexity
       active_static: 9
       active_humans: 7
