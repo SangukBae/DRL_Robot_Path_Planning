@@ -70,14 +70,35 @@ environment:
   action_dim: 2
   agent_name: "hunter_se"
   max_action: 1.0
-  actions_low:  [0.8, -0.524]
+  # STOP/YIELD experiment — NEW ACTION SEMANTICS (requires FRESH training).
+  # Lowering action[0]'s floor 0.8 → 0.0 RE-MAPS the entire normalized→waypoint
+  # range (pure_pursuit.action_to_waypoint is a linear map over actions_low/high):
+  # the SAME normalized action now points to a SHORTER waypoint than before, e.g.
+  # action[0]=0 was r=1.4 m and is now r=1.0 m. This is NOT "just adding a [0,0.8]
+  # zone" — it changes the meaning of every action[0], so prior checkpoints /
+  # replay buffers / reward curves are NOT directly comparable; train from
+  # scratch. The point of the change is that the policy can now command a short
+  # waypoint = creep/stop (combined with controller_low_speed_distance_m below).
+  #
+  # ABLATION = two FRESH runs compared head-to-head (not vs. old runs):
+  #   stop-OFF: actions_low[0]=0.8, controller_low_speed_distance_m=0.0,
+  #             controller_min_speed_mps=0.3, yield_reward.enabled=false
+  #             → byte-identical to the pre-stop reward/control contract.
+  #   stop-ON : the values set here.
+  actions_low:  [0.0, -0.524]
   actions_high: [2.0,  0.524]
   vehicle_wheelbase_m: 0.547696
   vehicle_steering_limit_deg: 21.58
   vehicle_min_speed_for_steering_mps: 0.15
   controller_cruise_speed_mps: 2.0
-  controller_min_speed_mps: 0.3
+  # Floor dropped to 0 so the low-speed ramp below can pull speed to a true 0 m/s
+  # stop (the ramp is applied AFTER this floor).
+  controller_min_speed_mps: 0.0
   controller_speed_steer_factor: 0.6
+  # >0 ramps Pure-Pursuit speed linearly to 0 as the commanded waypoint distance
+  # L drops below this (speed *= L/this), giving the policy genuine creep/stop
+  # authority through action[0]. 0.0 (or omit) → disabled (no stop capability).
+  controller_low_speed_distance_m: 0.8
   spawn_z: 0.02
   obs_z_min_sensor_m: -0.455
   obs_z_max_sensor_m:  0.250
@@ -171,6 +192,35 @@ environment:
     approach_v_ref_mps: 1.0      # v_ref: closing-speed normaliser [m/s]
     w_ttc: 0.3                   # weight on max(0, 1 - ttc/ttc_safe)^2
     ttc_safe_s: 2.0              # ttc_safe: TTC term only when closing & ttc < this [s]
+
+  # ── Stop/Yield reward shaping (reward_calculator) ──────────────────────────
+  # Layered ON TOP of human_risk_penalty to teach "stop only when a human
+  # collision is imminent, then move again". The WHOLE block is HARD-GATED on a
+  # human being present this step (finite nearest-human distance), so it is
+  # exactly 0 in human-free stages/timesteps — INCLUDING the idle penalty
+  # (C) — leaving curriculum stages 0-2 unaffected (their only keep-moving
+  # pressure stays the un-relieved step penalty, as before). Three bounded
+  # effects when a human IS present:
+  #   (A) step_penalty_relief_scale: shrink the per-step time penalty while the
+  #       most-imminent human is a closing hazard (TTC / closing-rate gate), so
+  #       waiting one out is not punished.
+  #   (B) w_yield_bonus: a small positive bonus for slowing/stopping, scaled by
+  #       how slow AND how risky (capped by max_yield_bonus). Paid only while the
+  #       hazard gate is active — never when a present human is non-threatening.
+  #   (C) w_idle_penalty: a small penalty for idling (|speed| < threshold) when a
+  #       human is present but NOT an imminent hazard, so the policy does not
+  #       collapse to "always stop" around people.
+  # Needs the stop-capable controller above to have anything to reward.
+  # OPT-IN: absent block / enabled:false → reward byte-identical (ablation).
+  yield_reward:
+    enabled: true
+    risk_gate_ttc_s: 2.0            # risk-active when min time-to-contact < this
+    risk_gate_approach: 0.15        # OR when normalised closing rate > this
+    w_yield_bonus: 0.05             # gain on the slow-down bonus
+    max_yield_bonus: 0.1            # hard cap on the slow-down bonus
+    w_idle_penalty: 0.03            # gain on the idle (loitering) penalty
+    idle_speed_threshold_mps: 0.1   # "idle" = |speed| below this [m/s]
+    step_penalty_relief_scale: 0.2  # multiply step_pen while risk-active (0.2 = 80% relief)
 
   # Episode-level pedestrian behaviour-mode mix. Each human is assigned ONE mode
   # at spawn and keeps it for the episode. Weights need not sum to 1 (normalised

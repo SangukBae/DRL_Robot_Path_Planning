@@ -121,6 +121,8 @@ class RealPolicyRunner(Node):
         self.cruise = float(e.get("controller_cruise_speed_mps", 2.0))
         self.min_speed = float(e.get("controller_min_speed_mps", 0.3))
         self.speed_steer_factor = float(e.get("controller_speed_steer_factor", 0.6))
+        # Stop/yield capability (must match training config for contract parity).
+        self.low_speed_distance = float(e.get("controller_low_speed_distance_m", 0.0))
         self.lidar_max_range = float(cfg.get("threshold_parameters", {}).get("lidar_max_range", 50))
         self.goal_threshold = float(cfg.get("threshold_parameters", {}).get("goal_threshold", 0.42))
 
@@ -387,7 +389,8 @@ class RealPolicyRunner(Node):
         _, _, x_wp, y_wp = pure_pursuit.action_to_waypoint(action, self.actions_low, self.actions_high)
         v, steering = pure_pursuit.waypoint_to_command(
             x_wp, y_wp, self.wheelbase, self.steer_limit,
-            self.cruise, self.min_speed, self.speed_steer_factor)
+            self.cruise, self.min_speed, self.speed_steer_factor,
+            low_speed_distance_m=self.low_speed_distance)
         self._publish(v, steering)
 
 

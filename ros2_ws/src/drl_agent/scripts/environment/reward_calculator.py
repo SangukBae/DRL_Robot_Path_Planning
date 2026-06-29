@@ -67,6 +67,13 @@ def compute_human_risk_penalty(
         "human_personal_space_penalty": 0.0,
         "human_approach_rate_penalty": 0.0,
         "human_ttc_penalty": 0.0,
+        # Raw closing-risk signals used for yield/stop GATING (not penalties).
+        # Tracked over ALL humans (most-imminent), independent of the penalty
+        # aggregation above, so a fast closer is not masked by a closer-but-
+        # standing person. Defaults mean "no closing hazard".
+        "human_min_ttc_s": float("inf"),     # min time-to-contact over closers
+        "human_approach_norm": 0.0,          # max clamp(closing/v_ref, 0, 1)
+        "human_min_dist_m": float("inf"),    # nearest human distance
     }
     if not humans:
         return terms
@@ -74,6 +81,9 @@ def compute_human_risk_penalty(
     rvx = robot_speed * math.cos(robot_yaw)
     rvy = robot_speed * math.sin(robot_yaw)
     best_total = -1.0
+    min_ttc = float("inf")
+    max_approach = 0.0
+    min_dist = float("inf")
     for h in humans:
         dx = float(h["x"]) - robot_x
         dy = float(h["y"]) - robot_y
@@ -89,6 +99,17 @@ def compute_human_risk_penalty(
         closing = -(dx * rel_vx + dy * rel_vy) / d
         if closing < 0.0:
             closing = 0.0
+
+        # Raw gating signals (over all humans), independent of penalty selection.
+        if d < min_dist:
+            min_dist = d
+        if closing > eps:
+            _ttc = d / closing
+            if _ttc < min_ttc:
+                min_ttc = _ttc
+            _appr = min(1.0, closing / max(v_ref, eps))
+            if _appr > max_approach:
+                max_approach = _appr
 
         pen_ps = (w_ps * (1.0 - d / max(d_ps, eps)) ** 2) if d < d_ps else 0.0
         # Clamp the closing ratio to [0, 1] so a fast approach cannot blow the
@@ -109,6 +130,9 @@ def compute_human_risk_penalty(
             terms["human_personal_space_penalty"] = float(pen_ps)
             terms["human_approach_rate_penalty"] = float(pen_app)
             terms["human_ttc_penalty"] = float(pen_ttc)
+    terms["human_min_ttc_s"] = float(min_ttc)
+    terms["human_approach_norm"] = float(max_approach)
+    terms["human_min_dist_m"] = float(min_dist)
     return terms
 
 
@@ -152,6 +176,22 @@ def compute_reward(
     # 사람 전용 동적 위험 페널티 (environment.py에서 GT 사람/로봇 상태로 미리 계산).
     # None/빈 dict → 세 항 모두 0 (사람이 없는 stage·timestep에서는 영향 없음).
     human_risk_terms=None,
+
+    # ---- Stop/Yield shaping (opt-in; default OFF → byte-identical reward) ----
+    # Lets the policy be REWARDED for slowing/stopping ONLY while a human
+    # collision is imminent, and lightly PENALISED for idling when it is safe to
+    # move. Gated by the raw closing-risk signals in `human_risk_terms`
+    # (`human_min_ttc_s`, `human_approach_norm`), so it is exactly 0 in
+    # human-free stages / timesteps. All terms are bounded.
+    yield_enabled=False,
+    yield_risk_gate_ttc_s=2.0,      # risk-active when min TTC < this
+    yield_risk_gate_approach=0.15,  # OR when normalised closing rate > this
+    yield_w_bonus=0.05,             # gain on the slow-down bonus
+    yield_max_bonus=0.1,            # hard cap on the slow-down bonus
+    yield_idle_w=0.03,              # gain on the idle (loitering) penalty
+    yield_idle_speed_mps=0.1,       # "idle" = |speed| below this
+    yield_step_relief_scale=1.0,    # multiply step_pen while risk-active (1=none, 0=full relief)
+    cruise_speed_mps=None,          # speed normaliser for the slow factor (defaults to v_max)
     return_terms=False,
 ):
     terms = {
@@ -168,6 +208,12 @@ def compute_reward(
         "human_personal_space_penalty": 0.0,
         "human_approach_rate_penalty": 0.0,
         "human_ttc_penalty": 0.0,
+        # Raw closing-risk gating signals (passthrough for logging/diagnostics).
+        "human_min_ttc_s": float("inf"),
+        "human_approach_norm": 0.0,
+        # Stop/yield shaping (0 unless yield_enabled and gated risk fires).
+        "yield_bonus": 0.0,
+        "idle_pen": 0.0,
         "terminal": 0.0,
     }
     # 터미널
@@ -249,9 +295,55 @@ def compute_reward(
             _v = float(human_risk_terms.get(_k, 0.0) or 0.0)
             terms[_k] = _v
             human_pen += _v
+        # Passthrough raw gating signals for logging.
+        terms["human_min_ttc_s"] = float(
+            human_risk_terms.get("human_min_ttc_s", float("inf")))
+        terms["human_approach_norm"] = float(
+            human_risk_terms.get("human_approach_norm", 0.0) or 0.0)
+
+    # 5c) Stop/yield shaping (opt-in). Reward slowing/stopping only while a
+    # human collision is imminent; lightly penalise idling when it is safe to
+    # move. Both bounded; both exactly 0 when yield_enabled is False (the final
+    # sum is then byte-identical to the original reward).
+    #
+    # HARD-GATED on "a human is actually present this step" (finite
+    # human_min_dist_m). This keeps human-FREE stages/timesteps (e.g. curriculum
+    # stages 0-2) at exactly 0 yield shaping — INCLUDING the idle penalty, which
+    # would otherwise punish low speed even with no people around. There the only
+    # pressure to keep moving stays the (un-relieved) step penalty, exactly as
+    # before. The bonus/relief were already human-gated via risk_active; this
+    # extends the same gate to the idle penalty.
+    yield_bonus = 0.0
+    idle_pen = 0.0
+    humans_present = bool(
+        human_risk_terms
+        and math.isfinite(float(human_risk_terms.get("human_min_dist_m", float("inf"))))
+    )
+    if yield_enabled and humans_present:
+        speed_abs = abs(v)
+        _ttc = float(terms["human_min_ttc_s"])
+        _appr = float(terms["human_approach_norm"])
+        risk_active = (_ttc < yield_risk_gate_ttc_s) or (_appr > yield_risk_gate_approach)
+        if risk_active:
+            # (A) relieve the step penalty so waiting out a hazard is not punished
+            step_pen = step_pen * yield_step_relief_scale
+            # (B) reward slowing/stopping, scaled by how slow AND how risky
+            _cruise = (cruise_speed_mps if (cruise_speed_mps and cruise_speed_mps > 0.0)
+                       else max(v_max, 1e-6))
+            slow_factor = max(0.0, min(1.0, 1.0 - speed_abs / _cruise))
+            ttc_risk = (max(0.0, min(1.0, 1.0 - _ttc / max(yield_risk_gate_ttc_s, 1e-6)))
+                        if math.isfinite(_ttc) else 0.0)
+            risk_level = max(ttc_risk, min(1.0, _appr))
+            yield_bonus = min(yield_max_bonus, yield_w_bonus * slow_factor * risk_level)
+        elif speed_abs < yield_idle_speed_mps:
+            # (C) discourage idling when it is safe to move (no imminent hazard)
+            idle_pen = yield_idle_w * (1.0 - speed_abs / max(yield_idle_speed_mps, 1e-6))
+    terms["step_pen"] = float(step_pen)
+    terms["yield_bonus"] = float(yield_bonus)
+    terms["idle_pen"] = float(idle_pen)
 
     # 6) 시간 페널티 및 합산
-    reward = (progress + heading
-              - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen)
+    reward = (progress + heading + yield_bonus
+              - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen - idle_pen)
 
     return (float(reward), terms) if return_terms else float(reward)

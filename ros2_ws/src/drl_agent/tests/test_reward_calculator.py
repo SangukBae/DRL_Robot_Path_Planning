@@ -250,3 +250,155 @@ def test_aggregation_picks_most_dangerous_human():
     assert terms["human_personal_space_penalty"] > 0.0
     assert terms["human_approach_rate_penalty"] > 0.0
     assert terms["human_ttc_penalty"] > 0.0
+
+
+# ---------------------------------------------------------------------------
+# Stop / yield shaping (opt-in). Default OFF → reward byte-identical.
+# ---------------------------------------------------------------------------
+
+def _closing_human_terms(ttc, approach, dist=1.0):
+    """Hand-built human_risk_terms with chosen raw gating signals.
+
+    ``dist`` is the nearest-human distance; finite => a human is present (which
+    is what the yield shaping is hard-gated on). Default 1.0 m = present.
+    """
+    return {
+        "human_personal_space_penalty": 0.0,
+        "human_approach_rate_penalty": 0.0,
+        "human_ttc_penalty": 0.0,
+        "human_min_ttc_s": ttc,
+        "human_approach_norm": approach,
+        "human_min_dist_m": dist,
+    }
+
+
+def _safe_human_terms(dist=3.0):
+    """A human is PRESENT but poses no closing hazard (inf TTC, no approach)."""
+    return _closing_human_terms(ttc=float("inf"), approach=0.0, dist=dist)
+
+
+def test_yield_disabled_is_byte_identical():
+    base, _ = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0, step_pen=0.05, return_terms=True)
+    same, terms = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0, step_pen=0.05,
+        yield_enabled=False, return_terms=True)
+    assert same == pytest.approx(base)
+    assert terms["yield_bonus"] == 0.0
+    assert terms["idle_pen"] == 0.0
+
+
+def test_gating_signals_pass_through_from_human_terms():
+    hr = _closing_human_terms(ttc=1.0, approach=0.5)
+    _, terms = rc.compute_reward(
+        target=False, collision=False, v=1.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=4.9, human_risk_terms=hr,
+        return_terms=True)
+    assert terms["human_min_ttc_s"] == pytest.approx(1.0)
+    assert terms["human_approach_norm"] == pytest.approx(0.5)
+
+
+def test_no_yield_terms_without_humans():
+    # yield enabled but no humans → not risk-active; moving fast → no idle pen.
+    _, terms = rc.compute_reward(
+        target=False, collision=False, v=2.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=4.9, step_pen=0.05,
+        yield_enabled=True, yield_idle_speed_mps=0.1,
+        cruise_speed_mps=2.0, return_terms=True)
+    assert terms["yield_bonus"] == 0.0
+    assert terms["idle_pen"] == 0.0
+    assert terms["step_pen"] == pytest.approx(0.05)   # not relieved when safe
+
+
+def test_step_penalty_relieved_under_imminent_risk():
+    hr = _closing_human_terms(ttc=1.0, approach=0.5)   # ttc < gate → risk-active
+    _, terms = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0, step_pen=0.05,
+        human_risk_terms=hr, yield_enabled=True,
+        yield_risk_gate_ttc_s=2.0, yield_step_relief_scale=0.2,
+        cruise_speed_mps=2.0, return_terms=True)
+    assert terms["step_pen"] == pytest.approx(0.05 * 0.2)
+
+
+def test_yield_bonus_only_when_risk_active_and_slow():
+    hr = _closing_human_terms(ttc=1.0, approach=0.5)
+    # Stopped under risk → positive, capped bonus.
+    _, slow = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0, human_risk_terms=hr,
+        yield_enabled=True, yield_w_bonus=0.05, yield_max_bonus=0.1,
+        cruise_speed_mps=2.0, return_terms=True)
+    assert slow["yield_bonus"] > 0.0
+    # Driving at cruise under the SAME risk → no slow-down bonus.
+    _, fast = rc.compute_reward(
+        target=False, collision=False, v=2.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=4.9, human_risk_terms=hr,
+        yield_enabled=True, yield_w_bonus=0.05, cruise_speed_mps=2.0,
+        return_terms=True)
+    assert fast["yield_bonus"] == pytest.approx(0.0)
+
+
+def test_yield_bonus_capped():
+    hr = _closing_human_terms(ttc=0.01, approach=1.0)   # maximal risk
+    _, terms = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0, human_risk_terms=hr,
+        yield_enabled=True, yield_w_bonus=10.0, yield_max_bonus=0.1,
+        cruise_speed_mps=2.0, return_terms=True)
+    assert terms["yield_bonus"] == pytest.approx(0.1)
+
+
+def test_idle_penalty_only_when_safe_and_stopped():
+    # Human PRESENT but not a hazard, stopped, yield on → idle penalty fires.
+    _, idle = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0,
+        human_risk_terms=_safe_human_terms(), yield_enabled=True,
+        yield_idle_w=0.03, yield_idle_speed_mps=0.1, cruise_speed_mps=2.0,
+        return_terms=True)
+    assert idle["idle_pen"] == pytest.approx(0.03)
+    # Same but under imminent risk → NO idle penalty (it is allowed to wait).
+    hr = _closing_human_terms(ttc=1.0, approach=0.5)
+    _, risky = rc.compute_reward(
+        target=False, collision=False, v=0.0, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=5.0, human_risk_terms=hr,
+        yield_enabled=True, yield_idle_w=0.03, yield_idle_speed_mps=0.1,
+        cruise_speed_mps=2.0, return_terms=True)
+    assert risky["idle_pen"] == 0.0
+
+
+def test_no_yield_shaping_in_human_free_step():
+    # Hard gate: with NO human present, even a full stop gets zero yield shaping
+    # (no idle penalty, no bonus, step penalty NOT relieved) so human-free
+    # curriculum stages are unaffected. Covers both human_risk_terms=None and a
+    # populated-but-empty (no human) terms dict.
+    for hr in (None, rc.compute_human_risk_penalty(0.0, 0.0, 0.0, 0.0, [])):
+        _, terms = rc.compute_reward(
+            target=False, collision=False, v=0.0, w=0.0,
+            prev_goal_dist=5.0, curr_goal_dist=5.0, step_pen=0.05,
+            human_risk_terms=hr, yield_enabled=True,
+            yield_idle_w=0.03, yield_idle_speed_mps=0.1,
+            yield_step_relief_scale=0.2, cruise_speed_mps=2.0, return_terms=True)
+        assert terms["idle_pen"] == 0.0
+        assert terms["yield_bonus"] == 0.0
+        assert terms["step_pen"] == pytest.approx(0.05)
+
+
+def test_reward_equals_decomposed_sum_with_yield():
+    hr = _closing_human_terms(ttc=1.0, approach=0.5)
+    r, t = rc.compute_reward(
+        target=False, collision=False, v=0.2, w=0.0,
+        prev_goal_dist=5.0, curr_goal_dist=4.95, theta_err=0.0,
+        rect_proximity=0.1, step_pen=0.05, human_risk_terms=hr,
+        yield_enabled=True, yield_step_relief_scale=0.2, cruise_speed_mps=2.0,
+        return_terms=True)
+    recomputed = (t["progress"] + t["heading"] + t["yield_bonus"]
+                  - t["curv_pen"] - t["obstacle"] - t["step_pen"]
+                  - t["smooth"] - t["wp_smooth"]
+                  - t["human_personal_space_penalty"]
+                  - t["human_approach_rate_penalty"]
+                  - t["human_ttc_penalty"] - t["idle_pen"])
+    assert r == pytest.approx(recomputed)

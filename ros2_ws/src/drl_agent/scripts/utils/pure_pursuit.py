@@ -29,8 +29,26 @@ def action_to_waypoint(action, actions_low, actions_high):
 
 
 def waypoint_to_command(x_wp, y_wp, wheelbase_m, steering_limit_rad,
-                        cruise_speed_mps, min_speed_mps, speed_steer_factor):
-    """Pure Pursuit: robot-frame waypoint → (speed [m/s], steering [rad])."""
+                        cruise_speed_mps, min_speed_mps, speed_steer_factor,
+                        low_speed_distance_m=0.0):
+    """Pure Pursuit: robot-frame waypoint → (speed [m/s], steering [rad]).
+
+    Speed is a function of the commanded waypoint *geometry* only (the
+    steering ratio), so the original contract is preserved exactly when
+    ``low_speed_distance_m == 0.0`` (the default).
+
+    STOP/YIELD capability (opt-in, ``low_speed_distance_m > 0``): the forward
+    speed is additionally ramped DOWN toward 0 as the commanded waypoint
+    distance ``L`` drops below ``low_speed_distance_m``
+    (``speed *= L / low_speed_distance_m``). This is applied AFTER the
+    ``min_speed_mps`` floor so it can pull the speed all the way to 0 — i.e. a
+    policy that commands a short waypoint (small ``action[0]``) can creep or
+    fully stop. The steering geometry is unchanged. With the default the only
+    floor is ``min_speed_mps`` exactly as before, so to truly reach 0 m/s the
+    caller must BOTH lower the action floor (``actions_low[0]``) so a short
+    waypoint is reachable AND set ``low_speed_distance_m > 0`` (and/or
+    ``min_speed_mps = 0``).
+    """
     L = math.hypot(x_wp, y_wp)
     if L < 1e-3:
         return 0.0, 0.0
@@ -39,4 +57,6 @@ def waypoint_to_command(x_wp, y_wp, wheelbase_m, steering_limit_rad,
     steer_ratio = abs(steering) / max(steering_limit_rad, 1e-6)
     speed = cruise_speed_mps * (1.0 - speed_steer_factor * steer_ratio)
     speed = max(speed, min_speed_mps)
+    if low_speed_distance_m > 0.0 and L < low_speed_distance_m:
+        speed *= L / low_speed_distance_m
     return speed, steering

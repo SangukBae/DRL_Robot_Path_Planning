@@ -272,6 +272,14 @@ class Environment(
         self.controller_speed_steer_factor = float(
             self.environment_config.get("controller_speed_steer_factor", 0.6)
         )
+        # STOP/YIELD capability (opt-in). >0 ramps Pure-Pursuit speed toward 0 as
+        # the commanded waypoint distance L drops below this, so a short waypoint
+        # (small action[0]) lets the policy creep/stop. Default 0.0 → no-op, and
+        # to truly reach 0 m/s also lower actions_low[0] (and/or
+        # controller_min_speed_mps). See pure_pursuit.waypoint_to_command.
+        self.controller_low_speed_distance_m = float(
+            self.environment_config.get("controller_low_speed_distance_m", 0.0)
+        )
         self.spawn_z = self.environment_config.get("spawn_z", 0.4)
         self.obs_z_min_sensor_m = float(self.environment_config.get("obs_z_min_sensor_m", -0.555))
         self.obs_z_max_sensor_m = float(self.environment_config.get("obs_z_max_sensor_m",  0.250))
@@ -463,6 +471,29 @@ class Environment(
         self.human_risk_v_ref    = float(_hrp.get("approach_v_ref_mps", 1.0))
         self.human_risk_w_ttc    = float(_hrp.get("w_ttc", 0.3))
         self.human_risk_ttc_safe = float(_hrp.get("ttc_safe_s", 2.0))
+
+        # ── Stop/Yield reward shaping (reward_calculator) ──────────────────────
+        # Conditional shaping layered ON TOP of human_risk_penalty. HARD-GATED on
+        # a human being present this step, so it is exactly 0 in human-free
+        # stages/timesteps (curriculum stages 0-2 unaffected) — including the idle
+        # penalty. When a human IS present it rewards slowing/stopping ONLY while
+        # that human is a closing hazard (raw closing-risk signals computed
+        # alongside the human-risk penalty), relieves the step penalty in that
+        # window, and lightly penalises idling when a present human is not a
+        # hazard. OPT-IN: absent block → DISABLED → reward byte-for-byte unchanged
+        # (backward compatibility / ablation). Needs a stop-capable controller
+        # (controller_low_speed_distance_m > 0 + lowered actions_low[0]) to have
+        # anything to reward; requires human_risk_penalty.enabled so the gating
+        # signals (incl. nearest-human distance) are populated.
+        _yr = dict(self.environment_config.get("yield_reward", {}) or {})
+        self.yield_enabled            = bool(_yr.get("enabled", False))
+        self.yield_risk_gate_ttc_s    = float(_yr.get("risk_gate_ttc_s", 2.0))
+        self.yield_risk_gate_approach = float(_yr.get("risk_gate_approach", 0.15))
+        self.yield_w_bonus            = float(_yr.get("w_yield_bonus", 0.05))
+        self.yield_max_bonus          = float(_yr.get("max_yield_bonus", 0.1))
+        self.yield_idle_w             = float(_yr.get("w_idle_penalty", 0.03))
+        self.yield_idle_speed_mps     = float(_yr.get("idle_speed_threshold_mps", 0.1))
+        self.yield_step_relief_scale  = float(_yr.get("step_penalty_relief_scale", 1.0))
 
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
@@ -1370,6 +1401,7 @@ class Environment(
             self.controller_cruise_speed_mps,
             self.controller_min_speed_mps,
             self.controller_speed_steer_factor,
+            low_speed_distance_m=self.controller_low_speed_distance_m,
         )
     
     def terminate_session(self):
@@ -1651,6 +1683,9 @@ class Environment(
             "penalty_human_personal_space",
             "penalty_human_approach_rate",
             "penalty_human_ttc",
+            "human_min_ttc_s",
+            "reward_yield_bonus",
+            "penalty_idle",
             "reward_terminal",
             "reward",
             "collision", "target", "done",
@@ -2041,6 +2076,15 @@ class Environment(
             waypoint_theta=theta,
             prev_waypoint_theta=prev_waypoint_theta,
             human_risk_terms=human_risk_terms,
+            yield_enabled=self.yield_enabled,
+            yield_risk_gate_ttc_s=self.yield_risk_gate_ttc_s,
+            yield_risk_gate_approach=self.yield_risk_gate_approach,
+            yield_w_bonus=self.yield_w_bonus,
+            yield_max_bonus=self.yield_max_bonus,
+            yield_idle_w=self.yield_idle_w,
+            yield_idle_speed_mps=self.yield_idle_speed_mps,
+            yield_step_relief_scale=self.yield_step_relief_scale,
+            cruise_speed_mps=self.controller_cruise_speed_mps,
             return_terms=True,
         )
         self._prev_waypoint_theta = theta
@@ -2078,6 +2122,9 @@ class Environment(
                 round(float(reward_terms["human_personal_space_penalty"]), 6),
                 round(float(reward_terms["human_approach_rate_penalty"]), 6),
                 round(float(reward_terms["human_ttc_penalty"]), 6),
+                round(min(float(reward_terms["human_min_ttc_s"]), 99.0), 6),
+                round(float(reward_terms["yield_bonus"]), 6),
+                round(float(reward_terms["idle_pen"]), 6),
                 round(float(reward_terms["terminal"]), 6),
                 round(float(reward), 6),
                 int(bool(collision)), int(bool(target)), int(bool(done)),
