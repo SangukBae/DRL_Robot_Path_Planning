@@ -63,6 +63,14 @@ class AuxPredConfig:
         # initialised aux head does not perturb early critic learning. 0 disables
         # the schedule (constant beta), keeping the previous behaviour.
         self.aux_beta_warmup_steps = int(cfg.get("aux_beta_warmup_steps", 0))
+        # Optional per-curriculum-stage aux weight schedule (overrides loss_weight
+        # + warmup when non-empty). List indexed by stage, clamped to the last
+        # entry. Lets aux supervision ramp in with the curriculum, e.g.
+        # [0.0, 0.0, 0.1, 0.3, 0.5] -> off for the easy stages, growing as the
+        # dynamic task arrives. Empty -> legacy constant loss_weight (+ warmup).
+        self.stagewise_loss_schedule = [
+            float(x) for x in (cfg.get("stagewise_loss_schedule", []) or [])
+        ]
 
         # Optional distributional auxiliary (v2, default off).
         self.use_distributional_aux = bool(cfg.get("use_distributional_aux", False))

@@ -178,6 +178,10 @@ class TrainTQCBase(EnvInterface):
             max_action,
             hyperparameters,
             log_dir=self.log_dir,
+            # TEMPORAL_ACTOR: per-frame obs/agent dims so the agent can split the
+            # transported stacked state into current(87) + scan history.
+            env_obs_dim=environment_dim,
+            env_agent_dim=agent_dim,
         )
 
         # AUX_ABLATION: let the agent stamp the seed on its JSON metric log.

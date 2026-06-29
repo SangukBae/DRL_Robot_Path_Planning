@@ -19,6 +19,10 @@ from aux_prediction_losses import compute_aux_loss
 # AUX_PRED (v2): aux-only temporal context (GRU over recent in-episode states).
 # Disabled -> out_dim 0, so the head is built exactly as the single-step v1 head.
 from aux_prediction_temporal import TemporalContextEncoder
+# TEMPORAL_ACTOR: compressed temporal feature on the ACTOR/CRITIC path. Splits the
+# transported stacked state into current(87) + scan-history and fuses a small
+# temporal feature into the shared latent (actor/critic stay non-recurrent).
+from aux_prediction_temporal import TemporalFusionEncoder
 
 
 # Network definitions + TQC loss now live in tqc_networks.py; checkpoint I/O in
@@ -28,7 +32,8 @@ import tqc_io
 
 
 class Agent(object):
-    def __init__(self, state_dim, action_dim, max_action, hyperparameters, log_dir=None):
+    def __init__(self, state_dim, action_dim, max_action, hyperparameters, log_dir=None,
+                 env_obs_dim=None, env_agent_dim=None):
         # ----------------------------
         # Hyperparameters (preprocess)
         # ----------------------------
@@ -118,10 +123,64 @@ class Agent(object):
                 f"(got {self.aux_cfg.history_len})."
             )
 
-        self.encoder = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
-        self.encoder_target = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
+        # ----------------------------
+        # TEMPORAL_ACTOR: compressed temporal feature on the actor/critic path.
+        # ----------------------------
+        # The env transports the stacked state (current 87 + appended scan
+        # history). Instead of feeding that raw 327-D vector to one big shared
+        # encoder, split it: a light MLP on the CURRENT 87-D state + a small
+        # ScanTemporalEncoder on the scan history, fused back to a latent. This
+        # keeps the heavy raw stack off the actor/critic main path and lets the
+        # temporal strength be gated per curriculum stage (set_curriculum_stage).
+        #
+        # INDEPENDENT of aux supervision (deliberately decoupled so "add time
+        # context to the actor" and "strengthen the aux head" can be ablated
+        # separately): with aux_prediction.enabled=false the main SharedEncoder is
+        # an identity, so the fused latent is [current(87) + temporal] -> 87 and
+        # the temporal/fusion params still train from the CRITIC loss alone (no aux
+        # head). With aux enabled the main encoder is a real 87->latent_dim MLP.
+        # Requires only the env to be stacking (state_dim == current + history).
+        # Default OFF.
+        tcfg = dict(self.hyperparameters.get("temporal_actor_context", {}) or {})
+        self.temporal_actor_enabled = bool(tcfg.get("enabled", False))
+        self.temporal_stage_enable_from = int(tcfg.get("stage_enable_from", 0))
+        self.current_stage = 0
+
+        def _make_encoder():
+            if not self.temporal_actor_enabled:
+                return SharedEncoder(state_dim, self.aux_cfg)
+            obs_dim = int(env_obs_dim if env_obs_dim is not None
+                          else tcfg.get("obs_dim", 0))
+            agent_dim = int(env_agent_dim if env_agent_dim is not None
+                            else tcfg.get("agent_dim", 0))
+            if obs_dim <= 0 or agent_dim <= 0:
+                raise RuntimeError(
+                    "temporal_actor_context.enabled=true needs the env obs/agent "
+                    "dims; the trainer must pass env_obs_dim/env_agent_dim (or set "
+                    "temporal_actor_context.obs_dim/agent_dim).")
+            enc = TemporalFusionEncoder(
+                state_dim, obs_dim, agent_dim,
+                history_len=int(tcfg.get("history_len", 4)),
+                stack_agent_state=bool(tcfg.get("stack_agent_state", False)),
+                aux_cfg=self.aux_cfg,
+                feature_dim=int(tcfg.get("temporal_feature_dim", 32)),
+                encoder_type=str(tcfg.get("encoder_type", "conv1d")),
+            )
+            exp = enc.expected_state_dim()
+            if exp != state_dim:
+                raise RuntimeError(
+                    f"temporal_actor_context expects state_dim={exp} "
+                    f"(obs_dim={obs_dim}, agent_dim={agent_dim}, "
+                    f"history_len={enc.history_len}, "
+                    f"stack_agent_state={enc.stack_agent_state}) but the env "
+                    f"reports state_dim={state_dim}. Make observation_time_context."
+                    f"obs_frame_stack match temporal_actor_context.history_len.")
+            return enc
+
+        self.encoder = _make_encoder().to(self.device)
+        self.encoder_target = _make_encoder().to(self.device)
         self.encoder_target.load_state_dict(self.encoder.state_dict())
-        self.checkpoint_encoder = SharedEncoder(state_dim, self.aux_cfg).to(self.device)
+        self.checkpoint_encoder = _make_encoder().to(self.device)
         self.checkpoint_encoder.load_state_dict(self.encoder.state_dict())
         latent_dim = self.encoder.out_dim
 
@@ -323,17 +382,41 @@ class Agent(object):
             trunk_params += list(self.temporal_encoder.parameters())
         return torch.optim.Adam(trunk_params, lr=self.critic_lr)
 
+    def set_curriculum_stage(self, stage: int):
+        """TEMPORAL_ACTOR / AUX_PRED: notify the agent of the current curriculum
+        stage so the temporal feature strength and aux loss weight can ramp in
+        with the curriculum WITHOUT changing any tensor shapes.
+
+        - temporal_gain = 1.0 once stage >= stage_enable_from, else 0.0 (the
+          temporal feature contributes nothing and gets no gradient at the easy
+          early stages). Applied to the online / target / checkpoint encoders so
+          rollout, TD target and checkpoint-eval all use the same gain.
+        - the aux loss weight follows aux_prediction.stagewise_loss_schedule
+          (read in _current_aux_beta).
+        Safe no-op for the legacy (non-fusion) encoder / disabled temporal."""
+        self.current_stage = int(stage)
+        gain = 1.0 if int(stage) >= self.temporal_stage_enable_from else 0.0
+        for enc in (self.encoder, self.encoder_target, self.checkpoint_encoder):
+            if hasattr(enc, "set_temporal_gain"):
+                enc.set_temporal_gain(gain)
+
     def _current_aux_beta(self):
         """AUX_PRED: effective trunk-level aux weight at this step.
 
-        Linearly ramps 0 -> loss_weight over aux_beta_warmup_steps so a noisy,
-        freshly-initialised aux head does not perturb early critic learning.
-        Returns the constant loss_weight when the warmup is disabled (== 0).
+        If a per-stage schedule is configured (aux_prediction.stagewise_loss_
+        schedule) it takes precedence: beta = schedule[clamp(current_stage)], so
+        aux supervision ramps in with the curriculum. Otherwise it linearly ramps
+        0 -> loss_weight over aux_beta_warmup_steps (a noisy, freshly-initialised
+        aux head does not perturb early critic learning), or the constant
+        loss_weight when warmup is disabled (== 0).
 
         ``train()`` increments ``training_steps`` BEFORE the aux block runs, so the
         first update has ``training_steps == 1``; the ``-1`` makes that first
         update's beta exactly 0 (a true 0 -> loss_weight ramp) and reaches the
         full weight after ``w`` updates (at ``training_steps == w + 1``)."""
+        sched = self.aux_cfg.stagewise_loss_schedule
+        if sched:
+            return float(sched[min(self.current_stage, len(sched) - 1)])
         w = self.aux_cfg.aux_beta_warmup_steps
         if w <= 0:
             return self.aux_beta

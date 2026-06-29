@@ -470,10 +470,15 @@ class TrainTQCCurriculum(
     # stored label with its encoder-input state, plus a one-time config sanity
     # check at startup.
     def _set_curriculum_stage(self, stage: int) -> bool:
-        """Delegate to GymParameterClient; cache the new stage on success."""
+        """Delegate to GymParameterClient; cache the new stage on success.
+
+        Also notify the agent so the TEMPORAL_ACTOR feature strength and the aux
+        loss weight can ramp in with the curriculum (no tensor-shape change)."""
         ok = self._gym_params.set_curriculum_stage(stage)
         if ok:
             self._curriculum_stage = stage
+            if hasattr(self.rl_agent, "set_curriculum_stage"):
+                self.rl_agent.set_curriculum_stage(stage)
         return ok
 
     def _fetch_eval_mode(self):

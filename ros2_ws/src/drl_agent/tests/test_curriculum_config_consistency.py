@@ -100,3 +100,39 @@ def test_axis_separation_human_vs_observation_noise():
         assert s6.get(k) == s5.get(k), k
     assert s6.get("proprio_noise_profile") == "light"
     assert s6["human_scan_noise_std"] == 0.0   # scan noise NOT turned on yet
+
+
+# ── TEMPORAL_ACTOR: env transport (obs_frame_stack) vs agent temporal_actor_context
+def test_temporal_actor_context_matches_env_transport():
+    """The agent's compressed temporal path splits the env-transported stacked
+    state, so observation_time_context (env) and temporal_actor_context (agent)
+    MUST agree on history_len and stack_agent_state, and the derived stacked
+    state_dim must be self-consistent. ROS-free: just the two YAMLs."""
+    env = _load("environment_curriculum.yaml")["environment"]
+    hp = _load("hyperparameters_tqc.yaml")["hyperparameters"]
+    otc = env.get("observation_time_context", {}) or {}
+    tac = hp.get("temporal_actor_context", {}) or {}
+    if not tac.get("enabled", False):
+        return  # nothing to check when the compressed temporal path is off
+
+    # The env MUST be transporting history for the agent to split it.
+    assert otc.get("enabled", False), \
+        "temporal_actor_context.enabled requires observation_time_context.enabled"
+    assert int(otc["obs_frame_stack"]) == int(tac["history_len"])
+    assert bool(otc.get("stack_agent_state", False)) == bool(tac.get("stack_agent_state", False))
+
+    # Derived stacked state_dim is self-consistent (current + appended history).
+    obs_dim = int(env["environment_state_dim"])
+    agent_dim = int(env["agent_state_dim"])
+    N = int(otc["obs_frame_stack"])
+    frame_len = (obs_dim + agent_dim) if otc.get("stack_agent_state") else obs_dim
+    expected = (obs_dim + agent_dim) + (N - 1) * frame_len
+    assert expected == 87 + (N - 1) * obs_dim   # sanity for the obs-only default
+
+
+def test_aux_stagewise_schedule_present_and_sane():
+    hp = _load("hyperparameters_tqc.yaml")["hyperparameters"]["aux_prediction"]
+    sched = hp.get("stagewise_loss_schedule", [])
+    if sched:
+        assert all(float(x) >= 0.0 for x in sched)
+        assert sched[0] == 0.0   # easy stage 0 starts with no aux pressure

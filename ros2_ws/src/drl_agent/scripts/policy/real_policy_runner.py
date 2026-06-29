@@ -155,7 +155,12 @@ class RealPolicyRunner(Node):
         # ---- actor ----
         hp_cfg = self._find_config("hyperparameters_tqc.yaml", gp("hparams_config").string_value.strip())
         hp = load_yaml(hp_cfg)["hyperparameters"]
-        self.agent = Agent(self._state_dim, self.action_dim, self.max_action, hp)
+        # TEMPORAL_ACTOR: pass per-frame obs/agent dims so the agent can split the
+        # stacked deploy state into current(87) + scan history. The runner does not
+        # set a curriculum stage, so the temporal gain stays 1.0 (full temporal),
+        # which is the intended deployment behaviour.
+        self.agent = Agent(self._state_dim, self.action_dim, self.max_action, hp,
+                           env_obs_dim=self.env_dim, env_agent_dim=self.agent_dim)
         self._load_actor(os.path.expanduser(self.actor_path))
 
         # ---- runtime state / caches ----
