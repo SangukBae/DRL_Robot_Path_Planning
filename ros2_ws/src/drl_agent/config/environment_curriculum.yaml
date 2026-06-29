@@ -26,10 +26,10 @@ environment:
   # static is capped by the corridor/intersection activatable-candidate ceiling
   # (~10: only small + medium-with-r<0.5 fit the 5.2 m lane), NOT raised further;
   # humans (small, lane-fitting) scale more freely.
-  num_of_static_obstacles: 10
-  num_of_humans: 7
-  environment_state_dim: 80
-  agent_state_dim: 7
+  num_of_static_obstacles: 10      # pool sizing용 base 최대 static obstacle 수
+  num_of_humans: 7                 # pool sizing용 base 최대 human 수
+  environment_state_dim: 80        # policy가 보는 front-180 RL scan bin 수
+  agent_state_dim: 7               # [goal_dist, heading, prev_action2, speed, yaw_rate, steering]
 
   # AUX_PRED: privileged future-risk label generation (env side, training-only).
   #   enabled=true  -> step()/reset() append a length (H*K + H) label after the
@@ -55,19 +55,24 @@ environment:
     hazard_sector_head_enabled: true
     hazard_sector_bins: 3           # front / left / right (front-centred)
     hazard_distance: 3.0            # [m] a closing human within this flags its sector
-  # ── Observation time-context (actor-visible obs_state frame stacking) ───────
-  # Stacks the last N obs_state (front-180° 80-D RL scan) frames so the ACTOR sees
-  # short-horizon temporal context through the shared encoder, with NO recurrence.
-  # Layout keeps the current 87-D frame FIRST (baseline-compatible indexing) and
-  # appends older obs frames. The env reports the stacked state_dim via
-  # get_dimensions, so the agent (encoder/buffer/actor/critic) sizes itself with
-  # no agent-side code change. Default OFF -> 87-D state (byte-for-byte baseline).
-  # This SUPERSEDES the aux-only temporal branch (set temporal_enabled=false).
+  # ── Observation time-context (scan-history TRANSPORT for the temporal path) ──
+  # Stacks the last N obs_state (front-180° 80-D RL scan) frames onto the state,
+  # keeping the current 87-D frame FIRST (baseline-compatible indexing) and
+  # appending older obs frames; the env reports the stacked state_dim via
+  # get_dimensions. This is now the TRANSPORT that carries recent scan history to
+  # the agent — the agent's temporal_actor_context (hyperparameters_tqc.yaml)
+  # SPLITS it back into current(87) + scan-history and COMPRESSES the history into
+  # a small temporal feature, so the raw 327-D stack no longer reaches the
+  # actor/critic main path. (With temporal_actor_context OFF the agent would feed
+  # this raw stack to the shared encoder — the deprecated, ablation-only path.)
+  # obs_frame_stack MUST equal temporal_actor_context.history_len. Default OFF ->
+  # 87-D state (byte-for-byte baseline). Also supersedes the aux-only temporal
+  # branch (aux_prediction.temporal_enabled=false).
   observation_time_context:
     enabled: true
     obs_frame_stack: 4              # current + 3 history frames (80*4 + 7 = 327-D)
     stack_agent_state: false        # obs-only history; current agent_state kept once
-  action_dim: 2
+  action_dim: 2                    # 정책 action 차원 [waypoint distance, waypoint angle]
   agent_name: "hunter_se"
   max_action: 1.0
   # STOP/YIELD experiment — NEW ACTION SEMANTICS (requires FRESH training).
@@ -99,13 +104,13 @@ environment:
   # L drops below this (speed *= L/this), giving the policy genuine creep/stop
   # authority through action[0]. 0.0 (or omit) → disabled (no stop capability).
   controller_low_speed_distance_m: 0.8
-  spawn_z: 0.02
-  obs_z_min_sensor_m: -0.455
-  obs_z_max_sensor_m:  0.250
+  spawn_z: 0.02                    # 로봇/오브젝트 초기 spawn z 오프셋
+  obs_z_min_sensor_m: -0.455       # RL scan에 포함할 sensor-frame 최소 z
+  obs_z_max_sensor_m:  0.250       # RL scan에 포함할 sensor-frame 최대 z
 
-  obstacle_catalog: "drl_obstacle_assets"
+  obstacle_catalog: "drl_obstacle_assets" # obstacle/human asset catalog package 또는 yaml 이름
 
-  human_update_rate: 20.0
+  human_update_rate: 20.0          # pedestrian kinematic update timer 주기 [Hz]
   # Prediction-friendly pedestrian motion (Auxiliary Prediction): predictable
   # over short horizons (~constant velocity), mode changes only every few
   # seconds, no reaction to the robot. Smooth (low accel/yaw), bounded waypoint
@@ -158,7 +163,7 @@ environment:
   # goals (constant-velocity aux labels stay valid). The scalar knobs below are
   # stage-overridable (see HUMAN_MOTION_OVERRIDE_KEYS); the on/off toggles are
   # global. false -> legacy random waypoint walk.
-  human_goal_driven_enabled: true
+  human_goal_driven_enabled: true  # human이 episode-level global goal을 따라 움직일지
   human_goal_reach_threshold: 0.6   # m  within this of the goal -> rest + new goal
   human_goal_pause_duration: 2.0    # s  rest at a reached goal
   human_local_step_m: 2.0           # m  local step length toward the goal
@@ -322,8 +327,8 @@ threshold_parameters:
   goal_threshold: 0.42
   collision_threshold: 0.7
   time_delta: 0.1
-  inter_entity_distance: 2.5
-  lidar_max_range: 50
+  inter_entity_distance: 2.5       # start/goal/obstacle/human sampling 시 기본 이격 기준
+  lidar_max_range: 50              # RL scan / environment_state clipping 최대 거리 [m]
 
 # ── Localization-error emulation (sim-to-real) ───────────────────────────────
 # Base = OFF (identical to ground truth). Curriculum stages ramp it up via a
@@ -347,23 +352,23 @@ threshold_parameters:
 # Any omitted key inherits this base; a stage's `localization:` block is merged
 # on top (deep-restored each stage, so no cross-stage leakage).
 localization:
-  enabled: false
-  mode: "off"
-  sigma_xy_m: 0.0
-  sigma_yaw_rad: 0.0
+  enabled: false                   # localization noise master switch
+  mode: "off"                      # noise 모드 label(off/gaussian/drift/full)
+  sigma_xy_m: 0.0                  # 위치 관측 OU stationary std [m]
+  sigma_yaw_rad: 0.0               # yaw 관측 OU stationary std [rad]
   corr_time_xy_s: 0.0        # 0 → white noise (backward compatible)
-  corr_time_yaw_s: 0.0
-  bias_xy_m: 0.0
-  bias_yaw_rad: 0.0
+  corr_time_yaw_s: 0.0             # yaw noise correlation time [s]
+  bias_xy_m: 0.0                   # episode 전체에 유지되는 위치 bias std [m]
+  bias_yaw_rad: 0.0                # episode 전체에 유지되는 yaw bias std [rad]
   random_walk_xy_mps: 0.0    # per-second drift intensity (std ≈ rate·√t)
   random_walk_yaw_rps: 0.0
-  delay_steps: 0
-  jump_prob: 0.0
-  jump_xy_m: 0.0
-  jump_yaw_rad: 0.0
+  delay_steps: 0                   # goal observation에 적용할 localization latency step
+  jump_prob: 0.0                   # 작은 relocalization jump의 step당 발생 확률
+  jump_xy_m: 0.0                   # 작은 jump의 xy 최대 크기 [m]
+  jump_yaw_rad: 0.0                # 작은 jump의 yaw 최대 크기 [rad]
   big_jump_prob: 0.0         # large relocalization failure (hard stages only)
-  big_jump_xy_m: 0.0
-  big_jump_yaw_rad: 0.0
+  big_jump_xy_m: 0.0               # 큰 relocalization failure jump xy 크기 [m]
+  big_jump_yaw_rad: 0.0            # 큰 relocalization failure jump yaw 크기 [rad]
   yaw_flip_prob: 0.0         # ±π flip in symmetric maps (corridor)
   yaw_flip_map_types: ["corridor"]
   # Per-map-type scaling. corridor localizes worst (long featureless lane) →
@@ -373,8 +378,8 @@ localization:
     intersection: {sigma_xy: 1.3, sigma_yaw: 1.5, drift: 1.5, jump: 1.2}
     clutter:      {sigma_xy: 1.1, sigma_yaw: 1.1, drift: 1.1, jump: 1.0}
     lobby:        {sigma_xy: 1.0, sigma_yaw: 1.0, drift: 1.0, jump: 1.0}
-  use_gt_for_reward: true
-  use_gt_for_done: true
+  use_gt_for_reward: true          # reward 계산은 noisy pose 대신 ground truth pose 사용
+  use_gt_for_done: true            # goal reached / done 판정도 ground truth pose 사용
 
 # ── Named goal-obs (localization-uncertainty) noise PROFILES ─────────────────
 # A stage selects one with `localization_profile: <name>` (see stages). The
@@ -391,27 +396,27 @@ localization_profiles:
   clean: {enabled: false}
   weak_goal_noise:            # Stage 2: weak correlated goal-obs noise + 1-step delay
     enabled: true
-    mode: gaussian
-    sigma_xy_m: 0.05
-    sigma_yaw_rad: 0.02
-    corr_time_xy_s: 0.8
-    corr_time_yaw_s: 0.8
-    delay_steps: 1
+    mode: gaussian                 # OU-correlated 관측 오차만 사용하는 약한 noise profile
+    sigma_xy_m: 0.05               # weak profile 위치 std [m]
+    sigma_yaw_rad: 0.02            # weak profile yaw std [rad]
+    corr_time_xy_s: 0.8            # weak profile 위치 correlation [s]
+    corr_time_yaw_s: 0.8           # weak profile yaw correlation [s]
+    delay_steps: 1                 # weak profile localization delay
   drift_goal_noise:           # Stage 3: + per-second drift + weak bias + 2-step delay
     enabled: true
-    mode: drift
+    mode: drift                    # gaussian + drift + bias가 포함된 중간 난도 profile
     sigma_xy_m: 0.08
     sigma_yaw_rad: 0.03
     corr_time_xy_s: 1.0
     corr_time_yaw_s: 1.0
-    drift_xy_mps: 0.02
-    drift_yaw_radps: 0.01
+    drift_xy_mps: 0.02             # 위치 drift 강도 [m/sqrt(s)]에 해당하는 rate
+    drift_yaw_radps: 0.01          # yaw drift 강도 [rad/sqrt(s)]에 해당하는 rate
     bias_xy_m: 0.03
     bias_yaw_rad: 0.01
     delay_steps: 2
   robustness_train:           # Stage 4: full + bias + RARE small/big jump (NO flip)
     enabled: true
-    mode: full
+    mode: full                     # bias/drift/delay/jump가 모두 들어간 학습용 강한 profile
     sigma_xy_m: 0.10
     sigma_yaw_rad: 0.04
     corr_time_xy_s: 1.2
@@ -429,7 +434,7 @@ localization_profiles:
     big_jump_yaw_rad: 0.4
   stress_eval:                # EVALUATION-ONLY stress profile (no training stage uses it):
     enabled: true             #   stronger jump/delay + ±π yaw flip (corridor).
-    mode: full
+    mode: full                     # 학습에는 안 쓰는 eval-only stress profile
     sigma_xy_m: 0.12
     sigma_yaw_rad: 0.05
     corr_time_xy_s: 1.2
@@ -452,23 +457,23 @@ localization_profiles:
 # Perturbs only the observed speed / yaw-rate / steering slots (state[84:87]).
 # Reward/done/collision use ground truth. Physical-unit params.
 proprio_noise:
-  enabled: false
-  speed_sigma_mps: 0.0
-  speed_bias_mps: 0.0
-  speed_scale_sigma: 0.0
-  yaw_rate_sigma_radps: 0.0
-  yaw_rate_bias_radps: 0.0
-  steer_sigma_rad: 0.0
-  delay_steps: 0
+  enabled: false                  # proprio observation noise master switch
+  speed_sigma_mps: 0.0            # observed speed gaussian std [m/s]
+  speed_bias_mps: 0.0             # observed speed bias [m/s]
+  speed_scale_sigma: 0.0          # observed speed multiplicative scale noise std
+  yaw_rate_sigma_radps: 0.0       # observed yaw-rate gaussian std [rad/s]
+  yaw_rate_bias_radps: 0.0        # observed yaw-rate bias [rad/s]
+  steer_sigma_rad: 0.0            # observed steering gaussian std [rad]
+  delay_steps: 0                  # proprio observation latency step
 proprio_noise_profiles:
-  clean: {enabled: false}
+  clean: {enabled: false}         # proprio noise 없음
   light:                      # Stage 3: very weak proprio noise
-    enabled: true
+    enabled: true                 # 약한 proprio noise profile 사용
     speed_sigma_mps: 0.02
     yaw_rate_sigma_radps: 0.02
     speed_scale_sigma: 0.01
   medium:                     # Stage 4: slightly stronger + bias + 1-step delay
-    enabled: true
+    enabled: true                 # 중간 proprio noise profile 사용
     speed_sigma_mps: 0.04
     speed_bias_mps: 0.02
     yaw_rate_sigma_radps: 0.04
@@ -489,39 +494,45 @@ localization_logging:
   log_localization_error: false    # |loc_est - gt| per step (extension point)
   log_jump_events: false           # mark jump/flip occurrences (extension point)
 evaluation:
-  eval_use_same_localization_noise: true  # eval with the current stage's profile
-  eval_noise_profile: ""                  # or a named profile (e.g. "stress_eval")
+  eval_use_same_localization_noise: true  # true면 현 stage profile로 eval, false면 아래 named profile 사용
+  eval_noise_profile: ""                  # 비우면 current stage profile, 값이 있으면 named profile 강제
 
-use_zone_collision: false
-zone_angles_deg: [-30, 30,   -50, -30,   30, 50,   -130, -50,  50, 130,  -150, -130, 130, 150,  150, -150]
-zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68]
+use_zone_collision: false         # 구형 zone collision 로직 사용 여부(현재는 false 권장)
+zone_angles_deg: [-30, 30,   -50, -30,   30, 50,   -130, -50,  50, 130,  -150, -130, 130, 150,  150, -150] # zone collision 감시 구간 각도쌍 [deg]
+zone_thresholds:  [0.68, 0.75, 0.75, 0.62, 0.62, 0.75, 0.75, 0.68] # 각 zone의 충돌 임계거리 [m]
 
 safety_region:
-  d_front: 0.475638
-  d_rear:  0.410000
-  d_left:  0.322
-  d_right: 0.322
-  margin_front: 0.10
-  margin_rear:  0.03
-  margin_left:  0.03
-  margin_right: 0.03
-  reward_warning_scale_front: 1.2
-  reward_warning_scale_rear:  1.2
-  reward_warning_scale_left:  1.2
-  reward_warning_scale_right: 1.2
-  scan_resolution: 0.05
+  d_front: 0.475638               # LiDAR 원점 기준 전방 hard collision box 반길이 [m]
+  d_rear:  0.410000               # 후방 hard collision box 반길이 [m]
+  d_left:  0.322                  # 좌측 hard collision box 반너비 [m]
+  d_right: 0.322                  # 우측 hard collision box 반너비 [m]
+  margin_front: 0.10              # 전방 hard box에 더할 안전 margin [m]
+  margin_rear:  0.03              # 후방 hard box에 더할 안전 margin [m]
+  margin_left:  0.03              # 좌측 hard box에 더할 안전 margin [m]
+  margin_right: 0.03              # 우측 hard box에 더할 안전 margin [m]
+  reward_warning_scale_front: 1.2 # reward용 soft warning box 전방 확장 배율
+  reward_warning_scale_rear:  1.2 # reward용 soft warning box 후방 확장 배율
+  reward_warning_scale_left:  1.2 # reward용 soft warning box 좌측 확장 배율
+  reward_warning_scale_right: 1.2 # reward용 soft warning box 우측 확장 배율
+  scan_resolution: 0.05           # box rasterization / scan-based safety 계산 해상도 [m]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Curriculum stage definitions
 # Fields overridden per episode by _apply_curriculum_stage():
-#   active_static, active_humans                   → num_of_static_obstacles / num_of_humans
-#   human_scan_noise_std, human_scan_dropout_prob  → self.human_scan_noise_std/dropout
+#   active_static, active_humans                   → 이번 episode에서 실제 활성화할 static/human 수
+#   active_static_by_map, active_humans_by_map     → map_type별 활성 수 override
+#   allowed_map_types, eval_map_types              → train/eval에 사용할 structured map 종류
+#   map_type_probs                                 → allowed_map_types sampling weight
+#   allowed_static_groups                          → small/medium/large obstacle size filter
+#   human_mode_weights                             → crossing/along_path/waiting/slow_turn 비율
+#   localization_profile, proprio_noise_profile    → named noise profile selector
+#   human_scan_noise_std, human_scan_dropout_prob  → 사람 LiDAR return 노이즈 세기
 # (Dynamic obstacles removed: active_dynamic / dynamic_speed_* are no longer used.)
 # Fields absent in a stage inherit the base environment values above.
 # ──────────────────────────────────────────────────────────────────────────────
 curriculum:
-  enabled: true
-  initial_stage: 0   # node starts here; trainer advances via curriculum_stage parameter
+  enabled: true                  # environment가 curriculum stage override를 사용할지
+  initial_stage: 0               # 시작 stage index; trainer가 curriculum_stage param으로 갱신
 
   # Curriculum design (9 stages). ONE major axis changes per stage so training
   # stays stable. Crucially, DYNAMIC-OBSTACLE (human) avoidance and OBSERVATION
@@ -553,13 +564,13 @@ curriculum:
     # is a SIZE filter (small/medium/large). human_placement_mode is derived from
     # the map structure automatically (lobby->lobby_crossings, etc.).
     - name: empty
-      active_static: 0
-      active_humans: 0
-      human_scan_noise_std: 0.0
-      human_scan_dropout_prob: 0.0
-      allowed_map_types: ["lobby"]
-      allowed_static_groups: ["small", "medium"]
-      eval_map_types: ["lobby"]
+      active_static: 0            # 이번 stage의 기본 static obstacle 수
+      active_humans: 0            # 이번 stage의 기본 human 수
+      human_scan_noise_std: 0.0   # human LiDAR return gaussian noise std
+      human_scan_dropout_prob: 0.0 # human LiDAR return dropout 확률
+      allowed_map_types: ["lobby"] # 학습 episode에서 샘플링할 map_type 후보
+      allowed_static_groups: ["small", "medium"] # 배치 허용 obstacle size group
+      eval_map_types: ["lobby"]   # formal eval 시 순회할 map_type 목록
       localization_profile: clean   # no goal-obs noise yet
 
     # ── Stage 1: corridor only, static — wall/lane driving (no humans/noise) ──
@@ -579,7 +590,7 @@ curriculum:
     - name: add_intersection
       active_static: 6
       active_humans: 0
-      active_static_by_map: {corridor: 3, intersection: 6}
+      active_static_by_map: {corridor: 3, intersection: 6} # map_type별 static 수 override
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection"]
@@ -597,17 +608,17 @@ curriculum:
     - name: first_human_clean
       active_static: 6
       active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6}
-      active_humans_by_map: {corridor: 1, intersection: 1}
+      active_static_by_map: {corridor: 4, intersection: 6} # corridor/intersection별 static 수
+      active_humans_by_map: {corridor: 1, intersection: 1} # corridor/intersection별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection"]
-      map_type_probs: [0.5, 0.5]
+      map_type_probs: [0.5, 0.5] # allowed_map_types sampling weight
       allowed_static_groups: ["small", "medium"]
       eval_map_types: ["corridor", "intersection"]
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
-      human_social_avoid_strength: 0.3
-      human_goal_span_multiplier: 1.5
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # human behavior mix
+      human_social_avoid_strength: 0.3 # human-human avoidance 세기
+      human_goal_span_multiplier: 1.5  # human global goal 거리 배수
       localization_profile: clean   # observation-noise introduced in Stage 4
 
     # ── Stage 4: SAME humans as Stage 3 + weak localization noise ────────
@@ -618,17 +629,17 @@ curriculum:
     - name: first_human_noisy
       active_static: 6
       active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6}
-      active_humans_by_map: {corridor: 1, intersection: 1}
+      active_static_by_map: {corridor: 4, intersection: 6} # map_type별 static 수
+      active_humans_by_map: {corridor: 1, intersection: 1} # map_type별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection"]
-      map_type_probs: [0.5, 0.5]
+      map_type_probs: [0.5, 0.5] # corridor/intersection sampling weight
       allowed_static_groups: ["small", "medium"]
       eval_map_types: ["corridor", "intersection"]
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
-      human_social_avoid_strength: 0.3
-      human_goal_span_multiplier: 1.5
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # behavior mix 유지
+      human_social_avoid_strength: 0.3 # avoidance 세기 유지
+      human_goal_span_multiplier: 1.5  # goal span 유지
       localization_profile: weak_goal_noise
 
     # ── Stage 5: + clutter (TERRAIN axis ONLY) ───────────────────────────
@@ -641,17 +652,17 @@ curriculum:
     - name: add_clutter_clean
       active_static: 8
       active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8}
-      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1}
+      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8} # map_type별 static 수
+      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1} # map_type별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection", "clutter"]
-      map_type_probs: [0.34, 0.33, 0.33]
+      map_type_probs: [0.34, 0.33, 0.33] # corridor/intersection/clutter sampling weight
       allowed_static_groups: ["small", "medium", "large"]
       eval_map_types: ["corridor", "intersection", "clutter"]
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
-      human_social_avoid_strength: 0.3
-      human_goal_span_multiplier: 1.5
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # 간단한 behavior mix 유지
+      human_social_avoid_strength: 0.3 # avoidance 세기 유지
+      human_goal_span_multiplier: 1.5  # goal span 유지
       localization_profile: weak_goal_noise
 
     # ── Stage 6: SAME map/humans as Stage 5 + light proprio noise (ONLY) ─
@@ -663,19 +674,19 @@ curriculum:
     - name: add_clutter_noisy
       active_static: 8
       active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8}
-      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1}
+      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8} # map_type별 static 수
+      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1} # map_type별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection", "clutter"]
-      map_type_probs: [0.34, 0.33, 0.33]
+      map_type_probs: [0.34, 0.33, 0.33] # map sampling weight
       allowed_static_groups: ["small", "medium", "large"]
       eval_map_types: ["corridor", "intersection", "clutter"]
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0}
-      human_social_avoid_strength: 0.3
-      human_goal_span_multiplier: 1.5
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # behavior mix 유지
+      human_social_avoid_strength: 0.3 # avoidance 세기 유지
+      human_goal_span_multiplier: 1.5  # goal span 유지
       localization_profile: weak_goal_noise
-      proprio_noise_profile: light
+      proprio_noise_profile: light # named proprio noise profile selector
 
     # ── Stage 7: INTEGRATION / GENERALIZATION (multi-axis BY DESIGN) ──────
     # The isolating single-axis stages (3-6) are done. This stage deliberately
@@ -686,19 +697,19 @@ curriculum:
     - name: generalize
       active_static: 8
       active_humans: 5
-      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 8}
-      active_humans_by_map: {corridor: 2, intersection: 3, clutter: 4, lobby: 5}
+      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 8} # map_type별 static 수
+      active_humans_by_map: {corridor: 2, intersection: 3, clutter: 4, lobby: 5} # map_type별 human 수
       human_scan_noise_std: 0.045
       human_scan_dropout_prob: 0.025
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
-      map_type_probs: [0.25, 0.25, 0.25, 0.25]
+      map_type_probs: [0.25, 0.25, 0.25, 0.25] # 4개 map 균등 sampling
       allowed_static_groups: ["small", "medium", "large"]
       eval_map_types: ["lobby", "corridor", "intersection", "clutter"]
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.5, slow_turn: 0.75}
-      human_social_avoid_strength: 0.6
-      human_goal_span_multiplier: 2.0
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.5, slow_turn: 0.75} # richer human behavior mix
+      human_social_avoid_strength: 0.6 # avoidance 세기 증가
+      human_goal_span_multiplier: 2.0  # 더 긴 human goal span
       localization_profile: drift_goal_noise
-      proprio_noise_profile: light
+      proprio_noise_profile: light # light proprio profile 유지
 
     # ── Stage 8: FINAL — full crowd + full behaviour mix + strongest TRAIN noise.
     # corridor remains lighter (static 5 / humans 3) than the open maps even at
@@ -706,8 +717,8 @@ curriculum:
     - name: full_complexity
       active_static: 9
       active_humans: 7
-      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 9}
-      active_humans_by_map: {corridor: 3, intersection: 4, clutter: 4, lobby: 6}
+      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 9} # map_type별 최종 static 수
+      active_humans_by_map: {corridor: 3, intersection: 4, clutter: 4, lobby: 6} # map_type별 최종 human 수
       human_scan_noise_std: 0.06
       human_scan_dropout_prob: 0.04
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
@@ -717,15 +728,15 @@ curriculum:
       allowed_static_groups: ["small", "medium", "large"]
       eval_map_types: ["lobby", "corridor", "intersection", "clutter"]
       # full behaviour mix (all four modes)
-      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 1.0, slow_turn: 1.0}
+      human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 1.0, slow_turn: 1.0} # full behavior mix
       # Falcon-lite: stronger avoidance + longer goal spans -> busier crowd
-      human_social_avoid_strength: 0.8
-      human_social_avoid_radius: 1.8
-      human_social_avoid_max_heading_offset_deg: 35.0
-      human_goal_span_multiplier: 2.5
+      human_social_avoid_strength: 0.8 # strongest avoidance blend
+      human_social_avoid_radius: 1.8   # avoidance가 작동하는 neighbor radius
+      human_social_avoid_max_heading_offset_deg: 35.0 # avoidance로 허용할 최대 heading offset
+      human_goal_span_multiplier: 2.5  # 가장 긴 human goal span
       # hardest TRAIN localization: full correlated noise + bias + drift + delay
       # + RARE small/big relocalization jumps. NO yaw flip in training — the ±π
       # mirror flip lives only in the `stress_eval` profile (evaluation-only).
-      localization_profile: robustness_train
+      localization_profile: robustness_train # hardest training localization profile
       # slightly stronger proprio-observation noise + bias + 1-step delay.
-      proprio_noise_profile: medium
+      proprio_noise_profile: medium # strongest training proprio profile

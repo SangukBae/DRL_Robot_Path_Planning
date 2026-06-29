@@ -1,24 +1,24 @@
 train_settings:
   # 재현성
-  seed: 0
+  seed: 0                         # trainer / env / torch RNG에 공통으로 쓰는 기본 seed
   # 같은 seed + 같은 코드면 같은 training trajectory가 나오도록 torch를 결정적으로
   # 실행 (cuDNN auto-tuning OFF + deterministic algorithms + CUBLAS workspace).
   # 끄면(false) cuDNN 튜닝으로 약간 빨라지지만 same-seed 재현이 깨질 수 있음.
-  deterministic_torch: true
+  deterministic_torch: true       # torch를 가능한 deterministic kernel로 고정
   # deterministic 커널이 없는 드문 op에서 하드 크래시 대신 경고만 내고 진행.
-  deterministic_warn_only: true
+  deterministic_warn_only: true   # deterministic kernel 미지원 op가 있어도 경고만 내고 계속 진행
 
   # 환경/롤아웃
   max_episode_steps: 600          # 10 Hz(time_delta=0.1)에서 기존 60초 episode 길이 유지
   max_timesteps: 2000000           # 10 Hz 전환으로 step당 시간이 절반이므로 2배 보정
 
   # 모델 로드/체크포인트/평가
-  load_model: false               # 공정 비교: 모든 baseline과 동일하게 fresh start.
+  load_model: false               # true면 같은 seed의 가장 최근 checkpoint를 찾아 resume
                                   #          특정 run을 이어서 학습할 때만 true로.
-  use_checkpoints: false           # TQC는 기본적으로 step-wise off-policy 업데이트 권장
-  eval_freq: 12000                 # 10 Hz에서 기존 평가 시간 간격에 가깝게 조정
-  eval_eps: 10                     # 평가 에피소드 수
-  timesteps_before_training: 12000 # 10 Hz에서 워밍업 실시간 길이를 일부 보전
+  use_checkpoints: false          # checkpoint policy(best-min-return) 갱신 루틴 사용 여부
+  eval_freq: 12000                # 몇 step마다 정식 evaluation을 돌릴지
+  eval_eps: 10                    # evaluation 시 실행할 episode 개수
+  timesteps_before_training: 12000 # replay buffer warmup 후 gradient update 시작 step
 
   # 로그/파일명 접두사
-  base_file_name: "tqc_agent"
+  base_file_name: "tqc_agent"     # 저장 파일 prefix의 기본 이름

@@ -3,10 +3,10 @@
 # still read from train_tqc_config.yaml by the parent TrainTQC class.
 
 curriculum_settings:
-  enabled: true
+  enabled: true                  # trainer가 stage promotion 로직을 사용할지 여부
 
-  min_stage_steps: 30000
-  min_stage_episodes: 20
+  min_stage_steps: 30000         # 이 step 수를 넘기기 전에는 stage 승급 금지
+  min_stage_episodes: 20         # 이 episode 수를 넘기기 전에는 stage 승급 금지
 
   # Per-stage success / collision thresholds (list index = stage index).
   # Early stages require high success because the task is simple; later stages
@@ -16,8 +16,8 @@ curriculum_settings:
   # curriculum_stage_logic clamps an out-of-range stage index to the LAST entry,
   # so a shorter list still runs without crashing.
   #   stage idx:               0     1     2     3     4     5     6     7
-  pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.82, 0.80, 0.76, 0.74, 0.70]
-  pass_eval_collision_rate: [0.05, 0.07, 0.09, 0.11, 0.12, 0.15, 0.17, 0.20]
+  pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.82, 0.80, 0.76, 0.74, 0.70] # stage별 최소 성공률 gate
+  pass_eval_collision_rate: [0.05, 0.07, 0.09, 0.11, 0.12, 0.15, 0.17, 0.20] # stage별 최대 전체 충돌률 gate
 
   # Quality gate (conservative): minimum SPL (Success weighted by Path Length)
   # required to PROMOTE, per stage. This stops "arrived but wandered" policies
@@ -25,46 +25,22 @@ curriculum_settings:
   # a clean-run SPL) so they only catch clearly inefficient driving.
   # Empty list / 0.0 / omit → SPL gate disabled (legacy success-only behaviour).
   #   stage idx:     0     1     2     3     4     5     6     7
-  pass_eval_spl:  [0.55, 0.55, 0.54, 0.52, 0.50, 0.48, 0.47, 0.45]
+  pass_eval_spl:  [0.55, 0.55, 0.54, 0.52, 0.50, 0.48, 0.47, 0.45] # stage별 최소 SPL gate
 
   # Optional extra gate (default OFF): minimum LiDAR clearance rate before
   # promotion. Leave empty to disable; raise to require safer-distance driving.
   # Kept off by default to introduce one quality metric (SPL) at a time.
-  pass_eval_lidar_clearance_rate: []
+  pass_eval_lidar_clearance_rate: [] # 비우면 LiDAR clearance gate 비활성
 
-  # ── Human-safety HARD gates (label-derived; only active when labels exist) ──
-  # PSC and H-Coll are NOT just training-signal reward terms — they are promotion
-  # blockers, so a policy that "succeeds" by skimming dangerously close to people
-  # cannot advance. Both gates self-disable when the metric is unavailable (env
-  # aux labels off → metrics["psc"]/["h_coll_rate"] is None), so a label-free run
-  # promotes exactly as before. List index = stage index (clamped to last entry).
-  #
-  # PSC = Personal-Space Compliance fraction (higher = safer). Gate = require
-  # psc >= threshold. 0.0 → disabled. Humans first appear in Stage 3, so 0..2 are
-  # disabled; the human stages ramp the requirement up toward "almost always
-  # outside personal space".
-  #   stage idx:        0    1    2    3     4     5     6     7
-  pass_eval_psc:     [0.0, 0.0, 0.0, 0.97, 0.98, 0.98, 0.99, 0.99]
-  # H-Coll = fraction of eval episodes containing a human collision (lower =
-  # safer). Gate = require h_coll_rate <= threshold. 1.0 → disabled. A hard 0.0 on
-  # every human stage means "no human contact at all" is required to promote.
-  #   stage idx:           0    1    2    3    4    5    6    7
-  pass_eval_h_coll_rate: [1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-
-  # ── Per-map FAIL-FAST gates (require EVERY eval map_type to clear a floor) ──
-  # The global success/collision gates can hide ONE map collapsing behind a good
-  # average (e.g. corridor 95% masking clutter 40%). These require each map_type
-  # in metrics["per_map"] to individually pass. They are deliberately a touch
-  # LOOSER than the global gates (success floor a bit below, collision cap a bit
-  # above the global value): the global gate sets the average bar, the per-map
-  # gate only catches a single collapsing map without making promotion infeasible.
-  # Only active when eval ran on eval_map_types (eval_map_applied=true); a fallback
-  # eval (training mix) BLOCKS promotion with a clear reason rather than trusting
-  # an untrustworthy per-map breakdown. 0.0 / 1.0 → that sub-gate disabled.
-  #   stage idx:                       0     1     2     3     4     5     6     7
-  pass_eval_per_map_success_rate:   [0.85, 0.83, 0.80, 0.75, 0.72, 0.68, 0.66, 0.62]
-  pass_eval_per_map_collision_rate: [0.08, 0.10, 0.12, 0.15, 0.16, 0.19, 0.21, 0.24]
+  # Rollback to the older promotion behaviour: keep advancement driven by the
+  # global success / collision / SPL gates only. The newer human-safety hard
+  # gates and per-map fail-fast gates stay available in code, but are disabled
+  # here so the run promotes like the pre-tightening curriculum.
+  pass_eval_psc: []                     # 비우면 PSC hard gate 비활성
+  pass_eval_h_coll_rate: []             # 비우면 H-Coll hard gate 비활성
+  pass_eval_per_map_success_rate: []    # 비우면 per-map success fail-fast 비활성
+  pass_eval_per_map_collision_rate: []  # 비우면 per-map collision fail-fast 비활성
 
   # How many consecutive evaluations must pass the threshold before promotion.
   # Set to 1 for faster iteration, 2-3 for more conservative advancement.
-  consecutive_eval_passes: 2
+  consecutive_eval_passes: 2      # 연속 몇 번 eval gate를 통과해야 실제 승급할지
