@@ -90,7 +90,7 @@ environment:
   #             controller_min_speed_mps=0.3, yield_reward.enabled=false
   #             → byte-identical to the pre-stop reward/control contract.
   #   stop-ON : the values set here.
-  actions_low:  [0.0, -0.524]
+  actions_low:  [0.0, -0.524]    # stop-ON  (stop-OFF: [0.8, -0.524])
   actions_high: [2.0,  0.524]
   vehicle_wheelbase_m: 0.547696
   vehicle_steering_limit_deg: 21.58
@@ -98,12 +98,12 @@ environment:
   controller_cruise_speed_mps: 2.0
   # Floor dropped to 0 so the low-speed ramp below can pull speed to a true 0 m/s
   # stop (the ramp is applied AFTER this floor).
-  controller_min_speed_mps: 0.0
+  controller_min_speed_mps: 0.0   # stop-ON  (stop-OFF: 0.3)
   controller_speed_steer_factor: 0.6
   # >0 ramps Pure-Pursuit speed linearly to 0 as the commanded waypoint distance
   # L drops below this (speed *= L/this), giving the policy genuine creep/stop
   # authority through action[0]. 0.0 (or omit) → disabled (no stop capability).
-  controller_low_speed_distance_m: 0.8
+  controller_low_speed_distance_m: 0.8  # stop-ON  (stop-OFF: 0.0)
   spawn_z: 0.02                    # 로봇/오브젝트 초기 spawn z 오프셋
   obs_z_min_sensor_m: -0.455       # RL scan에 포함할 sensor-frame 최소 z
   obs_z_max_sensor_m:  0.250       # RL scan에 포함할 sensor-frame 최대 z
@@ -218,7 +218,7 @@ environment:
   # Needs the stop-capable controller above to have anything to reward.
   # OPT-IN: absent block / enabled:false → reward byte-identical (ablation).
   yield_reward:
-    enabled: true
+    enabled: true                  # stop-ON  (stop-OFF: false)
     risk_gate_ttc_s: 2.0            # risk-active when min time-to-contact < this
     risk_gate_approach: 0.15        # OR when normalised closing rate > this
     w_yield_bonus: 0.05             # gain on the slow-down bonus
