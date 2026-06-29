@@ -16,6 +16,7 @@ ros2_ws/src/aws-robomaker-small-house-world/models/
 ros2_ws/src/aws-robomaker-small-warehouse-world/models/
 ros2_ws/src/drl_obstacle_assets
 ros2_ws/src/drl_agent/runtime/
+ros2_ws/src/drl_agent/runs/
 ros2_ws/src/dataset_builder/
 ros2_ws/src/depth_d435/
 ros2_ws/src/depth_d455/
