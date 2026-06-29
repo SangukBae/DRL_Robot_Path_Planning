@@ -88,6 +88,20 @@ class LAP(object):
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
+    def reset(self):
+        """Empty the buffer in place (allocated arrays are kept).
+
+        Used at a curriculum stage boundary where the action/control contract
+        changes, so off-contract transitions don't leak into later training.
+        Future add() calls overwrite the arrays; only the pointers, count and
+        priorities are cleared."""
+        self.ptr = 0
+        self.size = 0
+        self.ind = None
+        if self.prioritized:
+            self.priority.zero_()
+            self.max_priority = 1
+
     def mark_last_traj_end(self):
         """AUX_PRED: flag the most-recently-added transition as an episode end.
 

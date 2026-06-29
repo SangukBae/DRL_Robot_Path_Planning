@@ -151,6 +151,18 @@ class TrainTQCCurriculum(
         self.cur_pass_per_map_sr  = list(cur.get("pass_eval_per_map_success_rate", []))
         self.cur_pass_per_map_cr  = list(cur.get("pass_eval_per_map_collision_rate", []))
         self.cur_consec_passes   = int(cur.get("consecutive_eval_passes", 2))
+        # Replay-buffer reset on promotion INTO a contract-changing stage (e.g.
+        # stop-OFF stages 0-2 → stop-ON stage 3). The normalized action / control
+        # contract changes there, so old transitions would poison the critic;
+        # clearing the buffer + re-warming avoids that. Empty list → never reset
+        # (legacy behaviour). rewarmup_steps random-action steps refill the buffer
+        # with on-contract data before gradient updates resume.
+        self.cur_reset_buffer_stages = set(
+            int(s) for s in (cur.get("reset_buffer_on_promote_to", []) or [])
+        )
+        self.cur_rewarmup_steps = int(
+            cur.get("rewarmup_steps", self.timesteps_before_training)
+        )
 
         # AUX_PRED: per-step auxiliary label tracking.  EnvInterface.reset()/
         # step() slice the env-appended future-risk label off and expose it as
@@ -168,6 +180,9 @@ class TrainTQCCurriculum(
         self._stage_start_step       = 0
         self._stage_start_ep         = 0
         self._consecutive_pass_count = 0
+        # Absolute global step until which post-promotion re-warmup runs (random
+        # actions, no gradient updates). 0 → not re-warming. Persisted to JSON.
+        self._rewarmup_until_t       = 0
         self._total_episodes         = 0
         self._resume_global_t        = 0
         self._resume_loaded          = False
@@ -664,6 +679,16 @@ class TrainTQCCurriculum(
             f"[Curriculum] Training starts — {num_stages} stages total."
         )
 
+        # If a crash happened mid re-warmup, the reloaded buffer still holds the
+        # pre-reset (off-contract) transitions — clear it again so the resumed
+        # re-warmup refills with on-contract data.
+        if self._resume_loaded and self._rewarmup_until_t > self._resume_global_t:
+            self.rl_agent.replay_buffer.reset()
+            self.get_logger().info(
+                f"[Curriculum] Resumed during post-promotion re-warmup "
+                f"(until step {self._rewarmup_until_t}); replay buffer re-cleared."
+            )
+
         ENV_DIM = self.environment_dim
         state           = self.reset()
         # Structured map curriculum: record which map_type this episode runs on.
@@ -695,6 +720,20 @@ class TrainTQCCurriculum(
                 self._ep_prox.reset()   # label-based H-Coll / PSC tracker
             train_ready = t >= self.timesteps_before_training
             use_policy  = t >  self.timesteps_before_training
+            # Post-promotion re-warmup: after a buffer reset at a contract-changing
+            # stage boundary, take random actions and skip gradient updates until
+            # the buffer refills with on-contract data.
+            if self._rewarmup_until_t:
+                if t <= self._rewarmup_until_t:
+                    train_ready = False
+                    use_policy  = False
+                else:
+                    self.get_logger().info(
+                        f"[Curriculum] Post-promotion re-warmup complete at step {t} "
+                        f"— training resumes (buffer size="
+                        f"{self.rl_agent.replay_buffer.size})."
+                    )
+                    self._rewarmup_until_t = 0
             if train_ready and not training_enabled_logged:
                 self.get_logger().info(
                     f"[Curriculum] Warmup done at step {t} — "
@@ -853,10 +892,42 @@ class TrainTQCCurriculum(
                                 f"cr={metrics['collision_rate']*100:.1f}% ≤ "
                                 f"{self.cur_pass_cr[min(self._curriculum_stage, len(self.cur_pass_cr)-1)]*100:.0f}%)"
                             )
-                            self._set_curriculum_stage(new_stage)
+                            # Fail-fast: only proceed once the env has actually
+                            # switched stages. Otherwise the trainer would reset
+                            # its buffer / re-warmup while the env stays on the old
+                            # (e.g. stop-OFF) contract — a silent desync.
+                            if not self._set_curriculum_stage(new_stage):
+                                raise RuntimeError(
+                                    f"[Curriculum] Failed to push stage {new_stage} to "
+                                    f"gym_node (/gym_node/set_parameters); aborting "
+                                    f"before buffer reset / re-warmup to avoid a "
+                                    f"trainer/environment stage desync."
+                                )
                             self._stage_start_step       = t
                             self._stage_start_ep         = ep_num
                             self._consecutive_pass_count = 0
+                            # Contract-changing boundary: clear the buffer so
+                            # off-contract (e.g. stop-OFF) data does not poison the
+                            # new stage's critic. Reset is gated ONLY by the stage
+                            # list; rewarmup_steps controls just the re-warmup length
+                            # (0 → reset only, training resumes immediately).
+                            if new_stage in self.cur_reset_buffer_stages:
+                                self.rl_agent.replay_buffer.reset()
+                                if self.cur_rewarmup_steps > 0:
+                                    self._rewarmup_until_t = t + self.cur_rewarmup_steps
+                                    self.get_logger().info(
+                                        f"[Curriculum] Stage {new_stage} changes the "
+                                        f"action/control contract — replay buffer "
+                                        f"cleared; re-warmup for {self.cur_rewarmup_steps} "
+                                        f"steps (until step {self._rewarmup_until_t})."
+                                    )
+                                else:
+                                    self.get_logger().info(
+                                        f"[Curriculum] Stage {new_stage} changes the "
+                                        f"action/control contract — replay buffer "
+                                        f"cleared; training resumes immediately "
+                                        f"(rewarmup_steps=0)."
+                                    )
                             self._save_curriculum_state(t)
                     else:
                         if self._consecutive_pass_count > 0:

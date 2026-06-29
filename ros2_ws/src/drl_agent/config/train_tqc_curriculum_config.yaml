@@ -44,3 +44,14 @@ curriculum_settings:
   # How many consecutive evaluations must pass the threshold before promotion.
   # Set to 1 for faster iteration, 2-3 for more conservative advancement.
   consecutive_eval_passes: 2      # 연속 몇 번 eval gate를 통과해야 실제 승급할지
+
+  # Replay-buffer reset on promotion INTO these stages. Use it where the
+  # normalized action / control contract changes so off-contract transitions
+  # don't poison the critic. Stage 3 is the stop-OFF→stop-ON boundary
+  # (environment_curriculum.yaml: stages 0-2 stop-OFF, 3+ stop-ON).
+  # Empty list → never reset (legacy behaviour).
+  reset_buffer_on_promote_to: [3] # 이 stage로 승급 시 replay buffer를 비움 (reset 여부는 이 리스트로만 결정)
+  # Random-action steps to refill the buffer (no gradient updates) after a
+  # reset. Controls ONLY the re-warmup length, not whether the reset happens.
+  # 0 → reset only, training resumes immediately. Omit → timesteps_before_training.
+  rewarmup_steps: 12000           # buffer reset 후 재warmup(랜덤 행동) step 수

@@ -29,6 +29,7 @@ def save_curriculum_state(trainer, global_t: int):
                 "stage_start_step":       trainer._stage_start_step,
                 "stage_start_episode":    trainer._stage_start_ep,
                 "consecutive_pass_count": trainer._consecutive_pass_count,
+                "rewarmup_until_t":       getattr(trainer, "_rewarmup_until_t", 0),
                 "global_t":               global_t,
                 "total_episodes":         trainer._total_episodes,
                 "epoch":                  trainer._resume_epoch,
@@ -81,6 +82,7 @@ def load_curriculum_state(trainer) -> bool:
         trainer._consecutive_pass_count = int(
             state.get("consecutive_pass_count", 0)
         )
+        trainer._rewarmup_until_t = int(state.get("rewarmup_until_t", 0))
         trainer._resume_global_t      = int(state.get("global_t", 0))
         trainer._total_episodes       = int(state.get("total_episodes", 0))
         trainer._resume_epoch         = int(state.get("epoch", 1))
