@@ -323,6 +323,31 @@ class Environment(
         self.start_front_fov_deg = float(
             self.environment_config.get("start_front_fov_deg", 35.0))
 
+        # ── Open-map (lobby / clutter) inward-safe start yaw ────────────────────
+        # OPT-IN (default OFF → byte-identical legacy random-yaw sampling). When
+        # ON, an open-map start near an OUTER wall samples its yaw inside the
+        # inward-admissible sector instead of fully random, removing "spawn facing
+        # the wall → instant failure" while keeping yaw diversity away from walls.
+        # Only affects lobby/clutter (open maps); corridor/intersection keep their
+        # lane-aligned yaw untouched. See _sample_open_map_safe_yaw.
+        self.open_map_safe_start_yaw_enabled = bool(
+            self.environment_config.get("open_map_safe_start_yaw_enabled", False))
+        # "Near a wall" distance threshold. <=0 → reuse start_edge_heading_margin
+        # so this sampler and the _is_heading_toward_near_wall rejection share the
+        # SAME wall-distance basis (a yaw produced here then always passes it).
+        _omwm = float(self.environment_config.get("open_map_safe_yaw_wall_margin_m", 0.0))
+        self.open_map_safe_yaw_wall_margin = (
+            _omwm if _omwm > 0.0 else self.start_edge_heading_margin)
+        # Shrink each admissible-sector edge inward by this so the sampled heading
+        # keeps an angular buffer from being exactly wall-parallel.
+        self.open_map_safe_yaw_edge_margin = math.radians(
+            float(self.environment_config.get("open_map_safe_yaw_edge_margin_deg", 10.0)))
+        # Half-width of the fallback inward sector used only if the edge-margin
+        # shrink would degenerate the admissible sector (keeps diversity, never a
+        # single deterministic yaw).
+        self.open_map_safe_yaw_fallback_halfwidth = math.radians(
+            float(self.environment_config.get("open_map_safe_yaw_fallback_halfwidth_deg", 25.0)))
+
         # Obstacle spawn margin parameters
         self.num_of_humans = int(self.environment_config.get("num_of_humans", 0))
 

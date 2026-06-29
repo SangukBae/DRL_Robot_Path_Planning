@@ -237,6 +237,20 @@ environment:
   start_front_clearance_m: 1.2
   start_front_fov_deg: 35.0
 
+  # ── Open-map (lobby / clutter) inward-safe start yaw ─────────────────────────
+  # corridor/intersection get structurally safe lane-aligned spawn yaw, but the
+  # open maps (lobby/clutter) had no start_regions so yaw was ~random; a spawn
+  # near an outer wall then often faced the wall and failed in the first steps.
+  # This samples the open-map start yaw inside the INWARD-admissible sector when
+  # near a wall (full random diversity when far), so "facing the wall" starts are
+  # removed without homogenising every open-map yaw. Distinct from
+  # start_edge_heading_margin_m, which only REJECTS bad yaw post-hoc; this picks a
+  # safe yaw up front (and reuses that same margin by default). OFF → legacy.
+  open_map_safe_start_yaw_enabled: true
+  open_map_safe_yaw_wall_margin_m: 0.0       # <=0 → reuse start_edge_heading_margin_m
+  open_map_safe_yaw_edge_margin_deg: 10.0    # buffer from wall-parallel headings
+  open_map_safe_yaw_fallback_halfwidth_deg: 25.0  # degenerate-sector fallback half-width
+
   obstacle_wall_margin: 1.0
   obstacle_robot_margin: 2.82
   obstacle_goal_margin: 1.5

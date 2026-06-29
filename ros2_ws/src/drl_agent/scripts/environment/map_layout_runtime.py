@@ -486,6 +486,60 @@ class MapLayoutMixin:
         yaw = nominal + rot_sign * offset
         return geom.wrap_to_pi(yaw)
 
+    def _sample_open_map_safe_yaw(self, x: float, y: float) -> float:
+        """Open-map (lobby / clutter) start yaw that never faces an outer wall.
+
+        Open maps have no structured start_regions, so the legacy path draws a
+        fully random yaw in [-pi, pi]; a wall-adjacent spawn then frequently
+        faces the outer wall and fails within a few steps. This SAMPLES inside
+        the inward-admissible sector instead.
+
+        Difference vs. ``_is_heading_toward_near_wall`` (same wall-distance basis,
+        ``self._arena_wall_lower/_upper`` + a margin): that method REJECTS a yaw
+        candidate AFTER it is drawn (post-hoc filter that burns sampling tries);
+        this CONSTRUCTS the safe sector and draws once inside it (no extra
+        rejection). They are kept consistent — the default margin equals
+        ``start_edge_heading_margin`` — so a yaw produced here always passes the
+        downstream heading-toward-wall check.
+
+        Policy (diversity preserved):
+          * far from EVERY wall → unrestricted uniform yaw (identical to legacy);
+          * near ONE wall  → uniform in the inward half-plane (≈ ±90° about the
+            inward normal), minus an edge margin so the heading is never
+            wall-parallel;
+          * near TWO walls (corner) → uniform in the inward quadrant (≈ ±45°).
+        If the edge-margin shrink degenerates the sector, fall back to a small
+        sector about the inward direction (never a single deterministic yaw).
+        """
+        margin = self.open_map_safe_yaw_wall_margin
+        lower, upper = self._arena_wall_lower, self._arena_wall_upper
+        # Sum of INWARD normals of the near wall(s); count how many are active.
+        nx = ny = 0.0
+        near = 0
+        if x > upper - margin:
+            nx += -1.0; near += 1            # near right wall → inward = -x
+        elif x < lower + margin:
+            nx += 1.0; near += 1             # near left wall  → inward = +x
+        if y > upper - margin:
+            ny += -1.0; near += 1            # near top wall   → inward = -y
+        elif y < lower + margin:
+            ny += 1.0; near += 1             # near bottom wall→ inward = +y
+        if near == 0:
+            # Far from all walls: keep full yaw diversity (legacy behaviour).
+            return float(np.random.uniform(-np.pi, np.pi))
+        center = math.atan2(ny, nx)
+        # Admissible half-width: half-plane (±90°) for one wall, quadrant (±45°)
+        # for a corner — the exact intersection of the inward half-planes.
+        half_width = (math.pi / 2.0) if near == 1 else (math.pi / 4.0)
+        half = half_width - self.open_map_safe_yaw_edge_margin
+        if half <= 1e-3:
+            # Degenerate after the edge-margin shrink: small inward sector,
+            # clamped to stay strictly inside the true admissible arc.
+            half = max(1e-3, min(self.open_map_safe_yaw_fallback_halfwidth,
+                                 0.5 * half_width))
+        yaw = center + float(np.random.uniform(-half, half))
+        return geom.wrap_to_pi(yaw)
+
     def _sample_xy_in_regions(self, regions, radius: float, rng=None):
         """Uniformly sample (x, y) in an area-weighted random region, shrinking
         each region by `radius` so the footprint stays inside it.

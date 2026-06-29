@@ -67,6 +67,24 @@ class StartSamplerMixin:
                 return x, y
         return None
 
+    def _choose_start_yaw(self, region, x, y):
+        """Pick the spawn yaw for a start candidate (single source of truth).
+
+        * structured lane region (corridor / intersection)
+              → ``_sample_lane_aligned_yaw`` (unchanged contract).
+        * open map (lobby / clutter) AND ``open_map_safe_start_yaw_enabled``
+              → ``_sample_open_map_safe_yaw`` (inward-safe, avoids facing the
+                outer wall while keeping yaw diversity away from walls).
+        * otherwise (flag off, or any other map)
+              → legacy uniform random yaw in [-pi, pi] (byte-identical default).
+        """
+        if region is not None:
+            return self._sample_lane_aligned_yaw(region, x, y)
+        if (getattr(self, "open_map_safe_start_yaw_enabled", False)
+                and getattr(self, "current_map_type", "") in ("lobby", "clutter")):
+            return self._sample_open_map_safe_yaw(x, y)
+        return float(np.random.uniform(-np.pi, np.pi))
+
     def _sample_train_start_pose(self):
         """
         Sample a collision-free start pose (x, y, yaw) for training episodes.
@@ -186,11 +204,8 @@ class StartSamplerMixin:
             if self._pose_collides_with_placed(start_x, start_y, robot_radius, lingering):
                 continue
 
-            # 3. Heading: lane-aligned for structured starts, else random.
-            if region is not None:
-                angle = self._sample_lane_aligned_yaw(region, start_x, start_y)
-            else:
-                angle = np.random.uniform(-np.pi, np.pi)
+            # 3. Heading: lane-aligned (structured), inward-safe (open map), else random.
+            angle = self._choose_start_yaw(region, start_x, start_y)
 
             # 4. Heading-toward-wall rejection
             if self._is_heading_toward_near_wall(start_x, start_y, angle, edge_margin):
@@ -241,9 +256,8 @@ class StartSamplerMixin:
                 continue
             if self._pose_collides_with_placed(start_x, start_y, robot_radius, lingering):
                 continue
-            # Structured: lane-aligned yaw (never into a wall); else random.
-            angle = (self._sample_lane_aligned_yaw(region, start_x, start_y)
-                     if region is not None else np.random.uniform(-np.pi, np.pi))
+            # Structured: lane-aligned; open map: inward-safe; else random.
+            angle = self._choose_start_yaw(region, start_x, start_y)
             self._current_start_region = region
             return start_x, start_y, angle
 
