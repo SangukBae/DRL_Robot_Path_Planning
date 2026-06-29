@@ -278,6 +278,13 @@ class EnvironmentCurriculum(Environment):
             # stage so a partial override never leaks across stages.
             "loc_noise":               copy.deepcopy(self.loc_noise),
             "proprio_noise":           copy.deepcopy(self.proprio_noise),
+            # Stop/yield capability (global env: block = stop-ON default). A stage
+            # may override these to run stop-OFF (basic driving); omitting a key
+            # inherits the base so stage 3+ keeps the stop-ON default.
+            "actions_low":                     list(self.actions_low),
+            "controller_min_speed_mps":        float(self.controller_min_speed_mps),
+            "controller_low_speed_distance_m": float(self.controller_low_speed_distance_m),
+            "yield_enabled":                   bool(self.yield_enabled),
         })
 
     def _parse_active_by_map(self, raw, cap: int, label: str) -> dict:
@@ -321,6 +328,11 @@ class EnvironmentCurriculum(Environment):
         self.num_of_humans           = b["num_of_humans"]
         self.loc_noise               = copy.deepcopy(b["loc_noise"])
         self.proprio_noise           = copy.deepcopy(b["proprio_noise"])
+        # Stop/yield capability — restore base (global stop-ON) before any override.
+        self.actions_low                     = list(b["actions_low"])
+        self.controller_min_speed_mps        = b["controller_min_speed_mps"]
+        self.controller_low_speed_distance_m = b["controller_low_speed_distance_m"]
+        self.yield_enabled                   = b["yield_enabled"]
         # Structured map curriculum: restore base map-sampling config before
         # applying this stage's overrides (no cross-stage leakage).
         self.allowed_map_types       = list(b["allowed_map_types"])
@@ -435,6 +447,20 @@ class EnvironmentCurriculum(Environment):
                 m for m in (stage["eval_map_types"] or []) if isinstance(m, str)
             ]
 
+        # ── Per-stage STOP/YIELD capability override (base stop-ON restored above) ──
+        # Early stages run stop-OFF (basic-driving) by overriding these; a stage
+        # that omits them inherits the global stop-ON default.
+        if "actions_low" in stage:
+            self.actions_low = [float(x) for x in stage["actions_low"]]
+        if "controller_min_speed_mps" in stage:
+            self.controller_min_speed_mps = float(stage["controller_min_speed_mps"])
+        if "controller_low_speed_distance_m" in stage:
+            self.controller_low_speed_distance_m = float(stage["controller_low_speed_distance_m"])
+        # Nested to mirror the global yield_reward.enabled key.
+        _yr = stage.get("yield_reward")
+        if isinstance(_yr, dict) and "enabled" in _yr:
+            self.yield_enabled = bool(_yr["enabled"])
+
         if self._last_stage_apply_logged != idx:
             self.get_logger().info(
                 f"[Curriculum] Stage {idx} '{self._stage_name(idx)}' applied — "
@@ -457,7 +483,11 @@ class EnvironmentCurriculum(Environment):
                 f"delay={self.loc_noise['delay_steps']} "
                 f"gt_rew={self.loc_noise['use_gt_for_reward']}) | "
                 f"by_map(static={self._stage_active_static_by_map or '-'} "
-                f"humans={self._stage_active_humans_by_map or '-'})"
+                f"humans={self._stage_active_humans_by_map or '-'}) | "
+                f"stop(act_low={[round(float(x), 3) for x in self.actions_low]} "
+                f"min_v={self.controller_min_speed_mps:.2f} "
+                f"low_dist={self.controller_low_speed_distance_m:.2f} "
+                f"yield={self.yield_enabled})"
             )
             self._last_stage_apply_logged = idx
 
