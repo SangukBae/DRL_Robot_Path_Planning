@@ -520,6 +520,18 @@ class Environment(
         self.yield_idle_speed_mps     = float(_yr.get("idle_speed_threshold_mps", 0.1))
         self.yield_step_relief_scale  = float(_yr.get("step_penalty_relief_scale", 1.0))
 
+        # Anti-freeze penalty: discourages SUSTAINED, no-progress, low-speed holds
+        # while a human hazard is active (the freeze→timeout failure mode). OPT-IN:
+        # absent block / enabled:false → reward byte-for-byte unchanged. Needs the
+        # same risk gating as yield_reward (human_risk_penalty.enabled). The streak
+        # counter is owned here and reset per episode.
+        _af = dict(self.environment_config.get("anti_freeze", {}) or {})
+        self.antifreeze_enabled     = bool(_af.get("enabled", False))
+        self.antifreeze_speed_mps   = float(_af.get("speed_threshold_mps", 0.12))
+        self.antifreeze_min_streak  = int(_af.get("min_freeze_steps", 12))
+        self.antifreeze_w           = float(_af.get("w_penalty", 0.02))
+        self._freeze_streak         = 0
+
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
         self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
@@ -1711,6 +1723,7 @@ class Environment(
             "human_min_ttc_s",
             "reward_yield_bonus",
             "penalty_idle",
+            "penalty_freeze",
             "reward_terminal",
             "reward",
             "collision", "target", "done",
@@ -2110,8 +2123,15 @@ class Environment(
             yield_idle_speed_mps=self.yield_idle_speed_mps,
             yield_step_relief_scale=self.yield_step_relief_scale,
             cruise_speed_mps=self.controller_cruise_speed_mps,
+            antifreeze_enabled=self.antifreeze_enabled,
+            antifreeze_speed_mps=self.antifreeze_speed_mps,
+            antifreeze_min_streak=self.antifreeze_min_streak,
+            antifreeze_w=self.antifreeze_w,
+            freeze_streak_in=self._freeze_streak,
             return_terms=True,
         )
+        # Carry the anti-freeze streak into the next step (reset per episode).
+        self._freeze_streak = int(reward_terms.get("freeze_streak", 0))
         self._prev_waypoint_theta = theta
     
         # 9) 다음 스텝 대비 기록
@@ -2150,6 +2170,7 @@ class Environment(
                 round(min(float(reward_terms["human_min_ttc_s"]), 99.0), 6),
                 round(float(reward_terms["yield_bonus"]), 6),
                 round(float(reward_terms["idle_pen"]), 6),
+                round(float(reward_terms["freeze_pen"]), 6),
                 round(float(reward_terms["terminal"]), 6),
                 round(float(reward), 6),
                 int(bool(collision)), int(bool(target)), int(bool(done)),
@@ -2237,6 +2258,7 @@ class Environment(
         self._prev_v           = 0.0
         self._prev_w           = 0.0
         self._prev_waypoint_theta = 0.0
+        self._freeze_streak    = 0
         self._reset_robot_path()
         prev_scan_updates = self.scan_update_count
         prev_role_updates = dict(self._odom_role_count)

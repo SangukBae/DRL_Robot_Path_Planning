@@ -192,6 +192,18 @@ def compute_reward(
     yield_idle_speed_mps=0.1,       # "idle" = |speed| below this
     yield_step_relief_scale=1.0,    # multiply step_pen while risk-active (1=none, 0=full relief)
     cruise_speed_mps=None,          # speed normaliser for the slow factor (defaults to v_max)
+
+    # ---- Anti-freeze penalty (opt-in; default OFF → byte-identical reward) ----
+    # Penalise ONLY a SUSTAINED, no-progress, low-speed hold while a human hazard
+    # is active (risk_active). Short yields are untouched: the penalty starts only
+    # after `antifreeze_min_streak` consecutive freeze steps. The streak counter is
+    # owned by the caller (per episode) — passed in via freeze_streak_in and
+    # returned in terms["freeze_streak"].
+    antifreeze_enabled=False,
+    antifreeze_speed_mps=0.12,      # "frozen" = |speed| below this [m/s]
+    antifreeze_min_streak=12,       # consecutive freeze steps before penalty starts
+    antifreeze_w=0.02,              # per-step penalty once the streak is exceeded
+    freeze_streak_in=0,             # consecutive freeze steps BEFORE this step (caller-owned)
     return_terms=False,
 ):
     terms = {
@@ -214,6 +226,9 @@ def compute_reward(
         # Stop/yield shaping (0 unless yield_enabled and gated risk fires).
         "yield_bonus": 0.0,
         "idle_pen": 0.0,
+        # Anti-freeze (0 unless antifreeze_enabled and a sustained freeze fires).
+        "freeze_pen": 0.0,
+        "freeze_streak": 0.0,
         "terminal": 0.0,
     }
     # 터미널
@@ -315,15 +330,20 @@ def compute_reward(
     # extends the same gate to the idle penalty.
     yield_bonus = 0.0
     idle_pen = 0.0
+    freeze_pen = 0.0
+    freeze_streak = 0
+    speed_abs = abs(v)
     humans_present = bool(
         human_risk_terms
         and math.isfinite(float(human_risk_terms.get("human_min_dist_m", float("inf"))))
     )
+    # Closing-risk gate, defined ONCE and shared by yield + anti-freeze so both
+    # agree on what "a human hazard is active" means. False when no human present.
+    _ttc = float(terms["human_min_ttc_s"])
+    _appr = float(terms["human_approach_norm"])
+    risk_active = humans_present and (
+        (_ttc < yield_risk_gate_ttc_s) or (_appr > yield_risk_gate_approach))
     if yield_enabled and humans_present:
-        speed_abs = abs(v)
-        _ttc = float(terms["human_min_ttc_s"])
-        _appr = float(terms["human_approach_norm"])
-        risk_active = (_ttc < yield_risk_gate_ttc_s) or (_appr > yield_risk_gate_approach)
         if risk_active:
             # (A) relieve the step penalty so waiting out a hazard is not punished
             step_pen = step_pen * yield_step_relief_scale
@@ -338,12 +358,24 @@ def compute_reward(
         elif speed_abs < yield_idle_speed_mps:
             # (C) discourage idling when it is safe to move (no imminent hazard)
             idle_pen = yield_idle_w * (1.0 - speed_abs / max(yield_idle_speed_mps, 1e-6))
+    # (D) Anti-freeze: penalise ONLY a SUSTAINED, no-progress, low-speed hold while
+    # a human hazard is active. A brief yield survives (the streak must first
+    # exceed antifreeze_min_streak); normal driving / avoidance / human-free steps
+    # never trigger it (risk_active is False there → streak resets to 0).
+    if (antifreeze_enabled and risk_active
+            and speed_abs < antifreeze_speed_mps and progress <= 0.0):
+        freeze_streak = int(freeze_streak_in) + 1
+        if freeze_streak > antifreeze_min_streak:
+            freeze_pen = antifreeze_w
     terms["step_pen"] = float(step_pen)
     terms["yield_bonus"] = float(yield_bonus)
     terms["idle_pen"] = float(idle_pen)
+    terms["freeze_pen"] = float(freeze_pen)
+    terms["freeze_streak"] = float(freeze_streak)
 
     # 6) 시간 페널티 및 합산
     reward = (progress + heading + yield_bonus
-              - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen - idle_pen)
+              - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen - idle_pen
+              - freeze_pen)
 
     return (float(reward), terms) if return_terms else float(reward)

@@ -221,11 +221,31 @@ environment:
     enabled: true                  # stop-ON  (stop-OFF: false)
     risk_gate_ttc_s: 2.0            # risk-active when min time-to-contact < this
     risk_gate_approach: 0.15        # OR when normalised closing rate > this
-    w_yield_bonus: 0.05             # gain on the slow-down bonus
-    max_yield_bonus: 0.1            # hard cap on the slow-down bonus
-    w_idle_penalty: 0.03            # gain on the idle (loitering) penalty
+    # Weakened to keep "stop is allowed" but reduce "stop is preferred": the
+    # slow-down bonus is much smaller/capped and the step-penalty relief is
+    # halved, while the idle penalty (paid when a present human is NOT a hazard)
+    # is raised. Net: brief yields stay cheap, long holds get less attractive.
+    w_yield_bonus: 0.01             # gain on the slow-down bonus (was 0.05)
+    max_yield_bonus: 0.02           # hard cap on the slow-down bonus (was 0.1)
+    w_idle_penalty: 0.07            # gain on the idle (loitering) penalty (was 0.03)
     idle_speed_threshold_mps: 0.1   # "idle" = |speed| below this [m/s]
-    step_penalty_relief_scale: 0.2  # multiply step_pen while risk-active (0.2 = 80% relief)
+    step_penalty_relief_scale: 0.6  # multiply step_pen while risk-active (0.6 = 40% relief; was 0.2)
+
+  # ── Anti-freeze penalty (reward_calculator) ────────────────────────────────
+  # Targets the freeze→timeout failure mode WITHOUT punishing a legitimate brief
+  # yield. Fires ONLY when ALL hold, for min_freeze_steps CONSECUTIVE steps:
+  #   • a human hazard is active (same risk gate as yield_reward), AND
+  #   • |speed| < speed_threshold_mps (nearly stopped / creeping), AND
+  #   • progress <= 0 (goal distance not decreasing).
+  # A short stop resets its counter before the streak is reached, so yielding is
+  # untouched; only a SUSTAINED, no-progress hold is penalised. Human-free steps,
+  # normal forward driving, and normal avoidance never trigger it.
+  # OPT-IN: absent block / enabled:false → reward byte-identical (ablation).
+  anti_freeze:
+    enabled: true
+    speed_threshold_mps: 0.12   # "frozen" = |speed| below this [m/s]
+    min_freeze_steps: 12        # consecutive freeze steps before the penalty starts
+    w_penalty: 0.02             # small per-step penalty once the streak is exceeded
 
   # Episode-level pedestrian behaviour-mode mix. Each human is assigned ONE mode
   # at spawn and keeps it for the episode. Weights need not sum to 1 (normalised
