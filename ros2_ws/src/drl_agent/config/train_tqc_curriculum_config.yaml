@@ -53,13 +53,16 @@ curriculum_settings:
   # Set to 1 for faster iteration, 2-3 for more conservative advancement.
   consecutive_eval_passes: 2      # 연속 몇 번 eval gate를 통과해야 실제 승급할지
 
-  # Replay-buffer reset on promotion INTO these stages. Use it where the
-  # normalized action / control contract changes so off-contract transitions
-  # don't poison the critic. Stage 3 is the stop-OFF→stop-ON boundary
-  # (environment_curriculum.yaml: stages 0-2 stop-OFF, 3+ stop-ON).
-  # Empty list → never reset (legacy behaviour).
-  reset_buffer_on_promote_to: [3] # 이 stage로 승급 시 replay buffer를 비움 (reset 여부는 이 리스트로만 결정)
-  # Random-action steps to refill the buffer (no gradient updates) after a
-  # reset. Controls ONLY the re-warmup length, not whether the reset happens.
-  # 0 → reset only, training resumes immediately. Omit → timesteps_before_training.
-  rewarmup_steps: 12000           # buffer reset 후 재warmup(랜덤 행동) step 수
+  # Replay-buffer reset on promotion INTO these stages. Only needed where the
+  # normalized action / control contract CHANGES between stages (off-contract
+  # transitions would otherwise poison the critic). The curriculum now uses ONE
+  # stop-capable contract from Stage 0 through the final stage — no stage changes
+  # action semantics — so NO stage needs a reset. Stage 3 is now just the
+  # first-human stage, not a contract boundary.
+  # Empty list → never reset (the current, correct behaviour). Keep the mechanism
+  # available in case a future curriculum reintroduces a contract-changing stage.
+  reset_buffer_on_promote_to: []  # 액션 계약이 전 stage 동일 → buffer reset 불필요 (빈 리스트 = reset 없음)
+  # Random-action re-warmup steps AFTER a buffer reset (no gradient updates).
+  # Dead while reset_buffer_on_promote_to is empty; only used if a reset stage is
+  # re-added. 0 → reset only, training resumes immediately.
+  rewarmup_steps: 0               # reset 없음 → 재warmup도 없음 (reset 재도입 시에만 의미)

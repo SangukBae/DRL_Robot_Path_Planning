@@ -151,12 +151,14 @@ class TrainTQCCurriculum(
         self.cur_pass_per_map_sr  = list(cur.get("pass_eval_per_map_success_rate", []))
         self.cur_pass_per_map_cr  = list(cur.get("pass_eval_per_map_collision_rate", []))
         self.cur_consec_passes   = int(cur.get("consecutive_eval_passes", 2))
-        # Replay-buffer reset on promotion INTO a contract-changing stage (e.g.
-        # stop-OFF stages 0-2 → stop-ON stage 3). The normalized action / control
-        # contract changes there, so old transitions would poison the critic;
-        # clearing the buffer + re-warming avoids that. Empty list → never reset
-        # (legacy behaviour). rewarmup_steps random-action steps refill the buffer
-        # with on-contract data before gradient updates resume.
+        # Replay-buffer reset on promotion INTO a stage whose normalized action /
+        # control contract DIFFERS from the previous stage's (old transitions would
+        # otherwise poison the critic; clearing + re-warming avoids that). The
+        # current curriculum uses ONE stop-capable contract from Stage 0 onward, so
+        # no stage changes semantics and this list is EMPTY (never reset). The
+        # mechanism is kept generic in case a contract-changing stage is re-added.
+        # rewarmup_steps random-action steps refill the buffer with on-contract data
+        # before gradient updates resume.
         self.cur_reset_buffer_stages = set(
             int(s) for s in (cur.get("reset_buffer_on_promote_to", []) or [])
         )
@@ -895,7 +897,8 @@ class TrainTQCCurriculum(
                             # Fail-fast: only proceed once the env has actually
                             # switched stages. Otherwise the trainer would reset
                             # its buffer / re-warmup while the env stays on the old
-                            # (e.g. stop-OFF) contract — a silent desync.
+                            # contract — a silent desync. (No-op unless a
+                            # contract-changing stage is configured; currently none.)
                             if not self._set_curriculum_stage(new_stage):
                                 raise RuntimeError(
                                     f"[Curriculum] Failed to push stage {new_stage} to "
@@ -907,10 +910,11 @@ class TrainTQCCurriculum(
                             self._stage_start_ep         = ep_num
                             self._consecutive_pass_count = 0
                             # Contract-changing boundary: clear the buffer so
-                            # off-contract (e.g. stop-OFF) data does not poison the
-                            # new stage's critic. Reset is gated ONLY by the stage
-                            # list; rewarmup_steps controls just the re-warmup length
-                            # (0 → reset only, training resumes immediately).
+                            # off-contract data does not poison the new stage's
+                            # critic. Reset is gated ONLY by the stage list, which is
+                            # EMPTY in the current single-contract curriculum, so this
+                            # branch does not run; rewarmup_steps controls just the
+                            # re-warmup length (0 → reset only, resume immediately).
                             if new_stage in self.cur_reset_buffer_stages:
                                 self.rl_agent.replay_buffer.reset()
                                 if self.cur_rewarmup_steps > 0:

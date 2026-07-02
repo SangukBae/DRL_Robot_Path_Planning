@@ -75,22 +75,27 @@ environment:
   action_dim: 2                    # 정책 action 차원 [waypoint distance, waypoint angle]
   agent_name: "hunter_se"
   max_action: 1.0
-  # STOP/YIELD experiment — NEW ACTION SEMANTICS (requires FRESH training).
-  # Lowering action[0]'s floor 0.8 → 0.0 RE-MAPS the entire normalized→waypoint
-  # range (pure_pursuit.action_to_waypoint is a linear map over actions_low/high):
-  # the SAME normalized action now points to a SHORTER waypoint than before, e.g.
-  # action[0]=0 was r=1.4 m and is now r=1.0 m. This is NOT "just adding a [0,0.8]
-  # zone" — it changes the meaning of every action[0], so prior checkpoints /
-  # replay buffers / reward curves are NOT directly comparable; train from
-  # scratch. The point of the change is that the policy can now command a short
-  # waypoint = creep/stop (combined with controller_low_speed_distance_m below).
+  # STOP-CAPABLE ACTION/CONTROL CONTRACT — used from Stage 0 through the final
+  # stage (the contract NEVER changes across the curriculum). The robot learns a
+  # "car with brakes" from the very first stage: action[0]=0 commands a short
+  # waypoint = creep/stop (combined with controller_low_speed_distance_m below),
+  # so the policy always has genuine stop authority regardless of stage.
   #
-  # ABLATION = two FRESH runs compared head-to-head (not vs. old runs):
-  #   stop-OFF: actions_low[0]=0.8, controller_low_speed_distance_m=0.0,
-  #             controller_min_speed_mps=0.3, yield_reward.enabled=false
-  #             → byte-identical to the pre-stop reward/control contract.
-  #   stop-ON : the values set here.
-  actions_low:  [0.0, -0.524]    # stop-ON  (stop-OFF: [0.8, -0.524])
+  # Semantics note (vs. the older floor-0.8 contract): actions_low[0]=0.0 makes
+  # pure_pursuit.action_to_waypoint (a linear map over actions_low/high) span
+  # [0.0, 2.0] m instead of [0.8, 2.0] m, so the SAME normalized action points to
+  # a different physical waypoint than under the old floor. Checkpoints / replay
+  # buffers / reward curves from a floor-0.8 run are therefore NOT directly
+  # comparable — train from scratch. Because every stage here uses the SAME
+  # contract, there is no in-run action-semantics transition and no need to reset
+  # the replay buffer or re-warmup at any stage boundary.
+  #
+  # ABLATION (whole-run, not per-stage): to reproduce the old brake-less car,
+  # run a SEPARATE fresh training with actions_low[0]=0.8,
+  # controller_min_speed_mps=0.3, controller_low_speed_distance_m=0.0,
+  # yield_reward.enabled=false (byte-identical to the pre-stop contract) and
+  # compare it head-to-head against this stop-capable run.
+  actions_low:  [0.0, -0.524]    # stop-capable floor (brake-less ablation: [0.8, -0.524])
   actions_high: [2.0,  0.524]
   vehicle_wheelbase_m: 0.547696
   vehicle_steering_limit_deg: 21.58
@@ -98,12 +103,12 @@ environment:
   controller_cruise_speed_mps: 2.0
   # Floor dropped to 0 so the low-speed ramp below can pull speed to a true 0 m/s
   # stop (the ramp is applied AFTER this floor).
-  controller_min_speed_mps: 0.0   # stop-ON  (stop-OFF: 0.3)
+  controller_min_speed_mps: 0.0   # stop-capable (brake-less ablation: 0.3)
   controller_speed_steer_factor: 0.6
   # >0 ramps Pure-Pursuit speed linearly to 0 as the commanded waypoint distance
   # L drops below this (speed *= L/this), giving the policy genuine creep/stop
   # authority through action[0]. 0.0 (or omit) → disabled (no stop capability).
-  controller_low_speed_distance_m: 0.8  # stop-ON  (stop-OFF: 0.0)
+  controller_low_speed_distance_m: 0.8  # stop-capable (brake-less ablation: 0.0)
   spawn_z: 0.02                    # 로봇/오브젝트 초기 spawn z 오프셋
   obs_z_min_sensor_m: -0.455       # RL scan에 포함할 sensor-frame 최소 z
   obs_z_max_sensor_m:  0.250       # RL scan에 포함할 sensor-frame 최대 z
@@ -218,7 +223,7 @@ environment:
   # Needs the stop-capable controller above to have anything to reward.
   # OPT-IN: absent block / enabled:false → reward byte-identical (ablation).
   yield_reward:
-    enabled: true                  # stop-ON  (stop-OFF: false)
+    enabled: true                  # stop-capable (brake-less ablation: false)
     risk_gate_ttc_s: 2.0            # risk-active when min time-to-contact < this
     risk_gate_approach: 0.15        # OR when normalised closing rate > this
     # Weakened to keep "stop is allowed" but reduce "stop is preferred": the
@@ -573,6 +578,9 @@ curriculum:
   # 8 (+crowd scale/drift loc-noise/richer modes). 6→7 is REDUCED but not fully
   # single-axis: it still adds lobby + first human-scan noise + crowd 1→3 together
   # (loc/proprio/modes held), which is far lighter than the old 4-axis jump.
+  # The stop-capable action/control contract is fixed from Stage 0 onward, so no
+  # stage changes action semantics — Stage 3 only ADDS the first human, it is not
+  # a contract boundary (no buffer reset / re-warmup anywhere).
   #   0 base (empty) · 1 corridor static · 2 +intersection (structure) ·
   #   3 +humans (count 1, simplest modes), CLEAN obs — dynamic-avoidance only ·
   #   4 SAME humans as 3 + weak loc-noise — localization robustness only ·
@@ -597,11 +605,10 @@ curriculum:
       allowed_static_groups: ["small", "medium"] # 배치 허용 obstacle size group
       eval_map_types: ["lobby"]   # formal eval 시 순회할 map_type 목록
       localization_profile: clean   # no goal-obs noise yet
-      # stop-OFF: basic-driving only (no stop/yield) for stage 0~2
-      actions_low: [0.8, -0.524]
-      controller_min_speed_mps: 0.3
-      controller_low_speed_distance_m: 0.0
-      yield_reward: {enabled: false}
+      # Action/control contract = base (stop-capable) for ALL stages. No stop/yield
+      # REWARD fires here anyway: yield_reward/human_risk are human-gated and this
+      # stage has no humans, so stages 0-2 stay pure basic-driving without any
+      # per-stage action override.
 
     # ── Stage 1: corridor only, static — wall/lane driving (no humans/noise) ──
     - name: corridor_static
@@ -613,11 +620,7 @@ curriculum:
       allowed_static_groups: ["small", "medium"]
       eval_map_types: ["corridor"]
       localization_profile: clean
-      # stop-OFF: basic-driving only (no stop/yield) for stage 0~2
-      actions_low: [0.8, -0.524]
-      controller_min_speed_mps: 0.3
-      controller_low_speed_distance_m: 0.0
-      yield_reward: {enabled: false}
+      # Action/control contract = base (stop-capable); no humans → no stop/yield reward.
 
     # ── Stage 2: + intersection (STRUCTURE axis only). Still no humans, no noise.
     # corridor kept lighter than intersection via active_static_by_map; the single
@@ -633,18 +636,20 @@ curriculum:
       allowed_static_groups: ["small", "medium"]
       eval_map_types: ["corridor", "intersection"]
       localization_profile: clean
-      # stop-OFF: basic-driving only (no stop/yield) for stage 0~2
-      actions_low: [0.8, -0.524]
-      controller_min_speed_mps: 0.3
-      controller_low_speed_distance_m: 0.0
-      yield_reward: {enabled: false}
+      # Action/control contract = base (stop-capable); no humans → no stop/yield reward.
 
     # ── Stage 3: + first human (DYNAMIC-AVOIDANCE axis), CLEAN observation ─
-    # First pedestrians, but observation stays ground-truth-clean (no loc/proprio
-    # noise) so the policy learns dynamic-obstacle avoidance with an UNCORRUPTED
-    # goal/state signal — clean credit assignment for the avoidance behaviour.
-    # Easiest pedestrians (near-straight crossing / along_path). corridor keeps
-    # just 1 human and fewer static than the intersection.
+    # First pedestrians appear here — this is the FIRST-HUMAN stage, NOT an
+    # action/control-contract change: the stop-capable contract is already active
+    # from Stage 0, so nothing about the action semantics changes at this boundary
+    # (hence no replay-buffer reset / re-warmup is needed on promotion into it).
+    # Observation stays ground-truth-clean (no loc/proprio noise) so the policy
+    # learns dynamic-obstacle avoidance with an UNCORRUPTED goal/state signal —
+    # clean credit assignment for the avoidance behaviour. Easiest pedestrians
+    # (near-straight crossing / along_path). corridor keeps just 1 human and fewer
+    # static than the intersection. Human-gated stop/yield reward now activates
+    # simply because humans are present (base yield_reward.enabled=true), with no
+    # per-stage override.
     - name: first_human_clean
       active_static: 6
       active_humans: 1
@@ -660,11 +665,6 @@ curriculum:
       human_social_avoid_strength: 0.3 # human-human avoidance 세기
       human_goal_span_multiplier: 1.5  # human global goal 거리 배수
       localization_profile: clean   # observation-noise introduced in Stage 4
-      # stop-ON enabled from stage 3 (humans present); stage 4+ inherit this base.
-      actions_low: [0.0, -0.524]
-      controller_min_speed_mps: 0.0
-      controller_low_speed_distance_m: 0.8
-      yield_reward: {enabled: true}
 
     # ── Stage 4: SAME humans as Stage 3 + weak localization noise ────────
     # OBSERVATION-ROBUSTNESS axis: identical human/static distribution & motion to
