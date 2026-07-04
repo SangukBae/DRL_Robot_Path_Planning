@@ -285,6 +285,9 @@ class EnvironmentCurriculum(Environment):
             "controller_min_speed_mps":        float(self.controller_min_speed_mps),
             "controller_low_speed_distance_m": float(self.controller_low_speed_distance_m),
             "yield_enabled":                   bool(self.yield_enabled),
+            # 3D-action yield channel gate (controller-side). Sealed in early
+            # stages so avoidance is learned before yielding is permitted.
+            "yield_action_enabled":            bool(self.yield_action_enabled),
         })
 
     def _parse_active_by_map(self, raw, cap: int, label: str) -> dict:
@@ -333,6 +336,7 @@ class EnvironmentCurriculum(Environment):
         self.controller_min_speed_mps        = b["controller_min_speed_mps"]
         self.controller_low_speed_distance_m = b["controller_low_speed_distance_m"]
         self.yield_enabled                   = b["yield_enabled"]
+        self.yield_action_enabled            = b["yield_action_enabled"]
         # Structured map curriculum: restore base map-sampling config before
         # applying this stage's overrides (no cross-stage leakage).
         self.allowed_map_types       = list(b["allowed_map_types"])
@@ -458,8 +462,13 @@ class EnvironmentCurriculum(Environment):
             self.controller_low_speed_distance_m = float(stage["controller_low_speed_distance_m"])
         # Nested to mirror the global yield_reward.enabled key.
         _yr = stage.get("yield_reward")
-        if isinstance(_yr, dict) and "enabled" in _yr:
-            self.yield_enabled = bool(_yr["enabled"])
+        if isinstance(_yr, dict):
+            if "enabled" in _yr:
+                self.yield_enabled = bool(_yr["enabled"])
+            # Controller-side seal: action_enabled:false makes the yield channel
+            # (action[2]) a no-op so early stages cannot stop at all.
+            if "action_enabled" in _yr:
+                self.yield_action_enabled = bool(_yr["action_enabled"])
 
         if self._last_stage_apply_logged != idx:
             self.get_logger().info(
@@ -487,7 +496,8 @@ class EnvironmentCurriculum(Environment):
                 f"stop(act_low={[round(float(x), 3) for x in self.actions_low]} "
                 f"min_v={self.controller_min_speed_mps:.2f} "
                 f"low_dist={self.controller_low_speed_distance_m:.2f} "
-                f"yield={self.yield_enabled})"
+                f"yield={self.yield_enabled} "
+                f"yield_act={self.yield_action_enabled})"
             )
             self._last_stage_apply_logged = idx
 

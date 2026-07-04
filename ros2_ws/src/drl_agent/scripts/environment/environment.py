@@ -280,6 +280,18 @@ class Environment(
         self.controller_low_speed_distance_m = float(
             self.environment_config.get("controller_low_speed_distance_m", 0.0)
         )
+        # 3D hybrid-action controller (pure_pursuit.hybrid_action_to_command).
+        # Non-yield (MOVE) mode is floored so the policy cannot stop unless it
+        # commands yield (action[2]); yield mode caps speed at the creep value.
+        self.controller_lookahead_min_m = float(
+            self.environment_config.get("controller_lookahead_min_m", 0.8)
+        )
+        self.controller_v_move_min_mps = float(
+            self.environment_config.get("controller_v_move_min_mps", 0.35)
+        )
+        self.controller_yield_creep_mps = float(
+            self.environment_config.get("controller_yield_creep_mps", 0.0)
+        )
         self.spawn_z = self.environment_config.get("spawn_z", 0.4)
         self.obs_z_min_sensor_m = float(self.environment_config.get("obs_z_min_sensor_m", -0.555))
         self.obs_z_max_sensor_m = float(self.environment_config.get("obs_z_max_sensor_m",  0.250))
@@ -519,6 +531,29 @@ class Environment(
         self.yield_idle_w             = float(_yr.get("w_idle_penalty", 0.03))
         self.yield_idle_speed_mps     = float(_yr.get("idle_speed_threshold_mps", 0.1))
         self.yield_step_relief_scale  = float(_yr.get("step_penalty_relief_scale", 1.0))
+        # 3D-action yield channel: controller gate (whether action[2] is honoured)
+        # and the threshold at which it flips to yield. Stage overrides may seal
+        # yielding early in the curriculum via yield_reward.action_enabled=false.
+        self.yield_action_enabled     = bool(_yr.get("action_enabled", True))
+        self.yield_action_threshold   = float(_yr.get("action_threshold", 0.3))
+        # Explicit-yield reward shaping (keyed on the COMMANDED yield, not speed):
+        # a strong penalty when yielding while it is SAFE (risk_low), plus a
+        # duration escalation for prolonged yields. Bounded; default-safe values.
+        self.yield_w_bad              = float(_yr.get("w_bad_yield", 0.15))
+        self.yield_streak_grace       = int(_yr.get("yield_streak_grace", 8))
+        self.yield_streak_grow_w      = float(_yr.get("yield_streak_grow_w", 0.01))
+        self._yield_streak            = 0
+
+        # Generic low-progress (stall) penalty — NOT human-gated. Fires whenever it
+        # is safe (no human hazard AND low static proximity) yet the robot makes no
+        # progress at low speed. This is the mid-episode timeout pressure that the
+        # human-gated anti-freeze cannot express (it covers human-free stalls too).
+        _st = dict(self.environment_config.get("stall", {}) or {})
+        self.stall_enabled            = bool(_st.get("enabled", False))
+        self.stall_w                  = float(_st.get("w_penalty", 0.02))
+        self.stall_progress_eps       = float(_st.get("progress_eps", 0.0))
+        self.stall_speed_mps          = float(_st.get("speed_threshold_mps", 0.15))
+        self.stall_static_risk_thr    = float(_st.get("static_risk_thr", 0.2))
 
         # Anti-freeze penalty: discourages SUSTAINED, no-progress, low-speed holds
         # while a human hazard is active (the freeze→timeout failure mode). OPT-IN:
@@ -1984,9 +2019,28 @@ class Environment(
             self._sim_val_pre_motion = self._goal_metrics(
                 self.loc_est_x, self.loc_est_y, self.loc_est_yaw)
 
-        # 1) 액션 → 로컬 웨이포인트 → Pure Pursuit 제어 명령
-        r, theta, x_wp, y_wp = self._map_action_to_waypoint(action)
-        v, cmd_steering = self._controller_waypoint_to_command(x_wp, y_wp)
+        # 1) 액션 → Pure Pursuit 제어 명령.
+        #    action_dim >= 3 (3D hybrid): action=[r, theta, yield]. 비-yield(MOVE)
+        #    에서는 r>=L_min, speed>=v_move_min 으로 강제되어 물리적으로 정지 불가;
+        #    yield에서만 creep/정지 허용. action_dim == 2 (레거시): 기존 2-call 경로
+        #    그대로 사용 → 2D 계약은 byte-identical 유지.
+        if self.action_dim >= 3:
+            v, cmd_steering, theta, ctl = pure_pursuit.hybrid_action_to_command(
+                action, self.actions_low, self.actions_high,
+                self.vehicle_wheelbase_m, self.vehicle_steering_limit_rad,
+                self.controller_cruise_speed_mps, self.controller_speed_steer_factor,
+                yield_enabled=self.yield_action_enabled,
+                yield_threshold=self.yield_action_threshold,
+                lookahead_min_m=self.controller_lookahead_min_m,
+                v_move_min_mps=self.controller_v_move_min_mps,
+                yield_creep_speed_mps=self.controller_yield_creep_mps,
+            )
+            r = float(ctl["r"])          # MOVE-floored / raw waypoint distance for logging
+            yielding = bool(ctl["yielding"])
+        else:
+            r, theta, x_wp, y_wp = self._map_action_to_waypoint(action)
+            v, cmd_steering = self._controller_waypoint_to_command(x_wp, y_wp)
+            yielding = False
 
         # 2) Twist publish:
         #   linear.x  = speed from Pure Pursuit [m/s]
@@ -2128,10 +2182,22 @@ class Environment(
             antifreeze_min_streak=self.antifreeze_min_streak,
             antifreeze_w=self.antifreeze_w,
             freeze_streak_in=self._freeze_streak,
+            # 3D-action explicit yield + generic stall shaping.
+            yield_action=yielding,
+            yield_w_bad=self.yield_w_bad,
+            yield_streak_in=self._yield_streak,
+            yield_streak_grace=self.yield_streak_grace,
+            yield_streak_grow_w=self.yield_streak_grow_w,
+            stall_enabled=self.stall_enabled,
+            stall_w=self.stall_w,
+            stall_progress_eps=self.stall_progress_eps,
+            stall_speed_mps=self.stall_speed_mps,
+            stall_static_risk_thr=self.stall_static_risk_thr,
             return_terms=True,
         )
-        # Carry the anti-freeze streak into the next step (reset per episode).
+        # Carry the anti-freeze / yield streaks into the next step (reset per episode).
         self._freeze_streak = int(reward_terms.get("freeze_streak", 0))
+        self._yield_streak  = int(reward_terms.get("yield_streak", 0))
         self._prev_waypoint_theta = theta
     
         # 9) 다음 스텝 대비 기록
@@ -2259,6 +2325,7 @@ class Environment(
         self._prev_w           = 0.0
         self._prev_waypoint_theta = 0.0
         self._freeze_streak    = 0
+        self._yield_streak     = 0
         self._reset_robot_path()
         prev_scan_updates = self.scan_update_count
         prev_role_updates = dict(self._odom_role_count)
