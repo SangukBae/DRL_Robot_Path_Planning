@@ -204,6 +204,27 @@ def compute_reward(
     antifreeze_min_streak=12,       # consecutive freeze steps before penalty starts
     antifreeze_w=0.02,              # per-step penalty once the streak is exceeded
     freeze_streak_in=0,             # consecutive freeze steps BEFORE this step (caller-owned)
+
+    # ---- Explicit 3D-action yield shaping (opt-in; default OFF → unchanged) ----
+    # Keyed on the COMMANDED yield (action[2]), not on inferred speed. Penalises
+    # yielding while it is SAFE (risk_low) and escalates with yield duration. No
+    # positive "valid yield" bonus — a legitimate (risk_active) yield is handled
+    # ONLY by the step-penalty relief above, so stopping is never itself rewarded.
+    yield_action=False,             # did the policy command yield this step
+    yield_w_bad=0.0,                # penalty for yielding while SAFE (risk_low)
+    yield_streak_in=0,              # consecutive commanded-yield steps BEFORE this (caller-owned)
+    yield_streak_grace=8,           # yields shorter than this are not escalated
+    yield_streak_grow_w=0.0,        # per-step growth once the grace streak is exceeded
+
+    # ---- Generic low-progress (stall) penalty (opt-in; NOT human-gated) --------
+    # Fires when it is SAFE (no human hazard AND low static proximity) yet the
+    # robot makes no progress at low speed. Covers human-free stalls that the
+    # human-gated anti-freeze above cannot. Bounded, small, constant per step.
+    stall_enabled=False,
+    stall_w=0.02,                   # per-step penalty while safely stalled
+    stall_progress_eps=0.0,         # "no progress" = progress <= this
+    stall_speed_mps=0.15,           # "low speed" = |speed| below this [m/s]
+    stall_static_risk_thr=0.2,      # "low static risk" = rect_proximity below this
     return_terms=False,
 ):
     terms = {
@@ -229,6 +250,11 @@ def compute_reward(
         # Anti-freeze (0 unless antifreeze_enabled and a sustained freeze fires).
         "freeze_pen": 0.0,
         "freeze_streak": 0.0,
+        # Explicit 3D-action yield shaping (0 unless yield_action fires).
+        "bad_yield_pen": 0.0,
+        "yield_streak": 0.0,
+        # Generic low-progress stall penalty (0 unless stall_enabled + safe stall).
+        "stall_pen": 0.0,
         "terminal": 0.0,
     }
     # 터미널
@@ -373,9 +399,41 @@ def compute_reward(
     terms["freeze_pen"] = float(freeze_pen)
     terms["freeze_streak"] = float(freeze_streak)
 
+    # 5d) Explicit 3D-action yield shaping (keyed on COMMANDED yield, not speed).
+    # "risk_low" = no human hazard active AND low static proximity, so it does not
+    # depend on humans being present. A yield here is INAPPROPRIATE (safe to move)
+    # → penalise; a yield while risk_active is left to the step-relief above (no
+    # extra bonus). Prolonged yields escalate once past the grace streak.
+    static_risk = float(rect_proximity) if rect_proximity is not None else 0.0
+    risk_low = (not risk_active) and (static_risk < stall_static_risk_thr)
+    bad_yield_pen = 0.0
+    yield_streak = 0
+    if yield_action:
+        yield_streak = int(yield_streak_in) + 1
+        if risk_active:
+            # Legitimate yield: only a duration cost once it drags on.
+            if yield_streak > yield_streak_grace:
+                bad_yield_pen += yield_streak_grow_w * (yield_streak - yield_streak_grace)
+        else:
+            # Yielding while safe → strong penalty + duration growth.
+            bad_yield_pen += yield_w_bad + yield_streak_grow_w * yield_streak
+    terms["bad_yield_pen"] = float(bad_yield_pen)
+    terms["yield_streak"] = float(yield_streak)
+
+    # 5e) Generic low-progress (stall) penalty — NOT human-gated. Safe + no
+    # progress + low speed → a small constant time cost. This is the mid-episode
+    # anti-freeze pressure for the whole state space (incl. human-free stages),
+    # complementing the terminal timeout penalty rather than replacing it.
+    stall_pen = 0.0
+    if (stall_enabled and risk_low
+            and progress <= stall_progress_eps
+            and speed_abs < stall_speed_mps):
+        stall_pen = stall_w
+    terms["stall_pen"] = float(stall_pen)
+
     # 6) 시간 페널티 및 합산
     reward = (progress + heading + yield_bonus
               - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen - idle_pen
-              - freeze_pen)
+              - freeze_pen - bad_yield_pen - stall_pen)
 
     return (float(reward), terms) if return_terms else float(reward)
