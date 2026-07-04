@@ -149,12 +149,9 @@ class EnvInterface(Node):
     def step(self, action):
         """Takes a step in the environment with the given action and the observed state"""
         request = Step.Request()
-        # Pass actions directly in [-1, 1] normalized space.
-        # environment.py._map_action_to_twist() maps [-1,1] → [actions_low, actions_high].
-        # Hunter SE supports bidirectional motion (actions_low[0] = -1.333).
-        request.action = np.array(
-            [action[0], action[1]], dtype=np.float32
-        ).tolist()
+        # Pass the FULL normalized action vector through unchanged. The env owns
+        # the action contract and advertises its current width via get_dimensions().
+        request.action = np.asarray(action, dtype=np.float32).reshape(-1).tolist()
         response = self._call_service(self.step_client, request, "step")
         # AUX_PRED: strip the appended label (no-op when aux disabled).
         state = self._strip_aux_label(response.state)
