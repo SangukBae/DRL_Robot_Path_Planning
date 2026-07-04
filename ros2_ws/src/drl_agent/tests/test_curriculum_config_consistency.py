@@ -26,15 +26,15 @@ def _stages():
     return _load("environment_curriculum.yaml")["curriculum"]["stages"]
 
 
-def test_curriculum_has_nine_uniquely_named_stages():
+def test_curriculum_has_ten_uniquely_named_stages():
     stages = _stages()
-    assert len(stages) == 9
+    assert len(stages) == 10
     names = [s["name"] for s in stages]
     assert names == [
         "empty", "corridor_static", "add_intersection",
         "first_human_clean", "first_human_noisy",
         "add_clutter_clean", "add_clutter_noisy",
-        "generalize", "full_complexity",
+        "add_lobby", "scale_crowd", "full_complexity",
     ]
     assert len(set(names)) == len(names)   # no duplicates
 
