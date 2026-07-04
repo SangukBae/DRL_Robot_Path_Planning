@@ -49,6 +49,7 @@ from curriculum_aux_eval import CurriculumAuxEvalMixin
 from file_manager import load_yaml
 import seed_utils
 from episode_metrics import EpisodeMetrics, PaperMetricsCSV
+import pure_pursuit
 # AUX_PRED: expected wire-format version for the env<->agent label contract.
 from aux_prediction_labels import AUX_WIRE_VERSION
 # AUX_ABLATION: run-identity / ablation logging helpers.
@@ -103,6 +104,10 @@ class TrainTQCCurriculum(
             "initial_goal_dist_m", "final_goal_dist_m", "goal_dist_reduction_m",
             "min_lidar_m", "mean_min_lidar_m", "goal_reached", "eval_cut",
             "mean_gazebo_rtf",
+            "mean_cmd_v_mps", "mean_cmd_steering_rad",
+            "mean_obs_speed_mps", "mean_abs_obs_yaw_rate_rads",
+            "mean_obs_steering_rad", "mean_abs_cmd_obs_speed_err_mps",
+            "low_obs_speed_frac",
         ] + _meta
         for path, header in [
             (self._reward_csv,  reward_header),
@@ -114,6 +119,123 @@ class TrainTQCCurriculum(
         self.get_logger().info(f"Episode rewards CSV: {self._reward_csv}")
         self.get_logger().info(f"Episode driving CSV: {self._driving_csv}")
         self.get_logger().info("Policy step CSV: disabled")
+
+    def _init_motion_logging_contract(self):
+        """Load the environment action/control contract for episode telemetry."""
+        self._motion_log_enabled = False
+        self._motion_low_speed_threshold_mps = 0.12
+        env_cfg_path = self._find_config_file("environment_curriculum.yaml")
+        if not env_cfg_path:
+            self.get_logger().warn(
+                "[Curriculum] environment_curriculum.yaml not found; "
+                "episode cmd/speed telemetry disabled."
+            )
+            return
+
+        _full_cfg = load_yaml(env_cfg_path)
+        env_cfg = _full_cfg.get("environment", {})
+        # Curriculum stages live at TOP LEVEL (curriculum.stages), sibling to
+        # `environment` — mirror environment_curriculum._load_curriculum_config.
+        cur_cfg = _full_cfg.get("curriculum", {}) or {}
+        try:
+            self._motion_actions_low = np.asarray(env_cfg["actions_low"], dtype=np.float32)
+            self._motion_actions_high = np.asarray(env_cfg["actions_high"], dtype=np.float32)
+            self._motion_wheelbase_m = float(env_cfg["vehicle_wheelbase_m"])
+            self._motion_steer_limit_rad = math.radians(
+                float(env_cfg["vehicle_steering_limit_deg"])
+            )
+            self._motion_cruise_speed_mps = float(env_cfg["controller_cruise_speed_mps"])
+            self._motion_min_speed_mps = float(env_cfg["controller_min_speed_mps"])
+            self._motion_speed_steer_factor = float(env_cfg["controller_speed_steer_factor"])
+            self._motion_low_speed_distance_m = float(
+                env_cfg.get("controller_low_speed_distance_m", 0.0)
+            )
+            # 3D hybrid-action contract (for telemetry consistency with the env).
+            self._motion_action_dim = int(env_cfg.get("action_dim", 2))
+            self._motion_lookahead_min_m = float(
+                env_cfg.get("controller_lookahead_min_m", 0.8)
+            )
+            self._motion_v_move_min_mps = float(
+                env_cfg.get("controller_v_move_min_mps", 0.35)
+            )
+            self._motion_yield_creep_mps = float(
+                env_cfg.get("controller_yield_creep_mps", 0.0)
+            )
+            _yr = dict(env_cfg.get("yield_reward", {}) or {})
+            self._motion_yield_action_enabled = bool(_yr.get("action_enabled", True))
+            self._motion_yield_action_threshold = float(_yr.get("action_threshold", 0.3))
+            # Per-stage effective yield gate: mirror the env's stage override
+            # (environment_curriculum._apply_curriculum_stage) so telemetry reflects
+            # the ACTUAL contract per stage (early stages seal yield). Index i = the
+            # effective action_enabled for stage i; a stage that omits the key
+            # inherits the base default.
+            self._motion_yield_action_enabled_by_stage = [
+                bool(dict(s.get("yield_reward", {}) or {}).get(
+                    "action_enabled", self._motion_yield_action_enabled))
+                for s in (cur_cfg.get("stages", []) or [])
+            ]
+            _af = dict(env_cfg.get("anti_freeze", {}) or {})
+            self._motion_low_speed_threshold_mps = float(
+                _af.get("speed_threshold_mps", self._motion_low_speed_threshold_mps)
+            )
+            self._motion_log_enabled = True
+        except Exception as e:
+            self.get_logger().warn(
+                f"[Curriculum] Failed to load motion-log contract from "
+                f"{env_cfg_path}: {e}"
+            )
+
+    def _motion_telemetry_sample(self, state, action):
+        """Return per-step command + observed-motion telemetry for episode CSVs."""
+        cmd_v = float("nan")
+        cmd_steer = float("nan")
+        if self._motion_log_enabled:
+            if getattr(self, "_motion_action_dim", 2) >= 3:
+                # 3D hybrid: mirror the env's command exactly (incl. yield floors).
+                # Use the CURRENT stage's effective yield gate so telemetry matches
+                # the env's per-stage seal (early stages have yield disabled).
+                _by_stage = getattr(self, "_motion_yield_action_enabled_by_stage", []) or []
+                _stage = int(getattr(self, "_curriculum_stage", 0))
+                _yield_enabled = (
+                    _by_stage[_stage] if 0 <= _stage < len(_by_stage)
+                    else self._motion_yield_action_enabled
+                )
+                cmd_v, cmd_steer, _theta, _ctl = pure_pursuit.hybrid_action_to_command(
+                    action, self._motion_actions_low, self._motion_actions_high,
+                    self._motion_wheelbase_m, self._motion_steer_limit_rad,
+                    self._motion_cruise_speed_mps, self._motion_speed_steer_factor,
+                    yield_enabled=_yield_enabled,
+                    yield_threshold=self._motion_yield_action_threshold,
+                    lookahead_min_m=self._motion_lookahead_min_m,
+                    v_move_min_mps=self._motion_v_move_min_mps,
+                    yield_creep_speed_mps=self._motion_yield_creep_mps,
+                )
+            else:
+                _, _, x_wp, y_wp = pure_pursuit.action_to_waypoint(
+                    action, self._motion_actions_low, self._motion_actions_high
+                )
+                cmd_v, cmd_steer = pure_pursuit.waypoint_to_command(
+                    x_wp,
+                    y_wp,
+                    self._motion_wheelbase_m,
+                    self._motion_steer_limit_rad,
+                    self._motion_cruise_speed_mps,
+                    self._motion_min_speed_mps,
+                    self._motion_speed_steer_factor,
+                    low_speed_distance_m=self._motion_low_speed_distance_m,
+                )
+
+        arr = np.asarray(state, dtype=np.float32).ravel()
+        obs_speed = float("nan")
+        obs_yaw_rate = float("nan")
+        obs_steer = float("nan")
+        if arr.size >= self.environment_dim + 7:
+            base = int(self.environment_dim)
+            obs_speed = float(arr[base + 4])
+            obs_yaw_rate = float(arr[base + 5])
+            obs_steer = float(arr[base + 6])
+
+        return cmd_v, cmd_steer, obs_speed, obs_yaw_rate, obs_steer
 
     def __init__(self):
         super().__init__()   # loads train_tqc_config.yaml, builds agent, etc.
@@ -196,6 +318,7 @@ class TrainTQCCurriculum(
         self._stage_restart_from_weights = False
         self._stage_restart_source_prefix = ""
         self._stage_restart_weights_dir = ""
+        self._init_motion_logging_contract()
 
         # ROS2 parameter interaction with the gym_node (EnvironmentCurriculum) is
         # encapsulated in GymParameterClient. Node is named "gym_node" — matches
@@ -710,6 +833,11 @@ class TrainTQCCurriculum(
         _ep_w_buf:          list = []
         _ep_min_lidar_buf:  list = []
         _ep_gazebo_rtf_buf: list = []
+        _ep_cmd_v_buf:      list = []
+        _ep_cmd_steer_buf:  list = []
+        _ep_obs_speed_buf:  list = []
+        _ep_obs_yaw_buf:    list = []
+        _ep_obs_steer_buf:  list = []
         _state0 = np.asarray(state, dtype=np.float32).ravel()
         _ep_initial_goal_dist = float(_state0[ENV_DIM])
         if next_eval_t is not None and self._resume_global_t > 0:
@@ -782,6 +910,14 @@ class TrainTQCCurriculum(
             _ep_v_buf.append(float(action[0]))
             _ep_w_buf.append(float(action[1]))
             _ep_min_lidar_buf.append(float(np.min(_s_after[:ENV_DIM])))
+            _cmd_v, _cmd_steer, _obs_speed, _obs_yaw, _obs_steer = (
+                self._motion_telemetry_sample(state, action)
+            )
+            _ep_cmd_v_buf.append(float(_cmd_v))
+            _ep_cmd_steer_buf.append(float(_cmd_steer))
+            _ep_obs_speed_buf.append(float(_obs_speed))
+            _ep_obs_yaw_buf.append(float(_obs_yaw))
+            _ep_obs_steer_buf.append(float(_obs_steer))
             if np.isfinite(self._latest_gazebo_rtf):
                 _ep_gazebo_rtf_buf.append(float(self._latest_gazebo_rtf))
 
@@ -810,6 +946,12 @@ class TrainTQCCurriculum(
                     ep_gazebo_rtf_buf=_ep_gazebo_rtf_buf,
                     ep_initial_goal_dist=_ep_initial_goal_dist,
                     eval_cut=force_eval_cut,
+                    ep_cmd_v_buf=_ep_cmd_v_buf,
+                    ep_cmd_steer_buf=_ep_cmd_steer_buf,
+                    ep_obs_speed_buf=_ep_obs_speed_buf,
+                    ep_obs_yaw_rate_buf=_ep_obs_yaw_buf,
+                    ep_obs_steer_buf=_ep_obs_steer_buf,
+                    low_obs_speed_threshold_mps=self._motion_low_speed_threshold_mps,
                 )
 
                 # Curriculum episode log (adds stage column)
@@ -824,6 +966,10 @@ class TrainTQCCurriculum(
                 # then the console shows n/a, never a misleading 0).
                 ep_h_coll = self._ep_prox.h_coll(collision)
                 ep_psc    = self._ep_prox.psc()
+                _mean_cmd_v = (float(np.mean(_ep_cmd_v_buf))
+                               if _ep_cmd_v_buf else float("nan"))
+                _mean_obs_v = (float(np.mean(_ep_obs_speed_buf))
+                               if _ep_obs_speed_buf else float("nan"))
                 if not force_eval_cut:   # skip partial (eval-interrupted) episodes
                     self._paper.write_episode(
                         episode=ep_num, global_t=t, stage=self._curriculum_stage,
@@ -859,6 +1005,7 @@ class TrainTQCCurriculum(
                     f"T:{t} | Ep:{ep_num} | Steps:{ep_timesteps} | "
                     f"Reward:{ep_total_reward:.3f} | {result} | "
                     f"Stage:{self._curriculum_stage} | "
+                    f"CmdV:{_mean_cmd_v:.2f} | ObsV:{_mean_obs_v:.2f} | "
                     f"SPL:{ep_metrics['spl']:.2f} | STL:{ep_metrics['stl']:.2f} | "
                     f"PSC:{_psc_s} | H-Coll:{_hcoll_s}"
                 )
@@ -956,6 +1103,11 @@ class TrainTQCCurriculum(
                 _ep_w_buf.clear()
                 _ep_min_lidar_buf.clear()
                 _ep_gazebo_rtf_buf.clear()
+                _ep_cmd_v_buf.clear()
+                _ep_cmd_steer_buf.clear()
+                _ep_obs_speed_buf.clear()
+                _ep_obs_yaw_buf.clear()
+                _ep_obs_steer_buf.clear()
                 _ep_initial_goal_dist = float(
                     np.asarray(state, dtype=np.float32).ravel()[ENV_DIM]
                 )

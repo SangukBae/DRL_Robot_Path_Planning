@@ -491,6 +491,12 @@ class TrainTQCBase(EnvInterface):
         ep_gazebo_rtf_buf: list,
         ep_initial_goal_dist: float,
         eval_cut: bool = False,
+        ep_cmd_v_buf: list | None = None,
+        ep_cmd_steer_buf: list | None = None,
+        ep_obs_speed_buf: list | None = None,
+        ep_obs_yaw_rate_buf: list | None = None,
+        ep_obs_steer_buf: list | None = None,
+        low_obs_speed_threshold_mps: float | None = None,
     ):
         """Write episode summary logs and return the textual result label."""
         final_goal_dist = float(np.asarray(state, dtype=np.float32).ravel()[self.environment_dim])
@@ -520,20 +526,38 @@ class TrainTQCBase(EnvInterface):
             ] + _meta)
 
         if ep_v_buf:
+            driving_row = [
+                ep_num, global_t, ep_timesteps,
+                round(float(np.mean(ep_v_buf)), 4),
+                round(float(np.mean(np.abs(ep_w_buf))), 4),
+                round(ep_initial_goal_dist, 4),
+                round(final_goal_dist, 4),
+                round(ep_initial_goal_dist - final_goal_dist, 4),
+                round(float(np.min(ep_min_lidar_buf)), 4),
+                round(float(np.mean(ep_min_lidar_buf)), 4),
+                int(goal_reached), int(eval_cut),
+                round(float(np.mean(ep_gazebo_rtf_buf)), 4)
+                if ep_gazebo_rtf_buf else float("nan"),
+            ]
+            if ep_cmd_v_buf is not None:
+                driving_row.extend([
+                    round(float(np.mean(ep_cmd_v_buf)), 4) if ep_cmd_v_buf else float("nan"),
+                    round(float(np.mean(ep_cmd_steer_buf)), 4) if ep_cmd_steer_buf else float("nan"),
+                    round(float(np.mean(ep_obs_speed_buf)), 4) if ep_obs_speed_buf else float("nan"),
+                    round(float(np.mean(np.abs(ep_obs_yaw_rate_buf))), 4)
+                    if ep_obs_yaw_rate_buf else float("nan"),
+                    round(float(np.mean(ep_obs_steer_buf)), 4) if ep_obs_steer_buf else float("nan"),
+                    round(float(np.mean([
+                        abs(float(cv) - float(sv))
+                        for cv, sv in zip(ep_cmd_v_buf, ep_obs_speed_buf)
+                    ])), 4) if ep_cmd_v_buf and ep_obs_speed_buf else float("nan"),
+                    round(float(np.mean([
+                        1.0 if abs(float(sv)) < max(float(low_obs_speed_threshold_mps or 0.0), 1e-9) else 0.0
+                        for sv in ep_obs_speed_buf
+                    ])), 4) if ep_obs_speed_buf and low_obs_speed_threshold_mps is not None else float("nan"),
+                ])
             with open(self._driving_csv, "a", newline="") as _f:
-                csv.writer(_f).writerow([
-                    ep_num, global_t, ep_timesteps,
-                    round(float(np.mean(ep_v_buf)), 4),
-                    round(float(np.mean(np.abs(ep_w_buf))), 4),
-                    round(ep_initial_goal_dist, 4),
-                    round(final_goal_dist, 4),
-                    round(ep_initial_goal_dist - final_goal_dist, 4),
-                    round(float(np.min(ep_min_lidar_buf)), 4),
-                    round(float(np.mean(ep_min_lidar_buf)), 4),
-                    int(goal_reached), int(eval_cut),
-                    round(float(np.mean(ep_gazebo_rtf_buf)), 4)
-                    if ep_gazebo_rtf_buf else float("nan"),
-                ] + _meta)
+                csv.writer(_f).writerow(driving_row + _meta)
 
         return result
 
