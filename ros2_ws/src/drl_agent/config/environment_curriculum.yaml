@@ -72,7 +72,7 @@ environment:
     enabled: true
     obs_frame_stack: 4              # current + 3 history frames (80*4 + 7 = 327-D)
     stack_agent_state: false        # obs-only history; current agent_state kept once
-  action_dim: 2                    # 정책 action 차원 [waypoint distance, waypoint angle]
+  action_dim: 3                    # [waypoint distance r, waypoint angle theta, yield scalar]
   agent_name: "hunter_se"
   max_action: 1.0
   # STOP-CAPABLE ACTION/CONTROL CONTRACT — used from Stage 0 through the final
@@ -95,20 +95,31 @@ environment:
   # controller_min_speed_mps=0.3, controller_low_speed_distance_m=0.0,
   # yield_reward.enabled=false (byte-identical to the pre-stop contract) and
   # compare it head-to-head against this stop-capable run.
-  actions_low:  [0.0, -0.524]    # stop-capable floor (brake-less ablation: [0.8, -0.524])
-  actions_high: [2.0,  0.524]
+  # 3D HYBRID ACTION/CONTROL CONTRACT. Stop/yield is now a DEDICATED axis
+  # (action[2]) instead of the old "short waypoint = implicit stop" ramp:
+  #   action[0] = waypoint distance r   ∈ [actions_low[0], actions_high[0]] m
+  #   action[1] = waypoint angle theta  ∈ [actions_low[1], actions_high[1]] rad
+  #   action[2] = yield scalar          (>= yield_reward.action_threshold → yield)
+  # In MOVE mode the controller floors r to controller_lookahead_min_m AND speed
+  # to controller_v_move_min_mps, so the policy CANNOT stop unless it yields. In
+  # YIELD mode speed is capped at controller_yield_creep_mps (0 → full stop).
+  # action_dim went 2→3: checkpoints / replay buffers from a 2D run are NOT
+  # compatible (actor/critic/buffer shapes differ) — train from scratch.
+  actions_low:  [0.0, -0.524, -1.0]   # [r_floor, theta_min, yield_min]
+  actions_high: [2.0,  0.524,  1.0]   # [r_max,   theta_max, yield_max]
   vehicle_wheelbase_m: 0.547696
   vehicle_steering_limit_deg: 21.58
   vehicle_min_speed_for_steering_mps: 0.15
   controller_cruise_speed_mps: 2.0
-  # Floor dropped to 0 so the low-speed ramp below can pull speed to a true 0 m/s
-  # stop (the ramp is applied AFTER this floor).
-  controller_min_speed_mps: 0.0   # stop-capable (brake-less ablation: 0.3)
+  controller_min_speed_mps: 0.0
   controller_speed_steer_factor: 0.6
-  # >0 ramps Pure-Pursuit speed linearly to 0 as the commanded waypoint distance
-  # L drops below this (speed *= L/this), giving the policy genuine creep/stop
-  # authority through action[0]. 0.0 (or omit) → disabled (no stop capability).
-  controller_low_speed_distance_m: 0.8  # stop-capable (brake-less ablation: 0.0)
+  # Legacy implicit-stop ramp — unused on the 3D hybrid path (kept at 0.0).
+  controller_low_speed_distance_m: 0.0
+  # MOVE-mode floors (non-yield): the policy physically cannot stop here.
+  controller_lookahead_min_m: 0.8      # r floored to this in MOVE mode [m]
+  controller_v_move_min_mps: 0.35      # forward speed floored to this in MOVE mode [m/s]
+  # YIELD-mode speed cap (0.0 → full stop allowed; raise for creep-only yields).
+  controller_yield_creep_mps: 0.0
   spawn_z: 0.02                    # 로봇/오브젝트 초기 spawn z 오프셋
   obs_z_min_sensor_m: -0.455       # RL scan에 포함할 sensor-frame 최소 z
   obs_z_max_sensor_m:  0.250       # RL scan에 포함할 sensor-frame 최대 z
@@ -224,17 +235,35 @@ environment:
   # OPT-IN: absent block / enabled:false → reward byte-identical (ablation).
   yield_reward:
     enabled: true                  # stop-capable (brake-less ablation: false)
+    # 3D-action yield channel (controller): honour action[2] and the threshold at
+    # which it flips to yield. Stages seal it (action_enabled:false) early on.
+    action_enabled: true           # global default; early stages override to false
+    action_threshold: 0.3          # action[2] (raw [-1,1]) >= this → yield (deadzone)
     risk_gate_ttc_s: 2.0            # risk-active when min time-to-contact < this
     risk_gate_approach: 0.15        # OR when normalised closing rate > this
-    # Weakened to keep "stop is allowed" but reduce "stop is preferred": the
-    # slow-down bonus is much smaller/capped and the step-penalty relief is
-    # halved, while the idle penalty (paid when a present human is NOT a hazard)
-    # is raised. Net: brief yields stay cheap, long holds get less attractive.
-    w_yield_bonus: 0.01             # gain on the slow-down bonus (was 0.05)
-    max_yield_bonus: 0.02           # hard cap on the slow-down bonus (was 0.1)
-    w_idle_penalty: 0.07            # gain on the idle (loitering) penalty (was 0.03)
+    # No positive "valid yield" bonus: yielding is never itself rewarded — a
+    # legitimate (risk_active) yield only gets the step-penalty relief. Yielding
+    # while SAFE (risk_low) is penalised (w_bad_yield); long yields escalate.
+    w_yield_bonus: 0.0              # slow-down bonus OFF (was 0.01)
+    max_yield_bonus: 0.0
+    w_idle_penalty: 0.07            # gain on the idle (loitering) penalty
     idle_speed_threshold_mps: 0.1   # "idle" = |speed| below this [m/s]
-    step_penalty_relief_scale: 0.6  # multiply step_pen while risk-active (0.6 = 40% relief; was 0.2)
+    step_penalty_relief_scale: 0.6  # multiply step_pen while risk-active (0.6 = 40% relief)
+    w_bad_yield: 0.15               # penalty for yielding while it is SAFE (risk_low)
+    yield_streak_grace: 8           # yields shorter than this (steps) are not escalated
+    yield_streak_grow_w: 0.01       # per-step escalation once the grace streak is passed
+
+  # ── Generic low-progress (stall) penalty — NOT human-gated ──────────────────
+  # The human-gated yield/anti-freeze above cannot see human-free stalls. This
+  # fires whenever it is SAFE (no human hazard AND rect_proximity < static_risk_thr)
+  # yet the robot makes no progress at low speed — a small, constant mid-episode
+  # time cost that complements the terminal timeout penalty. OPT-IN.
+  stall:
+    enabled: true
+    w_penalty: 0.02             # per-step penalty while safely stalled
+    progress_eps: 0.0           # "no progress" = clipped progress <= this
+    speed_threshold_mps: 0.15   # "low speed" = |speed| below this [m/s]
+    static_risk_thr: 0.2        # "low static risk" = rect_proximity below this
 
   # ── Anti-freeze penalty (reward_calculator) ────────────────────────────────
   # Targets the freeze→timeout failure mode WITHOUT punishing a legitimate brief
@@ -597,6 +626,7 @@ curriculum:
     # is a SIZE filter (small/medium/large). human_placement_mode is derived from
     # the map structure automatically (lobby->lobby_crossings, etc.).
     - name: empty
+      yield_reward: {action_enabled: false}   # yield 봉인 (정지 불가, 순수 주행)
       active_static: 0            # 이번 stage의 기본 static obstacle 수
       active_humans: 0            # 이번 stage의 기본 human 수
       human_scan_noise_std: 0.0   # human LiDAR return gaussian noise std
@@ -612,6 +642,7 @@ curriculum:
 
     # ── Stage 1: corridor only, static — wall/lane driving (no humans/noise) ──
     - name: corridor_static
+      yield_reward: {action_enabled: false}   # yield 봉인
       active_static: 3
       active_humans: 0
       human_scan_noise_std: 0.0
@@ -626,6 +657,7 @@ curriculum:
     # corridor kept lighter than intersection via active_static_by_map; the single
     # active_static is the fallback for any map a by-map dict omits.
     - name: add_intersection
+      yield_reward: {action_enabled: false}   # yield 봉인
       active_static: 6
       active_humans: 0
       active_static_by_map: {corridor: 3, intersection: 6} # map_type별 static 수 override
@@ -651,6 +683,7 @@ curriculum:
     # simply because humans are present (base yield_reward.enabled=true), with no
     # per-stage override.
     - name: first_human_clean
+      yield_reward: {action_enabled: false}   # 첫 사람 stage도 "빠른 회피"부터 (yield 봉인)
       active_static: 6
       active_humans: 1
       active_static_by_map: {corridor: 4, intersection: 6} # corridor/intersection별 static 수
@@ -672,6 +705,7 @@ curriculum:
     # weak correlated goal-observation noise. Proprio + human-scan perception stay
     # clean — those arrive together in Stage 6.
     - name: first_human_noisy
+      yield_reward: {action_enabled: false}   # yield 봉인 (마지막 봉인 stage)
       active_static: 6
       active_humans: 1
       active_static_by_map: {corridor: 4, intersection: 6} # map_type별 static 수
@@ -695,6 +729,7 @@ curriculum:
     # the integration stage (7) — NOT here — so terrain stays the only change.
     # corridor stays the lightest map.
     - name: add_clutter_clean
+      yield_reward: {action_enabled: true}    # ← YIELD 해제 (여기부터 stop/creep 허용)
       active_static: 8
       active_humans: 1
       active_static_by_map: {corridor: 4, intersection: 6, clutter: 8} # map_type별 static 수

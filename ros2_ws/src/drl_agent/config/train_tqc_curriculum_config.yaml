@@ -61,8 +61,10 @@ curriculum_settings:
   # first-human stage, not a contract boundary.
   # Empty list → never reset (the current, correct behaviour). Keep the mechanism
   # available in case a future curriculum reintroduces a contract-changing stage.
-  reset_buffer_on_promote_to: []  # 액션 계약이 전 stage 동일 → buffer reset 불필요 (빈 리스트 = reset 없음)
-  # Random-action re-warmup steps AFTER a buffer reset (no gradient updates).
-  # Dead while reset_buffer_on_promote_to is empty; only used if a reset stage is
-  # re-added. 0 → reset only, training resumes immediately.
-  rewarmup_steps: 0               # reset 없음 → 재warmup도 없음 (reset 재도입 시에만 의미)
+  # Stage 5 (add_clutter_clean) UNSEALS the yield channel (action[2] goes from
+  # no-op to honoured), so the control contract changes there — reset the buffer
+  # so off-contract (yield-inactive) transitions don't poison the critic.
+  reset_buffer_on_promote_to: [5]  # yield 해제 stage에서 buffer reset
+  # Random-action re-warmup steps AFTER a buffer reset (no gradient updates), so
+  # the buffer refills with on-contract (yield-capable) data before training.
+  rewarmup_steps: 5000            # reset 후 on-contract 재warmup
