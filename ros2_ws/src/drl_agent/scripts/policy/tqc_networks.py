@@ -109,28 +109,78 @@ class Actor(nn.Module):
         return action, log_prob
 
 
+class _ResidualCriticBody(nn.Module):
+    """A3: residual MLP body for ONE TQC critic head.
+
+    ``in_proj -> [residual block] x n_blocks -> out(n_quantiles)``, each block
+    ``(LayerNorm?) -> Linear -> activ -> Linear`` with a plain additive skip
+    (hidden width fixed at ``hdim`` so the residual add needs no projection).
+
+    Used ONLY when ``critic_residual=true``; the default ``Critic`` keeps the
+    original plain ``nn.Sequential`` so baseline state_dicts and numerics are
+    byte-for-byte unchanged. A residual critic changes the critic state_dict, so
+    it is a FRESH-RUN architecture (an old plain-critic checkpoint will not load
+    strictly) — see docs/experiments/tqc_scaling_improvement_plan.md.
+    """
+
+    def __init__(self, in_dim, hdim, n_quantiles, ActivMod,
+                 n_blocks=2, layernorm=False):
+        super().__init__()
+        self.in_proj = nn.Linear(in_dim, hdim)
+        self.in_act = ActivMod()
+        self.blocks = nn.ModuleList()
+        for _ in range(max(1, int(n_blocks))):
+            layers = []
+            if layernorm:
+                layers.append(nn.LayerNorm(hdim))
+            layers.append(nn.Linear(hdim, hdim))
+            layers.append(ActivMod())
+            layers.append(nn.Linear(hdim, hdim))
+            self.blocks.append(nn.Sequential(*layers))
+        self.out = nn.Linear(hdim, n_quantiles)
+
+    def forward(self, x):
+        h = self.in_act(self.in_proj(x))
+        for blk in self.blocks:
+            h = h + blk(h)
+        return self.out(h)
+
+
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hdim=256,
-                 activ=F.elu, n_quantiles=25, n_critics=2):
+                 activ=F.elu, n_quantiles=25, n_critics=2,
+                 residual=False, layernorm=False, residual_blocks=2):
         super().__init__()
         self.activ = activ
         self.n_quantiles = n_quantiles
         self.n_critics = n_critics
+        # A3 (critic scaling): opt-in residual body + optional LayerNorm. Both
+        # default OFF so the module is IDENTICAL to the original plain MLP
+        # (same submodules, same param names, same numerics) — baseline runs and
+        # existing checkpoints are unaffected.
+        self.residual = bool(residual)
+        self.layernorm = bool(layernorm)
 
         # activ 모듈 선택
         ActivMod = nn.ELU if activ is F.elu else nn.ReLU
 
         self.critics = nn.ModuleList()
         for _ in range(n_critics):
-            self.critics.append(nn.Sequential(
-                nn.Linear(state_dim + action_dim, hdim),
-                ActivMod(),
-                nn.Linear(hdim, hdim),
-                ActivMod(),
-                nn.Linear(hdim, hdim),
-                ActivMod(),
-                nn.Linear(hdim, n_quantiles),
-            ))
+            if self.residual:
+                self.critics.append(_ResidualCriticBody(
+                    state_dim + action_dim, hdim, n_quantiles, ActivMod,
+                    n_blocks=residual_blocks, layernorm=self.layernorm,
+                ))
+            else:
+                self.critics.append(nn.Sequential(
+                    nn.Linear(state_dim + action_dim, hdim),
+                    ActivMod(),
+                    nn.Linear(hdim, hdim),
+                    ActivMod(),
+                    nn.Linear(hdim, hdim),
+                    ActivMod(),
+                    nn.Linear(hdim, n_quantiles),
+                ))
 
     def forward(self, state, action):
         sa = torch.cat([state, action], 1)

@@ -64,6 +64,13 @@ class Agent(object):
         self.critic_hdim = self.hyperparameters.get("critic_hdim", 256)
         self.critic_activ = self.hyperparameters.get("critic_activ", F.elu)
         self.critic_lr = float(self.hyperparameters.get("critic_lr", 3e-4))
+        # A3 (critic scaling): opt-in residual critic body + LayerNorm. Both
+        # default OFF -> Critic is byte-for-byte the original plain MLP, so the
+        # baseline (and any plain-critic checkpoint) is unaffected. Enabling
+        # residual changes the critic state_dict -> FRESH RUN only.
+        self.critic_residual = bool(self.hyperparameters.get("critic_residual", False))
+        self.critic_layernorm = bool(self.hyperparameters.get("critic_layernorm", False))
+        self.critic_residual_blocks = int(self.hyperparameters.get("critic_residual_blocks", 2))
 
         # Checkpointing (trainer 호환)
         self.reset_weight = self.hyperparameters.get("reset_weight", 0.9)
@@ -219,7 +226,9 @@ class Agent(object):
 
         self.critic = Critic(
             latent_dim, action_dim, self.critic_hdim, self.critic_activ,
-            self.n_quantiles, self.n_critics
+            self.n_quantiles, self.n_critics,
+            residual=self.critic_residual, layernorm=self.critic_layernorm,
+            residual_blocks=self.critic_residual_blocks,
         ).to(self.device)
 
         # AUX_PRED: a single optimizer updates critic + encoder + aux head from
@@ -229,7 +238,9 @@ class Agent(object):
 
         self.critic_target = Critic(
             latent_dim, action_dim, self.critic_hdim, self.critic_activ,
-            self.n_quantiles, self.n_critics
+            self.n_quantiles, self.n_critics,
+            residual=self.critic_residual, layernorm=self.critic_layernorm,
+            residual_blocks=self.critic_residual_blocks,
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 

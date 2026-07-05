@@ -26,6 +26,13 @@ hyperparameters:
   critic_hdim: 256                # critic MLP hidden width
   critic_activ: "elu"               # "relu"|"elu"
   critic_lr: 0.0003               # critic/encoder/aux trunk optimizer learning rate
+  # A3 (critic scaling): opt-in residual critic body + LayerNorm. 둘 다 false면
+  # critic 구조/파라미터가 기존 plain MLP와 완전히 동일(baseline 불변). residual을
+  # 켜면 critic state_dict가 바뀌므로 FRESH RUN 전용이며(기존 checkpoint strict load
+  # 불가), 이때 critic_hdim을 384 등으로 올려 value capacity를 키운다.
+  critic_residual: false          # true면 각 critic head를 residual MLP로 구성
+  critic_layernorm: false         # residual block 안에 LayerNorm 삽입 여부
+  critic_residual_blocks: 2       # residual block 개수 (residual=true일 때만 사용)
 
   # 체크포인트(TrainTD7 호환 루틴)
   reset_weight: 0.9               # checkpoint eval 기준 완화 계수(best_min_return decay)
