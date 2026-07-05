@@ -109,6 +109,13 @@ hyperparameters:
     # the episode boundary). Aux branch only.
     action_condition_attention: true # action GRU 출력에 self-attention block 추가 여부
     action_condition_attention_heads: 4 # 위 attention의 head 개수
+    # A4 (aux fusion): action-conditioned head에서 z_t와 action context 융합 방식.
+    #   concat (기본): fused = [z_t, action_ctx] — 기존 동작, byte-identical.
+    #   film         : ctx -> (gamma, beta)로 z_t를 modulation 후 [z_mod, action_ctx].
+    #                  identity 초기화라 학습 시작 시 concat과 동일 출력이며, FiLM
+    #                  generator가 추가되어 aux head state_dict가 바뀌므로 FRESH RUN.
+    fusion_type: "concat"           # concat | film
+
     # --- direct dynamic-avoidance heads (append-only; MUST match env config) ---
     # Small heads on the SAME aux trunk that give the shared encoder a MORE DIRECT
     # closing-risk signal than the risk map. risk_map / min_dist are retained, so

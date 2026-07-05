@@ -116,6 +116,21 @@ class AuxPredConfig:
         self.action_condition_attention = bool(cfg.get("action_condition_attention", False))
         self.action_condition_attention_heads = int(
             cfg.get("action_condition_attention_heads", 4))
+        # A4 (aux fusion): how the action context is fused with the shared latent
+        # z_t in the action-conditioned head.
+        #   "concat" (default): fused = [z_t, action_ctx]  (original behaviour,
+        #                       byte-for-byte unchanged).
+        #   "film":  ctx -> (gamma, beta); z_mod = (1+gamma)*z_t + beta; then
+        #            fused = [z_mod, action_ctx]. Identity-initialised so at start
+        #            z_mod == z_t (output == concat head), learning to use the
+        #            action context gradually. FiLM adds a small generator ->
+        #            FRESH-RUN aux head (state_dict changes). Only affects the
+        #            action-conditioned head; AuxiliaryHead is untouched.
+        self.fusion_type = str(cfg.get("fusion_type", "concat")).lower()
+        if self.fusion_type not in ("concat", "film"):
+            raise ValueError(
+                f"aux_prediction.fusion_type must be 'concat' or 'film' "
+                f"(got {self.fusion_type!r}).")
 
         # Aux-head trunk capacity (shared by AuxiliaryHead + ActionConditionedAuxHead).
         # Defaults reproduce the original single ``Linear -> ELU`` trunk so existing
@@ -376,12 +391,36 @@ class ActionConditionedAuxHead(nn.Module):
                 self.gru_hidden, heads, batch_first=True)
             self.attn_norm = nn.LayerNorm(self.gru_hidden)
 
-        # Fusion = concat(z_t, action_ctx, temporal_ctx). Concatenation is the
-        # deliberate, stable fusion (same as the existing z + action_ctx merge);
-        # the temporal context is just one more block when temporal is enabled.
+        # Fusion = concat(z_t [or FiLM-modulated z_t], action_ctx, temporal_ctx).
+        # Concatenation is the deliberate, stable fusion (same as the existing
+        # z + action_ctx merge); the temporal context is just one more block when
+        # temporal is enabled. A4: fusion_type="film" modulates z_t by the action
+        # context BEFORE the concat, but keeps the direct action_ctx block — so
+        # the trunk input width (combined) is IDENTICAL for concat and film; only
+        # a small FiLM generator is added.
+        self._latent_dim = latent_dim
+        self.fusion_type = str(getattr(cfg, "fusion_type", "concat"))
+
+        # Build the trunk + output heads FIRST so that every shared submodule
+        # (action_embed, gru, attention, trunk, heads) consumes the RNG in the
+        # SAME order for concat and film. With a fixed seed the film head's
+        # trunk/heads then initialise IDENTICALLY to the concat head's — A4 is a
+        # PURE fusion ablation (only the extra film_gen differs), not a run whose
+        # trunk init is perturbed by an earlier film_gen draw.
         combined = latent_dim + self.gru_hidden + self.temporal_dim
         self.trunk, hidden = _build_aux_trunk(combined, cfg)
         _build_output_heads(self, hidden, cfg)
+
+        # A4: FiLM generator built LAST (after all shared modules) and
+        # identity-initialised. action_ctx (gru_hidden) -> (gamma, beta) each of
+        # size latent_dim; zero weight + zero bias => gamma=0, beta=0 at start ->
+        # z_mod = (1+0)*z + 0 = z, so the film head's initial OUTPUT equals the
+        # concat head's too. It LEARNS to deviate. None for the default concat.
+        self.film_gen = None
+        if self.fusion_type == "film":
+            self.film_gen = nn.Linear(self.gru_hidden, 2 * latent_dim)
+            nn.init.zeros_(self.film_gen.weight)
+            nn.init.zeros_(self.film_gen.bias)
 
     def forward(self, z, future_actions, valid_len, temporal_ctx=None):
         """z: (B, latent_dim); future_actions: (B, K, action_dim);
@@ -407,7 +446,14 @@ class ActionConditionedAuxHead(nn.Module):
         idx = (valid_len - 1).clamp(min=0)              # (B,)
         ctx = out_seq[torch.arange(b, device=out_seq.device), idx]  # (B, H_gru)
 
-        fused = _maybe_cat_temporal(torch.cat([z, ctx], dim=-1),
+        # A4: optional FiLM modulation of z_t by the action context (identity at
+        # init). No-op (film_gen is None) for the default concat fusion.
+        z_fused = z
+        if self.film_gen is not None:
+            gamma, beta = self.film_gen(ctx).split(self._latent_dim, dim=-1)
+            z_fused = (1.0 + gamma) * z + beta
+
+        fused = _maybe_cat_temporal(torch.cat([z_fused, ctx], dim=-1),
                                     temporal_ctx, self.temporal_dim)
         feat = self.trunk(fused)
         return _apply_output_heads(self, feat, b)
