@@ -2,7 +2,7 @@
 (environment_curriculum.yaml) and the promotion-gate thresholds
 (train_tqc_curriculum_config.yaml).
 
-After the 7→9 stage split these two files must stay in lockstep: every per-stage
+With the 10-stage curriculum these two files must stay in lockstep: every per-stage
 threshold list that is *configured* (non-empty) must have exactly one entry per
 PROMOTABLE stage (num_stages - 1). curriculum_stage_logic clamps an out-of-range
 index to the last entry, so a mismatch would not crash — it would silently reuse
@@ -55,6 +55,38 @@ def test_threshold_lists_match_promotable_stage_count():
             assert len(lst) == expected, (
                 f"{key} has {len(lst)} entries, expected {expected} "
                 f"(num_stages={num_stages})")
+
+
+# The 6 paper-comparison baselines must share the SAME promotion gates and the
+# SAME contract-change handling. A3C is not part of the comparison set.
+_BASELINE_CONFIGS = [
+    "train_tqc_curriculum_config.yaml",
+    "train_tqc_ieqn_curriculum_config.yaml",
+    "train_sac_curriculum_config.yaml",
+    "train_td7_curriculum_config.yaml",
+    "train_sb3_sac_curriculum_config.yaml",
+    "train_sb3_td3_curriculum_config.yaml",
+]
+
+
+def test_all_baseline_curriculum_configs_share_promotion_contract():
+    """Every comparison baseline must use the same 9-entry success/collision gates
+    and the same Stage-5 buffer reset — otherwise the baselines are not comparable
+    and (per the docs) not a repo-wide protocol. Catches a config drifting back to
+    the old 4-entry gates or dropping the reset."""
+    expected = len(_stages()) - 1   # 9 promotable transitions for the 10 stages
+    ref = _load("train_tqc_curriculum_config.yaml")["curriculum_settings"]
+    for name in _BASELINE_CONFIGS:
+        cur = _load(name)["curriculum_settings"]
+        assert len(cur["pass_eval_success_rate"]) == expected, name
+        assert len(cur["pass_eval_collision_rate"]) == expected, name
+        # Same gate VALUES as TQC → genuinely uniform promotion.
+        assert cur["pass_eval_success_rate"] == ref["pass_eval_success_rate"], name
+        assert cur["pass_eval_collision_rate"] == ref["pass_eval_collision_rate"], name
+        # Stage 5 unseals the yield action for ALL algorithms → all must reset the
+        # replay buffer + re-warmup so off-contract transitions don't poison training.
+        assert [int(s) for s in cur.get("reset_buffer_on_promote_to", [])] == [5], name
+        assert int(cur.get("rewarmup_steps", 0)) > 0, name
 
 
 def test_axis_separation_human_vs_observation_noise():

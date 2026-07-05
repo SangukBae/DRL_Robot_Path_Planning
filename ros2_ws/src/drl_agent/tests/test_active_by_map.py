@@ -87,12 +87,13 @@ def test_resolve_active_count_corridor_lighter_than_intersection():
 
 
 # ── Redesigned curriculum config ───────────────────────────────────────────
-def test_curriculum_has_nine_stages_and_initial_zero():
-    # 9-stage layout: the human (dynamic-avoidance) and observation-noise axes
-    # are introduced on SEPARATE stages (3/4 humans→loc-noise, 5/6 clutter→proprio).
+def test_curriculum_has_ten_stages_and_initial_zero():
+    # 10-stage layout: the human (dynamic-avoidance) and observation-noise axes
+    # are introduced on SEPARATE stages (3/4 humans→loc-noise, 5/6 clutter→proprio,
+    # 7 new-map/scan-noise, 8/9 integration).
     cfg = _load(ENV_CFG)["curriculum"]
     assert cfg["enabled"] is True
-    assert len(cfg["stages"]) == 9
+    assert len(cfg["stages"]) == 10
     assert cfg["initial_stage"] == 0
 
 
