@@ -642,6 +642,17 @@ class TrainTQCCurriculum(
         self, weight_prefix: str, stage: int, weights_dir: str
     ):
         """Load a specific model prefix and restart curriculum from a user stage."""
+        # A3/A4 (residual critic / FiLM aux) are FRESH-RUN-ONLY: loading a prefix
+        # into them would fresh-init the mismatched critic/aux modules -> hybrid
+        # run. Same guard as load_model in TrainTQCBase.
+        _fr = self._experimental_arch_reason()
+        if _fr:
+            raise RuntimeError(
+                f"resume_weight_prefix is not allowed with FRESH-RUN-ONLY "
+                f"architecture(s): {_fr}. Loading weights into a residual critic / "
+                f"FiLM aux head would fresh-init the mismatched modules and produce "
+                f"a hybrid run. Start a fresh run instead."
+            )
         weights_dir = os.path.expanduser(weights_dir) if weights_dir else self.pytorch_models_dir
         actor_path = os.path.join(weights_dir, f"{weight_prefix}_actor.pth")
         if not os.path.isfile(actor_path):

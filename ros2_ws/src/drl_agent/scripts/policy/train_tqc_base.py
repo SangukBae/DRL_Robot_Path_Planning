@@ -222,6 +222,24 @@ class TrainTQCBase(EnvInterface):
             Clock, "/clock", self._on_clock, 50
         )
 
+        # A3/A4 are FRESH-RUN-ONLY architectures (residual critic / FiLM aux head
+        # change the critic/aux state_dict). The checkpoint loader silently
+        # fresh-inits mismatched modules (see tqc_io.load), so a resume would
+        # become a hybrid run — actor/encoder/replay carried over while critic/aux
+        # restart. Refuse resume for these instead of relying on a docs warning.
+        if self.load_model:
+            _fr = self._experimental_arch_reason()
+            if _fr:
+                raise RuntimeError(
+                    f"load_model=true is not allowed with FRESH-RUN-ONLY "
+                    f"architecture(s): {_fr}. These change the critic/aux "
+                    f"state_dict; the checkpoint loader would fresh-init the "
+                    f"mismatched modules and silently produce a hybrid run. Start "
+                    f"a fresh run (load_model=false), or use the baseline "
+                    f"architecture (critic_residual=false, fusion_type=concat) to "
+                    f"resume."
+                )
+
         # ----------------------------
         # Checkpoint discovery
         # ----------------------------
@@ -246,6 +264,33 @@ class TrainTQCBase(EnvInterface):
 
         self.done_training = False
         self.log_training_setting_data()
+
+    # ------------------------------------------------------------------ #
+    #  Fresh-run-only architecture guard (A3/A4)                            #
+    # ------------------------------------------------------------------ #
+
+    def _experimental_arch_reason(self) -> str:
+        """Return a human string naming any FRESH-RUN-ONLY architecture flag that
+        is active on the constructed agent, or '' when none is.
+
+        A3 (critic_residual) and A4 (aux fusion_type=film) change the critic / aux
+        state_dict. Since the checkpoint loader fresh-inits mismatched modules
+        instead of failing, any resume path (load_model / resume_weight_prefix)
+        must be blocked for them so a run cannot silently become a hybrid."""
+        reasons = []
+        agent = getattr(self, "rl_agent", None)
+        if agent is None:
+            return ""
+        if bool(getattr(agent, "critic_residual", False)):
+            reasons.append("critic_residual=true (A3)")
+        # A4 only matters when aux is ACTUALLY enabled: with
+        # aux_prediction.enabled=false no aux head is built, so fusion_type=film
+        # changes no state_dict and must not block an otherwise-valid resume.
+        aux_cfg = getattr(agent, "aux_cfg", None)
+        if bool(getattr(agent, "aux_enabled", False)) and \
+                str(getattr(aux_cfg, "fusion_type", "concat")) == "film":
+            reasons.append("aux_prediction.fusion_type=film (A4)")
+        return ", ".join(reasons)
 
     # ------------------------------------------------------------------ #
     #  Config discovery                                                     #
