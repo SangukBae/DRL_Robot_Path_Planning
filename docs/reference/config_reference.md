@@ -67,7 +67,7 @@
 개수가 정해지고, `0` 미만 방지 + `obstacle_pool_static_size` / `obstacle_pool_human_size`
 상한 클램프된다. 좁은 corridor에 더 적게, 넓은 intersection/clutter/lobby에 더 많이 줄 때 사용.
 허용 map key: `lobby/corridor/intersection/clutter` (그 외는 경고 후 무시). 단일값만 쓰는 기존
-stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/map_curriculum_plan.md` §3.2/§8.
+stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/map_curriculum_plan.md` §3(Stage별 설정)·§7(커리큘럼 stage).
 
 ## 커리큘럼 진급 설정
 

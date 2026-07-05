@@ -102,20 +102,9 @@ runtime/<algo>/seed_<N>/
 
 ### Resume / 기존 run 마이그레이션
 
-per-seed 디렉토리 구조는 **기본 경로(`runtime/<algo>/`)에만** 적용된다. 따라서:
-
-- **명시적 `run_dir`로 만든 기존 run** (예: `runtime/tqc_state_80_...`)은 영향 없음 —
-  이어서 학습하려면 그 경로를 그대로 지정하고 `load_model: true`로 둔다:
-  ```bash
-  ros2 run drl_agent train_tqc_curriculum_agent.py \
-    --ros-args -p run_dir:=<기존 경로> -p seed:=0
-  # (train_tqc_config.yaml 에서 load_model: true)
-  ```
-- **기본 경로(`runtime/tqc/`)에 있던 옛 run**을 새 구조로 옮기려면 한 번만 이동:
-  ```bash
-  mkdir -p runtime/tqc/seed_0 && mv runtime/tqc/{pytorch_models,final_models,results,logs} runtime/tqc/seed_0/
-  ```
-- 논문용 신규 run은 `load_model: false`(기본)라 항상 fresh start이므로 마이그레이션 불필요.
+per-seed 디렉토리 구조는 **기본 경로(`runtime/<algo>/`)에만** 적용된다. 명시적 `run_dir`로 만든 기존 run은
+그대로 그 경로를 지정하고 `load_model: true`로 이어가면 된다. 기본 경로의 옛 run을 새 구조로 옮기려면
+`runtime/tqc/seed_0/`로 한 번 이동. 논문용 신규 run은 `load_model: false`(기본)라 마이그레이션 불필요.
 
 ## 4. 후처리 (논문 표/그래프) — `aggregate_results.py`
 

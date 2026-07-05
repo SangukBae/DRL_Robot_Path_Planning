@@ -39,11 +39,9 @@ yield 축(`action[2]`)은 **Stage 0–4 봉인**(`yield_reward.action_enabled=fa
 리셋(`reset_buffer_on_promote_to:[5]`)하고 `rewarmup_steps`만큼 재워밍업해 off-contract 경험이 critic을
 오염시키지 않게 한다 — **6개 baseline 공통**. 주행 2축 의미는 전 stage 동일 → 그 외 경계엔 리셋 없음.
 
-### 맵별 활성 개수 (`*_by_map`) 우선순위
-에피소드마다 `map_type`이 정해진 뒤: **① `active_*_by_map[map_type]` → ② stage 단일
-`active_*` → ③ base 값**. `0` 미만 방지 + pool 상한 클램프. 좁은 corridor만 따로 줄이고 싶을
-때 같은 stage 안에서 `{corridor: 5, intersection: 7}`처럼 쓴다. (필드 사용법:
-[config_reference](../reference/config_reference.md#커리큘럼-stage-필드-environment_curriculumyaml의-curriculumstages))
+> 맵별 개수는 episode마다 `map_type` 확정 후 **① `active_*_by_map[map_type]` → ② stage 단일 `active_*`
+> → ③ base 값** 순으로 정해진다(pool 상한 클램프). 필드 사용법은
+> [config_reference](../reference/config_reference.md#커리큘럼-stage-필드-environment_curriculumyaml의-curriculumstages).
 
 ## 진급 규칙 (모두 충족해야 진급)
 1. 현재 stage에서 `min_stage_steps` 이상 학습
@@ -52,20 +50,12 @@ yield 축(`action[2]`)은 **Stage 0–4 봉인**(`yield_reward.action_enabled=fa
    (10-stage → 임계값 리스트는 9-entry, 인덱스 = stage 번호; 범위 초과 시 마지막 항목으로 클램프)
 
 ## 동작 방식 (selector 구조)
-- `environment_curriculum.py`가 `curriculum_stage`라는 ROS 파라미터를 읽는다.
-- trainer는 평가 통과 시 `set_parameters`로 이 값을 올린다.
-- 매 reset마다 `_apply_curriculum_stage(idx)`가 해당 stage 설정을 적용한다:
-  - **base 값을 먼저 복원한 뒤 stage override를 deep-merge** → stage 간 설정이 새어나가지 않음(no leakage).
-  - 바꾸는 것: 활성 장애물/사람 수(단일 + **맵별 `*_by_map`**), 허용 맵 종류, 장애물 그룹, noise 프로파일.
-- 단, **맵별 활성 개수는 stage 적용 시점만으로 부족**하다(이번 episode의 map_type이 아직 미정).
-  실제 개수는 reset 중 `_select_episode_layout()`로 map_type이 정해진 **직후** base
-  `environment.py::_apply_episode_active_counts()`가 확정한다(장애물 활성화 직전). 순수 결정
-  로직은 ROS-free `map_catalog.resolve_active_count` / `clamp_active_by_map`.
-- pool(장애물/사람 엔티티)은 시작 시 최대 크기로 1회 생성하고, stage는 **활성 개수만** 바꾼다(런타임에 create/remove 안 함 → reset 빠름).
-
-## 평가는 stage와 분리
-- "어떤 stage에서 어떤 프로파일을 쓰나"는 커리큘럼이 정한다.
-- "무엇을 로깅하나 / 어떤 noise로 평가하나"는 run-level 설정(`localization_logging`, `evaluation`)으로 분리한다.
+- trainer가 평가 통과 시 `curriculum_stage` ROS 파라미터를 올리면, `environment_curriculum.py`가 매 reset마다
+  해당 stage 설정을 적용한다: **base 복원 후 stage override를 deep-merge**(stage 간 누수 방지).
+- 맵별 활성 개수만은 이번 episode의 map_type이 정해진 **직후** 확정한다(장애물 활성화 직전).
+- pool(장애물/사람)은 시작 시 최대 크기로 1회 생성하고 stage는 **활성 개수만** 바꾼다(런타임 create/remove
+  없음 → reset 빠름).
+- "어떤 stage에서 어떤 프로파일을 쓰나"(커리큘럼)와 "무엇을/어떤 noise로 평가하나"(run-level 설정)는 분리돼 있다.
 
 ## Where in code
 - stage 적용: `environment/environment_curriculum.py::_apply_curriculum_stage`, `_parse_active_by_map`, `_resolve_noise_override`, `_deep_merge`
