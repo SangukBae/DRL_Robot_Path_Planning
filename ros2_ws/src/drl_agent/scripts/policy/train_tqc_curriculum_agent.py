@@ -922,7 +922,12 @@ class TrainTQCCurriculum(
                 _ep_gazebo_rtf_buf.append(float(self._latest_gazebo_rtf))
 
             if train_ready and not self.use_checkpoints:
-                self.rl_agent.train()
+                # A1 (UTD ratio): run updates_per_env_step gradient updates per
+                # env step (default 1 == baseline). The checkpoint path
+                # (train_and_checkpoint below) is intentionally left unchanged —
+                # it already batches updates by timesteps_since_update.
+                for _ in range(self.updates_per_env_step):
+                    self.rl_agent.train()
 
             eval_due       = bool(next_eval_t is not None and t >= next_eval_t)
             episode_limit  = ep_timesteps >= self.max_episode_steps

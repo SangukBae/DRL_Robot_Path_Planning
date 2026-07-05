@@ -20,5 +20,12 @@ train_settings:
   eval_eps: 10                    # evaluation 시 실행할 episode 개수
   timesteps_before_training: 12000 # replay buffer warmup 후 gradient update 시작 step
 
+  # A1 (UTD ratio): non-checkpoint 학습 경로에서 env step 1번당 실행할 gradient
+  # update 횟수. 1 = 기존 baseline(1 env step -> 1 update). 2/4로 올리면 같은 env
+  # 데이터로 GPU에 더 많은 update를 넣어 sample efficiency/GPU 사용률을 실험할 수
+  # 있다. batch_size는 hyperparameters_tqc.yaml에서 함께 조정한다. 너무 크게 올리면
+  # 오래된 replay data에 과적합하거나 critic이 불안정해질 수 있으니 2 -> 4 -> 8 순.
+  updates_per_env_step: 1
+
   # 로그/파일명 접두사
   base_file_name: "tqc_agent"     # 저장 파일 prefix의 기본 이름

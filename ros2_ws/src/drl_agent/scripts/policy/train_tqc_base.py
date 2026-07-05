@@ -100,6 +100,22 @@ class TrainTQCBase(EnvInterface):
         self.eval_freq                  = train_settings["eval_freq"]
         self.timesteps_before_training  = train_settings["timesteps_before_training"]
         self.eval_eps                   = train_settings["eval_eps"]
+        # A1 (UTD ratio): number of gradient updates per env step on the
+        # non-checkpoint training path. Default 1 == baseline (1 env step -> 1
+        # update); >1 runs N updates per env step so a slow ROS/Gazebo env can
+        # still feed more gradient work to the GPU. Read here (shared by all TQC
+        # trainers); only the curriculum loop actually consumes it. Absent key ->
+        # 1, so existing configs are byte-for-byte unchanged.
+        self.updates_per_env_step       = max(1, int(train_settings.get("updates_per_env_step", 1)))
+        # Optional CLI override so an experiment can set the UTD ratio without a
+        # separate train-config file: -p updates_per_env_step:=N (N>0 wins). 0 (the
+        # default) means "no override -> use the config value above".
+        self.declare_parameter("updates_per_env_step", 0)
+        _upe_override = int(
+            self.get_parameter("updates_per_env_step").get_parameter_value().integer_value
+        )
+        if _upe_override > 0:
+            self.updates_per_env_step = _upe_override
         base_file_name                  = train_settings["base_file_name"]
 
         current_date = datetime.now().strftime("%Y%m%d")
