@@ -58,6 +58,7 @@ DRL 로봇 경로계획 시스템 문서 인덱스. **무엇부터 읽을지**�
 |--|--|
 | [experiment_protocol](experiments/experiment_protocol.md) | 6개 알고리즘 비교 프로토콜 |
 | [aux_ablation_logging](experiments/aux_ablation_logging.md) | aux on/off 비교 로깅 |
+| [tqc_scaling_improvement_plan](experiments/tqc_scaling_improvement_plan.md) | GPU 사용률 저조 상황에서의 TQC/critic/aux 확장 우선순위 |
 | [simulation_validation](experiments/simulation_validation.md) | 시뮬레이션 검증 절차 |
 | [map_curriculum_plan](experiments/map_curriculum_plan.md) | 구조화 맵 상세 설계 원안 |
 | [paper_preparation_guide](experiments/paper_preparation_guide.md) | 논문화 작업 가이드(원 README) |
