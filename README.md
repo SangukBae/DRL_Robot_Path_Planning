@@ -2,7 +2,7 @@
 
 ROS2 Humble + Gazebo Ignition Fortress 기반 **AgileX Hunter SE** 자율주행 경로계획 시뮬레이션.
 
-동적 장애물/보행자 혼합 환경에서 Ackermann 조향 로봇의 목표 지향 자율 주행을 학습하는 **시뮬레이션 기반 DRL 비교·연구 프레임워크**다.
+보행자(동적 장애물)와 정적 장애물이 섞인 환경에서 Ackermann 조향 로봇의 목표 지향 자율 주행을 학습하는 **시뮬레이션 기반 DRL 비교·연구 프레임워크**다.
 TQC 커리큘럼 학습을 주축으로, **SAC · TD7 · SB3-SAC · SB3-TD3 · TQC+IEQN**을 동일 조건에서 비교할 수 있도록 baseline·로깅·평가·다중 seed 인프라를 갖췄다.
 
 **Tech Stack**: ROS2 Humble · Gazebo Ignition Fortress · PyTorch 2.4.1 (CUDA 11.8) · Python 3.10
@@ -49,21 +49,16 @@ xhost +local:
 
 ## Quick Start
 
-> 기본 커리큘럼 설정(`environment_curriculum.yaml`)에는 **structured map curriculum**
-> (lobby/corridor/intersection/clutter 4종, **7-stage**로 한 단계에 한 축씩 증가 —
-> 구조→사람→지형→일반화→노이즈; stage별·**맵별** 장애물/휴먼 개수 `*_by_map`),
-> **localization noise emulation**(상관 노이즈 + drift + map-type별 강도),
-> **auxiliary future-risk prediction**(공유 인코더 + aux head, env 라벨)이 **기본 활성화**되어 있다.
-> 현재 기본값은 corridor를 가장 가볍게 두도록 조정되어 있으며, 예를 들어 최종 Stage 6의
-> 맵별 활성 개수는 `static: C5 / I7 / Cl8 / L9`, `humans: C3 / I4 / Cl4 / L6`이다.
-> 단, localization noise는 base가 off이고 **Stage 3부터 per-stage로 ramp-up**된다
-> (Stage 0~2는 clean; 전체 비활성화는 각 stage의 `localization_profile`을 `clean`으로 두거나
-> base `localization.enabled: false`로).
-> map curriculum은 `environment_curriculum.yaml`의 `map_layout_enabled`,
-> aux prediction은 `hyperparameters_tqc.yaml`의 `aux_prediction.enabled`를 false로 두면 꺼진다.
-> 설계·지표는 [Map Curriculum](docs/design/map_curriculum_design.md) ·
-> [Aux Prediction Design](docs/design/aux_prediction_design.md) ·
-> [Aux Metric Schema](docs/reference/metrics_reference.md) 참고.
+> `environment_curriculum.yaml`에 다음이 **기본 활성화**되어 있다:
+> **structured map curriculum**(lobby/corridor/intersection/clutter 4종을 **10-stage**로 한 단계에
+> 한 축씩 — 구조 → 사람 → 위치추정 노이즈 → 지형 → proprio 노이즈 → 새 맵·군중 → 통합;
+> stage·**맵별** 개수 `*_by_map`), **3D hybrid stop/yield 액션**(전진 waypoint + 전용 yield 축),
+> **localization noise**(Stage 4부터 ramp-up), **auxiliary future-risk prediction**(공유 인코더 + aux head).
+> 예: 최종 Stage 9 맵별 활성 개수 `static C5/I7/Cl8/L9`, `humans C3/I4/Cl4/L6`(corridor 최소).
+> 끄기 — map: `map_layout_enabled=false`, aux: `hyperparameters_tqc.yaml`의 `aux_prediction.enabled=false`,
+> loc: `localization.enabled=false`.
+> 상세: [Map Curriculum](docs/design/map_curriculum_design.md) ·
+> [Aux Prediction](docs/design/aux_prediction_design.md) · [Metrics](docs/reference/metrics_reference.md).
 
 ```bash
 # [터미널 1] Gazebo 시뮬레이션

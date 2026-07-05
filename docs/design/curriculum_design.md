@@ -3,14 +3,14 @@
 이 문서는 **커리큘럼 학습**(난이도를 단계적으로 올리는 방식)이 어떻게 동작하는지 설명한다.
 
 ## What
-빈 맵에서 시작해 장애물·사람·맵 복잡도·localization noise를 **stage 별로 점점 키운다**. 각 stage에서 일정 성능을 내면 자동으로 다음 stage로 진급한다. **한 stage에 한 축만 크게 바꾸도록** 7단계로 구성한다(구조→사람→지형→일반화→노이즈).
+빈 맵에서 시작해 장애물·사람·맵 복잡도·localization noise를 **stage 별로 점점 키운다**. 각 stage에서 일정 성능을 내면 자동으로 다음 stage로 진급한다. **한 stage에 한 축만 크게 바꾸도록** 10단계로 구성한다(구조 → 사람 → 위치추정 노이즈 → 지형 → 자기수용(proprio) 노이즈 → 새 맵·군중 → 통합). Stage 3–6은 **엄격한 단일 축**(직전 대비 새 변수 정확히 하나), Stage 7–9는 여러 축을 함께 키우는 **통합(generalization) 단계**다.
 
 ## Why
 - 처음부터 복잡한 환경을 주면 정책이 충돌만 반복하며 학습이 안 된다.
 - 쉬운 과제부터 성공 경험을 쌓게 하면 더 안정적으로, 더 빨리 수렴한다.
 - 한 번에 여러 축(맵 구조+사람+노이즈)을 동시에 올리면 분포 전환이 커져 불안정 → 축을 분리한다.
 
-## How — 7단계
+## How — 10단계
 혼합맵 stage는 **맵별 활성 개수**(`active_static_by_map` / `active_humans_by_map`)로 좁은
 corridor에 적게, 넓은 intersection/clutter/lobby에 많이 준다. 표의 `C/I/Cl/L` =
 corridor / intersection / clutter / lobby 값.
@@ -18,17 +18,26 @@ corridor / intersection / clutter / lobby 값.
 | stage | 이름 | 정적 (맵별) | 사람 (맵별) | 맵 | 노이즈 | 핵심 축 |
 |:--:|--|:--:|:--:|--|--|--|
 | 0 | empty | 0 | 0 | lobby | clean | 기본 goal 도달 |
-| 1 | corridor_static | 3 | 0 | corridor | clean | corridor 정적 |
+| 1 | corridor_static | 3 | 0 | corridor | clean | corridor 정적 주행 |
 | 2 | add_intersection | C3 / I6 | 0 | corridor+intersection | clean | **구조** |
-| 3 | first_human | C4 / I6 | C1 / I1 | corridor+intersection | weak_goal_noise | **사람** |
-| 4 | add_clutter | C4 / I7 / Cl8 | C1 / I2 / Cl3 | +clutter | weak + light proprio | **지형** |
-| 5 | generalize | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | 4종 전부 | drift + light proprio | **일반화** |
-| 6 | full_complexity | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | 4종 전부 | robustness_train + medium proprio | **final** |
+| 3 | first_human_clean | C4 / I6 | C1 / I1 | corridor+intersection | clean | **사람(동적 회피)** |
+| 4 | first_human_noisy | C4 / I6 | C1 / I1 | corridor+intersection | weak loc | **위치추정 노이즈** |
+| 5 | add_clutter_clean | C4 / I6 / Cl8 | C1 / I1 / Cl1 | +clutter | weak loc | **지형** (+yield 해제) |
+| 6 | add_clutter_noisy | C4 / I6 / Cl8 | C1 / I1 / Cl1 | corridor+intersection+clutter | weak loc + light proprio | **proprio 노이즈** |
+| 7 | add_lobby | C4 / I6 / Cl8 / L8 | C1 / I2 / Cl2 / L3 | 4종 전부 | weak loc + light proprio | **새 맵** + human-scan 노이즈 + 군중↑(1→3) |
+| 8 | scale_crowd | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | 4종 전부 | drift loc + light proprio | **군중 확대**(통합) |
+| 9 | full_complexity | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | 4종 전부 | robustness_train + medium proprio | **final 통합** |
 
 > 움직이는 장애물 = 사람뿐(동적 장애물은 코드에서 제거). 맵 종류는 [map_curriculum_design](map_curriculum_design.md) 참고.
-> localization noise는 Stage 0~2 clean, **Stage 3부터** ramp-up. corridor는 5.2 m 차선의
+> localization noise는 Stage 0~3 clean, **Stage 4부터** ramp-up. corridor는 5.2 m 차선의
 > 배치 상한(활성화 후보 ~10) 때문에 전 stage에서 정적·사람이 가장 적다. 맵별 개수를 생략한
 > stage(0,1)는 단일 `active_static`/`active_humans`를 그대로 쓴다(하위호환).
+
+### stop/yield 액션의 봉인·해제
+yield 축(`action[2]`)은 **Stage 0–4 봉인**(`yield_reward.action_enabled=false`, 순수 회피 주행부터),
+**Stage 5에서 해제**되어 정지/creep이 허용된다. 이 경계에서 컨트롤 컨트랙트가 바뀌므로 진급 시 버퍼를
+리셋(`reset_buffer_on_promote_to:[5]`)하고 `rewarmup_steps`만큼 재워밍업해 off-contract 경험이 critic을
+오염시키지 않게 한다 — **6개 baseline 공통**. 주행 2축 의미는 전 stage 동일 → 그 외 경계엔 리셋 없음.
 
 ### 맵별 활성 개수 (`*_by_map`) 우선순위
 에피소드마다 `map_type`이 정해진 뒤: **① `active_*_by_map[map_type]` → ② stage 단일
@@ -40,7 +49,7 @@ corridor / intersection / clutter / lobby 값.
 1. 현재 stage에서 `min_stage_steps` 이상 학습
 2. `min_stage_episodes` 이상 에피소드 완료
 3. 평가에서 `pass_eval_success_rate`(성공률↑) / `pass_eval_collision_rate`(충돌률↓) / `pass_eval_spl`(경로효율↑) 기준을 **`consecutive_eval_passes`회 연속** 통과
-   (7-stage → 임계값 리스트는 6-entry, 인덱스 = stage 번호; 범위 초과 시 마지막 항목으로 클램프)
+   (10-stage → 임계값 리스트는 9-entry, 인덱스 = stage 번호; 범위 초과 시 마지막 항목으로 클램프)
 
 ## 동작 방식 (selector 구조)
 - `environment_curriculum.py`가 `curriculum_stage`라는 ROS 파라미터를 읽는다.

@@ -31,7 +31,7 @@ ros2 launch drl_agent test_tqc.launch.py
 |---------|------|------|
 | `/reset` | `Reset.srv` | 에피소드 초기화, 초기 상태 반환 |
 | `/step` | `Step.srv` | 액션 실행 → (상태, 보상, done, target) 반환 |
-| `/get_dimensions` | `GetDimensions.srv` | state_dim, action_dim, max_action 반환 |
+| `/get_dimensions` | `GetDimensions.srv` | state_dim, action_dim, max_action, environment_dim, agent_dim 반환 |
 | `/seed` | `Seed.srv` | 랜덤 시드 설정 |
 | `/action_space_sample` | `SampleActionSpace.srv` | 랜덤 액션 샘플링 (warmup용) |
 | `/get_start_goal_pairs` | `GetStartGoalPairs.srv` | 시작/목표 좌표 반환 |
@@ -47,8 +47,9 @@ ros2 launch drl_agent test_tqc.launch.py
 
 ### State/Action Space
 
-- **State (87D)**: 전방 180도 LiDAR 80빈 + agent state 7D
-- **Action (2D)**: 웨이포인트 거리/각도 명령, `environment.py`에서 물리 단위로 변환
+- **State (87D)**: 전방 180° LiDAR 80빈 + agent state 7D (옵션 시간 맥락 ON 시 프레임 스택 → 327D, 현재 87D 프레임이 맨 앞)
+- **Action (3D, 하이브리드 stop/yield)**: 전진 waypoint 거리 r·각도 θ + yield(정지) 축. `environment.py`가 물리 단위로 변환 후 Pure Pursuit로 `cmd_vel` 생성 (비커리큘럼 `environment.yaml` baseline은 2D 유지)
+- 정확한 인덱스/범위: [State/Action Reference](../../../docs/reference/state_action_reference.md)
 
 ## Configuration
 

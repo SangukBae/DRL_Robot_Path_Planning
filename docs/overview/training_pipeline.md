@@ -16,9 +16,9 @@
   trainer ◀── state ──
 
 [매 스텝 반복]
-  trainer: action = policy(state)        # 2D waypoint, [-1,1] 정규화
+  trainer: action = policy(state)        # 3D 하이브리드 action, [-1,1] 정규화
   trainer ── /step(action) ──▶ env
-                         ├─ action → waypoint → Pure Pursuit → cmd_vel
+                         ├─ action → (전진 waypoint + yield/정지) → Pure Pursuit → cmd_vel
                          ├─ Gazebo 0.1초 진행, 보행자 이동
                          ├─ LiDAR/odom → 다음 state(87D)
                          ├─ goal 관측에 localization noise 주입 (옵션)
@@ -37,8 +37,8 @@
 
 ## 각 단계 설명 (짧게)
 - **reset**: 에피소드 초기화. 환경이 stage에 맞춰 장애물·맵·noise를 세팅하고 초기 state를 준다.
-- **state (87D)**: LiDAR 80빈 + 목표거리/방향 + 이전 action + 실제 속도/요레이트/조향. → [state 구조](../reference/state_action_reference.md)
-- **action (2D)**: 다음으로 갈 **waypoint**(거리 r, 각도 θ). 정책은 `[-1,1]`로 내고, 환경이 물리 단위로 바꿔 Pure Pursuit로 추종한다.
+- **state (87D)**: 전방 180° LiDAR 80빈 + 목표거리/방향 + 이전 action(r,θ) + 실제 속도/요레이트/조향. → [state 구조](../reference/state_action_reference.md)
+- **action (3D, 하이브리드 stop/yield)**: 전진 **waypoint**(거리 r, 각도 θ) + **yield 축**. yield 축이 임계값을 넘으면 감속/정지(YIELD 모드), 아니면 주행(MOVE 모드). 정책은 `[-1,1]`로 내고, 환경이 물리 단위로 바꿔 Pure Pursuit로 추종한다.
 - **step**: action 실행 → 0.1초 시뮬레이션 → 다음 state·보상·done.
 - **replay buffer**: 경험 `(s,a,s',r,done)`을 저장. off-policy 학습이라 과거 경험을 재사용한다. (`utils/buffer.py`, LAP 우선순위)
 - **train**: 버퍼에서 미니배치를 뽑아 actor/critic(+aux head)을 1회 업데이트. (`tqc_agent.py::train`)

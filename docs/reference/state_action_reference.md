@@ -1,6 +1,6 @@
 # State / Action Reference
 
-정책이 보는 **state(87차원)**와 내는 **action(2차원)**의 정확한 정의표. (개념 설명은 [../overview/training_pipeline.md](../overview/training_pipeline.md))
+정책이 보는 **state(87차원)**와 내는 **action(3차원, 하이브리드 stop/yield)**의 정확한 정의표. (개념 설명은 [../overview/training_pipeline.md](../overview/training_pipeline.md))
 
 ## State — 87D
 `state = [ obs_state(80) | agent_state(7) ]`
@@ -18,20 +18,33 @@
 
 - 차원 분리: `environment_state_dim=80`, `agent_state_dim=7` (`config/environment*.yaml`).
 - LiDAR 거리는 `lidar_max_range`(50 m)로 클램프.
+- 이전 action 슬롯 `[82]`/`[83]`은 **주행 2축(r, θ)만** 담는다 — yield 축은 state로 되먹이지 않는다.
 
-## Action — 2D (Pure Pursuit waypoint)
+### 시간 맥락(temporal context) — 옵션, 커리큘럼 기본 ON
+`observation_time_context`가 켜지면 최근 `obs_frame_stack`개 `obs_state`(전방 180° 80빈)를 쌓아
+state가 `80×N + 7`이 된다(기본 N=4 → **327D**). 현재 87D 프레임이 맨 앞이라 위 표는 그대로 유효하고
+뒤에 과거 스캔만 붙는다(에이전트가 압축해 사용). 꺼지면 87D로 baseline과 동일.
+
+## Action — 3D (하이브리드 stop/yield, Pure Pursuit)
 | 인덱스 | 내용 | 물리 범위 |
 |--|--|--|
-| `action[0]` | waypoint 거리 r (전진, 로봇 프레임) | [0.8, 2.0] m |
+| `action[0]` | 전진 waypoint 거리 r (로봇 프레임) | [0.0, 2.0] m |
 | `action[1]` | waypoint 각도 θ (로봇 프레임) | [-0.524, 0.524] rad (±30°) |
+| `action[2]` | yield(정지) 스칼라 | [-1, 1] (`≥ action_threshold`이면 YIELD) |
 
-- 정책은 `[-1, 1]` 정규화 action을 내고, `environment.py`가 `actions_low/high`(config)로 물리 단위 스케일 후 **Pure Pursuit**로 추종해 `cmd_vel` 생성.
-- `GetDimensions.srv`는 `state_dim, action_dim, max_action, environment_dim, agent_dim` 반환.
+- **MOVE 모드**(yield 축 < 임계값): 회피/주행. r은 `controller_lookahead_min_m`(0.8 m), 전진 속도는
+  `controller_v_move_min_mps`(0.35 m/s)로 바닥값 보정 → **MOVE 중 정지 불가**.
+- **YIELD 모드**(`action[2] ≥ action_threshold`, 기본 0.3): 전진 속도를 `controller_yield_creep_mps`
+  (기본 0.0 → **완전 정지**)로 제한(조향은 유지). → 회피와 정지를 분리한 "브레이크 달린 차".
+- 정책이 `[-1,1]`을 내면 `pure_pursuit.action_to_waypoint`(물리 스케일) → `hybrid_action_to_command`(Pure Pursuit)로 `cmd_vel` 생성.
+- yield 축은 **Stage 0–4 봉인**(`yield_reward.action_enabled=false`), **Stage 5 해제**. → [curriculum_design](../design/curriculum_design.md)
+- 비커리큘럼 baseline(`environment.yaml`)은 **2D**(yield 없음, ablation용).
+- `GetDimensions.srv` → `state_dim, action_dim, max_action, environment_dim, agent_dim`.
 
 ## aux 라벨 (학습 전용, state에 미포함)
 aux prediction이 켜지면 env가 state 뒤에 **미래 위험 라벨**을 임시로 덧붙여 보내고, trainer가 떼어내 보조 손실에 쓴다. **정책 입력 87D는 그대로**다. → [../design/aux_prediction_design.md](../design/aux_prediction_design.md)
 
 ## Where in code
-- state 조립: `environment/environment.py` (`get_obs_state`, `_rebuild_agent_state`, `step_callback`)
-- action→waypoint→cmd: `environment/environment.py::_map_action_to_waypoint` + `pure_pursuit.py`
-- 차원/범위 설정: `config/environment.yaml`, `config/environment_curriculum.yaml`
+- state 조립: `environment/observation_builder.py`(obs_state 360°/180°), `environment/environment.py`(`_rebuild_agent_state`, `step_callback`), `environment/obs_time_context.py`(프레임 스택)
+- action→waypoint→cmd: `environment/environment.py::_map_action_to_waypoint` + `utils/pure_pursuit.py`(`action_to_waypoint`, `hybrid_action_to_command`)
+- 차원/범위 설정: `config/environment.yaml`(2D baseline), `config/environment_curriculum.yaml`(3D 하이브리드)

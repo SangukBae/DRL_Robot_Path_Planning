@@ -16,16 +16,26 @@
 | `eval_eps` | 10 | |
 | `timesteps_before_training` | 12,000 | warmup |
 
-curriculum 공통 설정: `min_stage_steps=30000`, `min_stage_episodes=20`,
-`pass_eval_success_rate=[0.90,0.85,0.75,0.70]`, `pass_eval_collision_rate=[0.05,0.10,0.15,0.20]`,
-`consecutive_eval_passes=2`.
+curriculum 공통 설정(10-stage → 9-entry 진급 게이트, 인덱스 = stage 번호; **6개 비교군 동일**):
+`min_stage_steps=30000`, `min_stage_episodes=20`, `consecutive_eval_passes=2`,
+`pass_eval_success_rate=[0.90,0.88,0.86,0.80,0.80,0.76,0.74,0.72,0.70]`,
+`pass_eval_collision_rate=[0.10,0.10,0.10,0.12,0.12,0.15,0.20,0.20,0.20]`.
+success/collision 게이트와 **Stage 5 계약 변경 처리는 6개 baseline 모두 동일**하다: yield 해제(Stage 5)
+시 리플레이 버퍼 리셋 + 재워밍업(`reset_buffer_on_promote_to:[5]` + `rewarmup_steps=5000`)을 공통 적용해
+off-contract transition이 critic을 오염시키지 않게 한다.
+
+> **TQC 전용(미이식):** SPL 품질 게이트 `pass_eval_spl=[0.55,0.55,0.54,0.50,0.50,0.48,0.47,0.45,0.44]`는
+> 현재 `train_tqc_curriculum_agent.py`만 읽는다. 다른 baseline은 success/collision 게이트만 사용한다.
 
 비교군(curriculum trainer): **TQC, TQC+IEQN, SAC, TD7, SB3-SAC, SB3-TD3**.
 필수 baseline은 SAC/TD3/TQC, 권장 추가는 TQC+IEQN/TD7.
 
-## 2. 평가 / 로그 스키마 (6개 전부 동일)
+## 2. 평가 / 로그 스키마
 
-`evaluate_and_print()` 반환 dict + 모든 CSV는 6개 비교군에서 동일 스키마다.
+`evaluate_and_print()` 반환 dict와 **논문 핵심 지표 CSV(§2.1: `eval_metrics_*` / `episode_metrics_*`)**
+는 6개 비교군에서 동일 스키마다 — 공유 모듈 `utils/episode_metrics.py`가 계산하고 모든
+curriculum trainer가 기록한다. 다만 **보조 CSV(§2.2)는 완전 동일하지 않다**: TQC만 per-run
+CSV에 aux 메타·stage-aware cmd/motion 컬럼을 더 붙인다(§2.2 주석 참고).
 
 ### 2.1 논문 핵심 지표 CSV (신규)
 
@@ -46,11 +56,18 @@ curriculum 공통 설정: `min_stage_steps=30000`, `min_stage_episodes=20`,
 
 ### 2.2 기존 CSV (유지)
 
-- `curriculum_episode_rewards_*.csv` (12컬럼): `episode, global_t, steps, total_reward,
+- `curriculum_episode_rewards_*.csv` **기본 12컬럼**(`episode, global_t, steps, total_reward,
   mean_reward, goal_reached, collision, timeout, eval_cut, final_goal_dist_m,
-  curriculum_stage, mean_gazebo_rtf`
-- `episode_driving_*.csv` (13컬럼): 주행 품질(속도/조향/clearance). `mean_gazebo_rtf`는
+  curriculum_stage, mean_gazebo_rtf`). **TQC만** 뒤에 aux 메타(`seed, aux_enabled, aux_version`) +
+  `map_type`를 붙여 16컬럼; TQC+IEQN·SAC·TD7·SB3-SAC·SB3-TD3는 기본 12컬럼.
+- `episode_driving_*.csv`: 주행 품질(속도/조향/clearance) **기본 13컬럼**(`episode, global_t, steps,
+  mean_v_norm, mean_abs_w_norm, initial_goal_dist_m, final_goal_dist_m, goal_dist_reduction_m,
+  min_lidar_m, mean_min_lidar_m, goal_reached, eval_cut, mean_gazebo_rtf`)은 6개 공통. `mean_gazebo_rtf`는
   TQC만 실제 추적, 나머지 `NaN`.
+  - **TQC만** 여기에 aux 메타(`seed, aux_enabled, aux_version`)와 **stage-aware cmd/motion 컬럼**
+    (mean cmd_v/steer, 관측 speed·yaw-rate·steering, cmd–obs 속도 오차, 저속 관측 비율)을 추가로 append한다.
+    3D 하이브리드 액션에서는 해당 stage의 yield 봉인 상태를 반영해 실제 실행 명령을 재구성한다.
+  - **TQC+IEQN·SAC·TD7·SB3-SAC·SB3-TD3** 은 위 기본 13컬럼만 쓴다(aux 메타·cmd/motion 컬럼 없음).
 
 ## 3. 다중 seed 실행 (논문 필수: 최소 3, 권장 5)
 

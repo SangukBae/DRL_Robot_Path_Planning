@@ -126,8 +126,8 @@
 >    25×25는 면적이 ~2.16배라 같은 개수면 밀도가 낮다. 이제 stage가
 >    `active_static_by_map` / `active_humans_by_map`로 **같은 stage 안에서도 map_type별로
 >    다른 개수**를 줄 수 있다(§3.2). corridor는 활성화 후보 상한 ~10에 묶이므로 더 낮게,
->    intersection/clutter/lobby는 더 높게 설정한다. 커리큘럼도 7-stage(한 stage에 한 축만
->    변경)로 재설계됨 — §13 및 `environment_curriculum.yaml` 참고. (lobby/clutter를 더
+>    intersection/clutter/lobby는 더 높게 설정한다. 커리큘럼도 10-stage(한 stage에 한 축만
+>    변경)로 재설계됨 — §8 및 `environment_curriculum.yaml` 참고. (lobby/clutter를 더
 >    크게 키우려면 corridor에 맞는 작은 장애물 에셋 추가가 추가 옵션.)
 > 2. **corridor/intersection 내부벽–외벽 0.7 m gap (cosmetic)**: navigable을 clearance
 >    까지 줄인 결과라 기능 영향은 없다. 없애려면 registry에서 **wall geometry용 extent**
@@ -824,31 +824,32 @@ clutter에서만 최소 경로 폭 heuristic을 적용하는 것이 현실적이
 
 ## 8. 커리큘럼 stage 재설계
 
-> **현재 구현 (2026-06, 7-stage). 아래 §8 본문의 Stage 0~4는 초기 5-stage 제안(역사적
-> 기록)이며, 실제 `environment_curriculum.yaml`은 다음 7-stage다.** 설계 원칙: **한 stage에
-> 한 축만 크게 변경**(구조 / 사람 / 지형 / 일반화 / 노이즈를 분리) + 혼합맵 stage는
-> `active_*_by_map`으로 좁은 corridor를 가볍게.
+> **현재 구현 (10-stage). 아래 §8 본문의 Stage 0~4는 초기 5-stage 제안(역사적 기록)이며,
+> 실제 `environment_curriculum.yaml`은 다음 10-stage다.** 설계 원칙: **한 stage에 한 축만 크게
+> 변경**(구조 → 사람 → 위치추정 노이즈 → 지형 → proprio 노이즈 → 새 맵·군중 → 통합) +
+> 혼합맵 stage는 `active_*_by_map`으로 좁은 corridor를 가볍게. Stage 3–6은 엄격한 단일 축,
+> Stage 7–9는 통합(generalization) 단계다.
 >
 > | stage | maps | static (by_map) | humans (by_map) | loc noise | proprio | 핵심 축 |
 > |---|---|---|---|---|---|---|
 > | 0 empty | lobby | 0 | 0 | clean | – | 기본 goal 도달 |
 > | 1 corridor_static | corridor | 3 | 0 | clean | – | corridor 정적 |
 > | 2 add_intersection | corridor,intersection | C3 / I6 | 0 | clean | – | **구조** 추가 |
-> | 3 first_human | corridor,intersection | C4 / I6 | C1 / I1 | weak | – | **사람** 추가 |
-> | 4 add_clutter | +clutter | C4 / I7 / Cl8 | C1 / I2 / Cl3 | weak | light | **지형** 추가 |
-> | 5 generalize | +lobby (4종) | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | drift(mid) | light | **일반화** |
-> | 6 full_complexity | 4종 | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | robustness_train | medium | **final** |
+> | 3 first_human_clean | corridor,intersection | C4 / I6 | C1 / I1 | clean | – | **사람**(동적 회피) |
+> | 4 first_human_noisy | corridor,intersection | C4 / I6 | C1 / I1 | weak | – | **위치추정 노이즈** |
+> | 5 add_clutter_clean | +clutter | C4 / I6 / Cl8 | C1 / I1 / Cl1 | weak | – | **지형** (+yield 해제) |
+> | 6 add_clutter_noisy | corridor,intersection,clutter | C4 / I6 / Cl8 | C1 / I1 / Cl1 | weak | light | **proprio 노이즈** |
+> | 7 add_lobby | 4종 | C4 / I6 / Cl8 / L8 | C1 / I2 / Cl2 / L3 | weak | light | **새 맵**+scan 노이즈+군중↑ |
+> | 8 scale_crowd | 4종 | C5 / I7 / Cl8 / L8 | C2 / I3 / Cl4 / L5 | drift(mid) | light | **군중 확대**(통합) |
+> | 9 full_complexity | 4종 | C5 / I7 / Cl8 / L9 | C3 / I4 / Cl4 / L6 | robustness_train | medium | **final 통합** |
 >
 > (C=corridor, I=intersection, Cl=clutter, L=lobby. corridor는 모든 stage에서 static·humans가
 > 가장 적다 — 5.2 m 차선의 활성화 후보 상한 ~10 + 물리 배치 압박 때문.) 승급 임계값은
-> `train_tqc_curriculum_config.yaml`의 6-entry 리스트(7 stage → 6 promotion). 기존 5-stage
-> 대비: Stage 2의 "intersection+human+noise 동시 투입"을 구조→사람으로 분리, lobby를 마지막에만
-> 넣던 것을 Stage 5부터 재투입, 최종 static을 corridor 상한(10)에 붙이지 않도록 by_map로 분산.
+> `train_tqc_curriculum_config.yaml`의 9-entry 리스트(10 stage → 9 promotion). 3D 하이브리드
+> stop/yield 액션의 yield 축은 Stage 0–4 봉인, Stage 5 해제(진급 시 버퍼 리셋 + 재워밍업).
 
-기존 stage는 장애물 수 / 사람 수 중심이다.
-새 구조에서는 맵 종류까지 함께 올린다.
-
-추천 예시는 아래와 같다. (※ 아래는 초기 5-stage 제안 — 현재는 위 7-stage 표가 source of truth.)
+> **⚠️ 아래 Stage 0~4는 초기 5-stage 제안(역사적 기록)이다. 현재 source of truth는 위 10-stage 표.**
+> 기존 stage는 장애물 수 / 사람 수 중심이었고, 현재 구조는 맵 종류·노이즈·정지 능력까지 축을 나눠 올린다.
 
 ### Stage 0
 

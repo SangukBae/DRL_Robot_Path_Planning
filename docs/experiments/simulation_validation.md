@@ -34,13 +34,13 @@ python3 ros2_ws/src/drl_agent/scripts/utils/sim_validation_summary.py \
 ### Scenario → how to configure
 | # | scenario | how |
 |---|---|---|
-| 1 | noise off | curriculum stage 0/1, or plain env (default off) |
-| 2 | gaussian only | curriculum stage 2 (`-p stages:="[2]"`) |
-| 3 | delay_steps=1 | stage 2 (delay 1) |
-| 4 | delay_steps=2 | stage 3 (`-p stages:="[3]"`) |
+| 1 | noise off (clean) | curriculum stage 0–3, or plain env (default off) |
+| 2 | weak goal noise (gaussian + delay) | curriculum stage 4 (`-p stages:="[4]"`) |
+| 3 | drift goal noise | stage 8 (`-p stages:="[8]"`) |
+| 4 | strongest train (drift + jump) | stage 9 (`-p stages:="[9]"`, `robustness_train`) |
 | 5 | gt=loc=proprio same topic | default (single `/odometry`) |
 | 6 | separate topics | env: `-p gt_odom_topic:=/odometry -p loc_odom_topic:=/loc_odom -p proprio_odom_topic:=/odometry` |
-| 7 | stage 0/2/4 compare | `-p stages:="[0,2,4]"` |
+| 7 | stage 0/4/9 compare | `-p stages:="[0,4,9]"` |
 
 ## Files to look at
 - `<run_dir>/logs/loc_validation_step_<tag>.csv` — per step: `obs_*` vs `gt_*`,
@@ -58,8 +58,9 @@ python3 ros2_ws/src/drl_agent/scripts/utils/sim_validation_summary.py \
   `fraction_done_uses_gt_consistently = 1.0` (reward/done still on GT).
 - **reset consistency**: `max_reset_first_step_goal/heading_jump` small (≈ the
   per-step motion, NOT a bias-sized step) — confirms no clean→noisy jump.
-- **curriculum ramp** (`per_stage`): stage 0/1 `enabled=0`; stage 2
-  `enabled=1, delay=1`; stage 3 adds drift/`delay=2`; stage 4 adds `jump_prob>0`.
+- **curriculum ramp** (`per_stage`): stage 0–3 `clean` (`enabled=0`); stage 4–7
+  `weak_goal_noise` (`enabled=1`, gaussian + delay); stage 8 `drift_goal_noise`
+  (adds drift); stage 9 `robustness_train` (adds rare `jump_prob>0`).
   `mean_abs_goal_dist_error` increases with stage.
 - **stale handling**: same-topic → `episodes_with_stale_loc/proprio = 0`;
   separate topic stopped → those counts > 0 and the env logs a `[reset] odom

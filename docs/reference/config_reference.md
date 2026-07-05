@@ -9,7 +9,7 @@
 | 파일 | 설명 |
 |------|------|
 | `environment.yaml` | 상태/액션 차원, 충돌 임계값, 장애물 카탈로그, height filter |
-| `environment_curriculum.yaml` | 커리큘럼 환경 설정 (7단계 정의, 맵별 장애물/휴먼 구성) |
+| `environment_curriculum.yaml` | 커리큘럼 환경 설정 (10단계 정의, 3D 하이브리드 액션, 맵별 장애물/휴먼 구성) |
 | `train_tqc_curriculum_config.yaml` | 커리큘럼 진급 규칙 (임계값, 연속 통과 횟수) |
 | `train_tqc_config.yaml` | TQC 단일 학습 파라미터 |
 | `train_td7_config.yaml` | TD7 학습 파라미터 |
@@ -30,7 +30,7 @@
 | `max_timesteps` | 2,000,000 | 최대 학습 타임스텝 |
 | `timesteps_before_training` | 12,000 | 랜덤 액션 워밍업 스텝 (10 Hz 기준) |
 | `eval_freq` | 12,000 | 평가 주기 (스텝) |
-| `load_model` | true | `true` 시 모델·리플레이 버퍼 복원 (커리큘럼 상태는 `curriculum_state.json` 별도 필요) |
+| `load_model` | false | 기본 fresh start. `true` 로 두면 같은 seed의 최근 체크포인트에서 모델·리플레이 버퍼 복원 (커리큘럼 상태는 `curriculum_state.json` 별도 필요) |
 
 `train_tqc_curriculum_config.yaml` (`curriculum_settings` 블록):
 
@@ -54,7 +54,7 @@
 
 ## 커리큘럼 stage 필드 (`environment_curriculum.yaml`의 `curriculum.stages[]`)
 
-7단계(0~6). 각 stage가 가질 수 있는 활성-개수 필드:
+10단계(0~9). 각 stage가 가질 수 있는 활성-개수 필드:
 
 | 필드 | 예 | 설명 |
 |------|-----|------|
@@ -82,9 +82,15 @@ stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/m
 | `pass_eval_spl` | 진급 요건: 스테이지별 최소 SPL(경로효율) 임계값 리스트 (빈 리스트=비활성) |
 | `consecutive_eval_passes` | 임계값을 연속으로 통과해야 하는 평가 횟수 |
 
-진급 임계값 리스트 길이는 `(스테이지 수 − 1)` = **6**(7-stage)이며, 인덱스는 스테이지 번호다.
+진급 임계값 리스트 길이는 `(스테이지 수 − 1)` = **9**(10-stage)이며, 인덱스는 스테이지 번호다.
 범위를 벗어난 인덱스는 마지막 항목으로 클램프되므로 리스트가 짧아도 동작은 한다.
 `min_stage_steps` / `min_stage_episodes` 조건을 먼저 충족한 뒤, 성공률/충돌률(/SPL) 임계값을 `consecutive_eval_passes`회 연속 통과해야 다음 스테이지로 진급한다.
+
+### 하이브리드 액션 / yield 관련 진급 필드
+| 파라미터 | 값 | 설명 |
+|---------|-----|------|
+| `reset_buffer_on_promote_to` | `[5]` | 지정 stage로 진급 시 리플레이 버퍼 초기화. Stage 5에서 yield 축(`action[2]`)이 봉인 해제되어 컨트롤 컨트랙트가 바뀌므로, off-contract 경험이 critic을 오염시키지 않도록 리셋한다. |
+| `rewarmup_steps` | `5000` | 버퍼 리셋 직후 gradient 없이 랜덤 액션으로 재워밍업하는 스텝 수(on-contract 데이터 재적재). |
 
 ---
 

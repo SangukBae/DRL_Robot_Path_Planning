@@ -27,7 +27,7 @@ Gazebo Ouster RGL → /hunter_se/pointcloud/points → ros_gz_bridge
   → /ouster/points (PointCloud2, ~10Hz)
   → pointcloud_to_laserscan (height filter z∈[-0.455,0.250] m, 센서 프레임)
   → /scan (LaserScan, 360°, 0.176°/bin)
-  → environment.py (obs_state 전방 80빈 + environment_state 360°)
+  → environment.py (obs_state 전방 180° 80빈[정책 입력] + environment_state 360° 80빈[충돌 판정])
 ```
 
 ## Gazebo–ROS2 브릿지

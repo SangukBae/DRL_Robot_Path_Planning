@@ -42,12 +42,14 @@ localization:
 **Defaults are conservative (off).** Reward/done stay on ground truth for stable
 early training; flip `use_gt_for_*` to study estimated-pose reward/done.
 
-**Curriculum ramp** (`environment_curriculum.yaml`, per-stage `localization:`):
-Stage 0–1 off → Stage 2 gaussian + 1-step delay → Stage 3 drift + delay →
-Stage 4 drift + delay + rare jump. Each stage is applied as *base + override*;
-omitting the block inherits the base (no cross-stage leakage). All per-episode
-noise state (bias, random walk, latency buffer, jump) is reset every episode and
-the latency buffer is padded with the initial pose.
+**Curriculum ramp** (`environment_curriculum.yaml`, per-stage `localization_profile:`):
+Stage 0–3 `clean` → Stage 4–7 `weak_goal_noise` → Stage 8 `drift_goal_noise` →
+Stage 9 `robustness_train` (full correlated noise + bias + drift + delay + rare
+relocalization jumps; **no yaw flip** — that lives only in the eval-only
+`stress_eval` profile). Each stage is applied as *base + override*; omitting the
+block inherits the base (no cross-stage leakage). All per-episode noise state
+(bias, random walk, latency buffer, jump) is reset every episode and the latency
+buffer is padded with the initial pose.
 
 ---
 

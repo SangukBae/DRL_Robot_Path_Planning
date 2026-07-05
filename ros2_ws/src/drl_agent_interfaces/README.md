@@ -32,7 +32,7 @@ ros2 interface show drl_agent_interfaces/action/StartDrlSession
 |--------|---------|----------|------|
 | `Step.srv` | `float32[] action` | `state, reward, done, target` | 환경 스텝 실행 |
 | `Reset.srv` | (empty) | `float32[] state` | 에피소드 리셋 |
-| `GetDimensions.srv` | (empty) | `state_dim, action_dim, max_action` | 환경 차원 조회 |
+| `GetDimensions.srv` | (empty) | `state_dim, action_dim, max_action, environment_dim, agent_dim` | 환경 차원 조회 |
 | `Seed.srv` | `int32 seed` | `bool success` | 랜덤 시드 설정 |
 | `SampleActionSpace.srv` | (empty) | `float32[] action` | 랜덤 액션 샘플 |
 | `GetTestEpisodes.srv` | (empty) | `int32 num_of_test_episodes` | 테스트 에피소드 수 조회 |

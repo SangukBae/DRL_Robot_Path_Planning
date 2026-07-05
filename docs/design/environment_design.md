@@ -18,9 +18,10 @@
 | reset | `reset_callback` (실제 배치·관측) | `reset_callback` 오버라이드 → stage 적용 후 `super()` 호출 |
 
 ## How — 한 step의 내부 (`environment.py::step_callback`)
-1. action(2D, 정규화) → waypoint(r,θ) → Pure Pursuit → `cmd_vel` publish
+1. action(3D 하이브리드, 정규화) → waypoint(r,θ) + yield 판정 → Pure Pursuit → `cmd_vel` publish
+   (MOVE 모드는 속도 바닥값 보정, YIELD 모드는 정지/creep — [state/action 표](../reference/state_action_reference.md#action--3d-하이브리드-stopyield-pure-pursuit))
 2. Gazebo를 `time_delta`(0.1s) 진행, 보행자 20Hz 타이머가 사람 이동
-3. LiDAR(`/scan`) → `obs_state`(전방 80빈) + 충돌용 360° `environment_state`
+3. LiDAR(`/scan`) → `obs_state`(전방 180° 80빈, 정책 입력) + 충돌용 360° 80빈 `environment_state`
 4. odom/joint → 실제 속도·요레이트·조향, 목표 거리/방향 계산
 5. goal 관측(state[80],[81])에 **localization noise** 주입(옵션), proprio 슬롯에 proprio noise(옵션)
 6. 보상·충돌·도달·타임아웃 판정 → `(state, reward, done)` 반환
