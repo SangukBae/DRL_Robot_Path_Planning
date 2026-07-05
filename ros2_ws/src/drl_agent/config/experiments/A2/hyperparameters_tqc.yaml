@@ -1,0 +1,190 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# EXPERIMENT A2 override — A1 (UTD + batch) + aux beta stage schedule.
+# Generated from config/hyperparameters_tqc.yaml (baseline). Differs from
+# baseline in: batch_size (A1) and aux_prediction.stagewise_loss_schedule (A2).
+# UTD ratio is passed on the CLI (-p updates_per_env_step:=4). Regenerate if the
+# baseline changes. Run: docs/experiments/tqc_scaling_improvement_plan.md §9.
+# ═══════════════════════════════════════════════════════════════════════════
+hyperparameters:
+  # 학습 기본
+  discount: 0.99                  # future return discount factor gamma
+  batch_size: 512                 # A1: 256 -> 512
+  buffer_size: 1000000            # replay buffer 최대 transition 수
+
+  # TQC 핵심
+  n_quantiles: 25                 # critic 한 개가 예측하는 quantile 개수
+  n_critics: 5                      # 초기엔 2로 시작, 안정화되면 5로 올려도 됨
+  top_quantiles_to_drop_per_net: 2 # critic마다 잘라낼 상위 quantile 개수 (TQC truncation)
+
+  # 타깃 네트워크
+  tau: 0.005                        # Polyak 계수
+  target_update_interval: 1         # 매 스텝마다 Polyak 업데이트
+
+  # 엔트로피(온도) 설정
+  ent_coef: "auto_1.0"              # 자동 조절(초기값 1.0). 고정 사용 시 0.2 같은 float
+  ent_coef_lr: 0.0003               # 온도 옵티마이저 학습률
+  # target_entropy: -1.0            # 명시 안 하면 코드에서 -action_dim으로 자동 설정
+
+  # 네트워크 폭/활성화/학습률
+  actor_hdim: 256                 # actor MLP hidden width
+  actor_activ: "relu"               # "relu"|"elu"
+  actor_lr: 0.0003                # actor optimizer learning rate
+
+  critic_hdim: 256                # critic MLP hidden width
+  critic_activ: "elu"               # "relu"|"elu"
+  critic_lr: 0.0003               # critic/encoder/aux trunk optimizer learning rate
+  # A3 (critic scaling): opt-in residual critic body + LayerNorm. 둘 다 false면
+  # critic 구조/파라미터가 기존 plain MLP와 완전히 동일(baseline 불변). residual을
+  # 켜면 critic state_dict가 바뀌므로 FRESH RUN 전용이며(기존 checkpoint strict load
+  # 불가), 이때 critic_hdim을 384 등으로 올려 value capacity를 키운다.
+  critic_residual: false          # true면 각 critic head를 residual MLP로 구성
+  critic_layernorm: false         # residual block 안에 LayerNorm 삽입 여부
+  critic_residual_blocks: 2       # residual block 개수 (residual=true일 때만 사용)
+
+  # 체크포인트(TrainTD7 호환 루틴)
+  reset_weight: 0.9               # checkpoint eval 기준 완화 계수(best_min_return decay)
+  steps_before_checkpointing: 40000 # checkpoint selection 로직을 본격화할 training step
+  max_eps_when_checkpointing: 50  # checkpoint 평가 시 min_return을 볼 최대 episode 수
+
+  # 우선순위 리플레이(옵션)
+  prioritized: false                # true로 켜면 아래 alpha/min_priority 사용
+  alpha: 0.4                      # prioritized replay 확률 분포의 sharpness
+  min_priority: 1.0               # priority update 시 보장할 최소 priority
+
+  # AUX_PRED: auxiliary prediction network (agent side).
+  #   enabled=false  -> SharedEncoder is an identity passthrough; actor/critic
+  #                     consume the raw 87-D state -> baseline TQC, unchanged.
+  #   enabled=true   -> 87 -> encoder_hidden_dim -> latent_dim (ELU) shared
+  #                     encoder; actor reads z.detach(); critic+aux update the
+  #                     encoder.  To actually train the aux head you must ALSO
+  #                     set environment(_curriculum).yaml aux_prediction.enabled
+  #                     = true so the env appends privileged future-risk labels.
+  # IMPORTANT: num_sectors / horizons_sec MUST match the env-side aux block.
+  # The curriculum trainer fail-fasts at startup (raises) if the env-appended
+  # label length disagrees with these values, so a mismatch aborts the run
+  # instead of training on the wrong target.  Also: aux is ONLY usable from
+  # train_tqc_curriculum_agent.py -- enabling it on any other TQC trainer raises.
+  aux_prediction:
+    enabled: true                   # aux encoder/head 전체 사용 여부
+    version: 1                      # legacy 표기용 버전 키(현재 head contract 선택 보조)
+    # --- shared encoder ---
+    # Kept at 256/128 ON PURPOSE: latent_dim feeds the actor/critic input width,
+    # so growing it is an actor/critic change (and breaks strict checkpoint resume
+    # of those nets). This round concentrates the extra capacity in the AUX BRANCH
+    # only (below), leaving the actor/critic path stable. See aux_prediction_design.md.
+    encoder_hidden_dim: 256         # shared encoder 첫 hidden width
+    latent_dim: 128                 # encoder 출력 latent 차원 = actor/critic 입력 차원
+    # --- label geometry (keep in sync with env) ---
+    num_sectors: 16                 # risk map을 나누는 angular sector 수
+    horizons_sec: [0.5, 1.0, 1.5]  # 미래 몇 초 지점을 supervision할지
+    # --- v1 loss ---
+    loss_weight: 0.1                # beta_aux on the risk-map MSE
+    aux_beta_warmup_steps: 5000     # ramp beta_aux 0->loss_weight over N steps (0=off)
+    # Per-curriculum-stage aux weight (overrides loss_weight + warmup when set).
+    # Empty here on purpose: use the legacy/global aux path again so Stage 0/1 do
+    # NOT hard-disable aux supervision. Effective beta now follows
+    # loss_weight + aux_beta_warmup_steps, matching the pre-schedule behaviour.
+    #
+    # A2 (aux beta stage schedule): set a per-stage list (indexed by curriculum
+    # stage, clamped to the last entry) to keep aux WEAK on the early clean stages
+    # and ramp it up as dynamic obstacles arrive — so aux does not over-shape the
+    # encoder before base driving is learned. The 10-stage curriculum (0..9) wants
+    # a 10-entry list, e.g.:
+    #   stagewise_loss_schedule: [0.0, 0.0, 0.02, 0.05, 0.08, 0.10, 0.10, 0.12, 0.15, 0.15]
+    # When non-empty this REPLACES loss_weight + aux_beta_warmup_steps. Empty ([])
+    # keeps the baseline global-beta path. See config/experiments/A2.
+    # A2: keep aux weak on early clean stages (0..1 off), ramp as dynamic
+    # obstacles arrive (stages ~4+). 10 entries for the 10-stage curriculum.
+    stagewise_loss_schedule: [0.0, 0.0, 0.02, 0.05, 0.08, 0.10, 0.10, 0.12, 0.15, 0.15]
+    # --- v2 options ---
+    min_distance_loss_weight: 0.1   # >0 enables the future min-distance head (WIRED)
+    use_distributional_aux: false   # quantile (pinball) risk prediction (wired, off)
+    distributional_quantiles: [0.1, 0.5, 0.9] # distributional aux가 맞출 quantile 위치
+    distributional_loss_weight: 0.5 # weight on the pinball term when it is enabled
+    # --- aux-head trunk (aux branch only; actor/critic untouched) ---
+    aux_trunk_hidden_dim: 256       # widened from the implicit 128
+    aux_trunk_layers: 2             # 2x (Linear -> LayerNorm -> ELU)
+    aux_head_layernorm: true        # aux trunk 각 block 뒤 LayerNorm 사용 여부
+    # Action-conditioned aux (Proximity-Aware style): predict the SAME future
+    # risk target from z_t AND the upcoming action sequence [a_t..a_{t+K-1}].
+    # Only the aux branch changes; actor/critic paths are untouched.  Requires
+    # enabled: true.  The replay buffer tracks episode boundaries so the lookup
+    # never crosses episodes.
+    action_conditioned_aux: true    # 미래 action sequence까지 보고 aux target을 예측할지
+    action_conditioned_steps: 4       # K: future actions used to condition (>=1)
+    action_embed_dim: 64              # widened 32 -> 64
+    action_condition_hidden_dim: 256  # GRU hidden size for the action context (128 -> 256)
+    # Falcon-style 1-block self-attention over the GRU output sequence (masked at
+    # the episode boundary). Aux branch only.
+    action_condition_attention: true # action GRU 출력에 self-attention block 추가 여부
+    action_condition_attention_heads: 4 # 위 attention의 head 개수
+    # A4 (aux fusion): action-conditioned head에서 z_t와 action context 융합 방식.
+    #   concat (기본): fused = [z_t, action_ctx] — 기존 동작, byte-identical.
+    #   film         : ctx -> (gamma, beta)로 z_t를 modulation 후 [z_mod, action_ctx].
+    #                  identity 초기화라 학습 시작 시 concat과 동일 출력이며, FiLM
+    #                  generator가 추가되어 aux head state_dict가 바뀌므로 FRESH RUN.
+    fusion_type: "concat"           # concat | film
+
+    # --- direct dynamic-avoidance heads (append-only; MUST match env config) ---
+    # Small heads on the SAME aux trunk that give the shared encoder a MORE DIRECT
+    # closing-risk signal than the risk map. risk_map / min_dist are retained, so
+    # these are pure additions (ablation: flip enabled off -> v1 behaviour). The
+    # ttc_*/hazard_* keys MUST be identical to environment_curriculum.yaml's
+    # aux_prediction block (verified via the wire header; a mismatch fail-fasts).
+    ttc_head_enabled: true            # 1st priority: regress normalized min-TTC
+    ttc_horizon_sec: 3.0              # TTC clamp horizon (label normaliser)
+    ttc_loss_weight: 0.5            # TTC regression loss 가중치
+    hazard_sector_head_enabled: true  # 2nd priority: low-dim front hazard classes
+    hazard_sector_bins: 3           # hazard classification output bin 수
+    hazard_sector_loss_weight: 0.5  # hazard sector BCE loss 가중치
+    # --- shared encoder polish (aux-branch-safe; default off) ---
+    # LayerNorm inside the shared encoder. Keeps out_dim==latent_dim (actor/critic
+    # width unchanged) but DOES change the encoder state_dict, so a strict resume
+    # of an old encoder falls back to fresh init (logged). Left OFF so in-flight
+    # runs resume cleanly; flip on for a fresh run if the latent needs stabilising.
+    encoder_layernorm: false        # shared encoder 내부 LayerNorm 사용 여부
+    # --- aux-ONLY temporal context (WIRED) ---
+    # Small GRU over the shared latents of the last `history_len` in-episode
+    # states; its output is concatenated onto the AUX-HEAD input only. The
+    # actor/critic stay non-recurrent (off-policy stability). The replay buffer
+    # samples a boundary-safe BACKWARD window so it never crosses an episode.
+    # NOW REDUNDANT with observation_time_context (actor-visible obs_state frame
+    # stacking, see environment_curriculum.yaml): when that is ON the stored state
+    # already carries the recent obs history, so this aux-only temporal GRU would
+    # summarise a history-of-histories. Default-OFF here in favour of the
+    # actor-visible stacking (the primary fix); flip ON only to ABLATE the aux
+    # temporal branch (the trainer warns if both are on).
+    temporal_enabled: false         # aux-only temporal GRU branch 사용 여부
+    temporal_mode: "none"           # 구버전 config 호환용 보존 키
+    history_len: 4                  # temporal GRU가 볼 최근 state window 길이
+    temporal_context_dim: 64        # temporal GRU context 출력 차원
+    temporal_attention: false       # temporal GRU 출력에 attention을 한 번 더 얹을지
+    state_stack_len: 1              # legacy key; 현재 temporal GRU 구현에서는 사실상 미사용
+
+  # ── TEMPORAL_ACTOR: compressed temporal feature on the ACTOR/CRITIC path ─────
+  # The env transports the stacked state (current 87-D + recent scan history; see
+  # environment_curriculum.yaml observation_time_context). With this ON, the agent
+  # does NOT feed that raw 327-D vector to one big shared encoder. Instead it
+  # SPLITS it: a light MLP on the CURRENT 87-D state -> z_cur, plus a small
+  # ScanTemporalEncoder on the scan history -> z_temporal, fused back to latent_dim
+  # so the actor/critic input width is unchanged and the policy stays NON-recurrent.
+  # This is the primary path; feeding the raw stack to the shared encoder (this OFF
+  # while the env still stacks) is the DEPRECATED behaviour kept only for ablation.
+  #   history_len            : scan frames; MUST equal observation_time_context.obs_frame_stack.
+  #   temporal_feature_dim   : z_temporal width (kept small).
+  #   encoder_type           : conv1d (default, over scan bins) | mlp | gru (ablation).
+  #   stage_enable_from      : temporal gain is 0 below this stage (current-state-only,
+  #                            no temporal gradient) and 1 at/above it — stage-wise
+  #                            activation WITHOUT changing any tensor shape.
+  # INDEPENDENT of aux_prediction: this can be enabled with aux_prediction.enabled
+  # OFF (temporal-only ablation; main encoder is identity, temporal+fusion train
+  # from the critic) or ON (the default — temporal AND aux supervision together).
+  # (The episode-start history warm-start is a fixed env behaviour: ObsTimeContext
+  # seeds the first frame by REPEAT, see obs_time_context.py — no knob here.)
+  temporal_actor_context:
+    enabled: true
+    history_len: 4
+    temporal_feature_dim: 32
+    encoder_type: "conv1d"
+    stack_agent_state: false        # MUST match observation_time_context.stack_agent_state
+    stage_enable_from: 2            # real temporal feature used from stage 2 on

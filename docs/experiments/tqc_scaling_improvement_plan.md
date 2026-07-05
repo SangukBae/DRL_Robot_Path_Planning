@@ -285,3 +285,133 @@ aux loss만 보고 판단하면 안 된다. 반드시 아래를 같이 본다.
 - temporal feature `32 -> 64`
 
 순으로 진행한다.
+
+## 9. 구현 및 실행 (A0–A4)
+
+A1–A4는 **코드 복제 없이** 기존 코드에 config/flag 분기를 추가하는 방식으로 구현했다.
+모든 옵션의 **기본값은 baseline(A0)과 동일**하므로, 아무 override 없이 실행하면 이전과
+byte 수준으로 같은 학습이 돈다. 실험은 `config/experiments/A{1..4}/` 아래의 override
+`hyperparameters_tqc.yaml` 하나로 선택하며(그 외 파일은 기본 config로 fallback),
+UTD 비율만 CLI 파라미터로 준다.
+
+### 공통 사전 조건
+
+두 개의 터미널이 먼저 떠 있어야 한다(기존과 동일).
+
+```bash
+# 1) Gazebo + Hunter SE
+ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
+
+# 2) 커리큘럼 환경 노드 (aux 라벨을 붙이려면 aux_prediction.enabled=true 상태여야 함)
+ros2 run drl_agent environment_curriculum.py
+```
+
+아래 학습 명령의 `train_config_file`은 **디렉터리**를 가리킨다(파일이 아니라).
+그 디렉터리에 있는 `hyperparameters_tqc.yaml`만 override로 쓰이고, `train_tqc_config.yaml`은
+없으므로 기본값으로 fallback된다. 절대경로 대신 아래처럼 `$PWD` 기반 경로를 써도 된다.
+
+```bash
+CFG=$PWD/ros2_ws/src/drl_agent/config/experiments   # 실험 config 루트
+```
+
+### A0 — baseline (변경 없음)
+
+```bash
+ros2 run drl_agent train_tqc_curriculum_agent.py
+# (seed 지정: --ros-args -p seed:=0)
+```
+
+### A1 — UTD ratio 증가 + batch size 확대
+
+- **구현**: 학습 루프의 non-checkpoint 경로에서 `1 env step -> N train update`가
+  가능하도록 옵션화. `train_tqc_curriculum_agent.py`가 `updates_per_env_step`만큼
+  `rl_agent.train()`을 반복한다. checkpoint 경로(`train_and_checkpoint`)는 손대지 않았다.
+- **config key**:
+  - `train_tqc_config.yaml: updates_per_env_step`(기본 1) 또는 CLI `-p updates_per_env_step:=N`(N>0이면 우선).
+  - `hyperparameters_tqc.yaml: batch_size`(실험 파일에서 256 → 512).
+- **바뀐 파일**: `scripts/policy/train_tqc_base.py`(설정/파라미터 로드),
+  `scripts/policy/train_tqc_curriculum_agent.py`(train 반복), `config/train_tqc_config.yaml`,
+  `config/experiments/A1/hyperparameters_tqc.yaml`.
+
+```bash
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+  -p updates_per_env_step:=4 \
+  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A1
+```
+
+### A2 — aux beta stage schedule
+
+- **구현**: `aux_prediction.stagewise_loss_schedule`는 이미 코드에서 지원됨
+  (`tqc_agent._current_aux_beta`가 비어있지 않으면 stage별 beta를 씀). A2는 이 값을
+  실제로 채운 실험 config와, 메인 config 주석/문서를 보완한 것이다. 커리큘럼 10-stage에
+  맞춘 10-entry 리스트를 쓴다.
+- **config key**: `hyperparameters_tqc.yaml: aux_prediction.stagewise_loss_schedule`
+  (기본 `[]` = baseline 글로벌 beta 경로). 비어있지 않으면 `loss_weight + aux_beta_warmup_steps`를 **대체**한다.
+- **바뀐 파일**: `config/hyperparameters_tqc.yaml`(주석/문서),
+  `config/experiments/A2/hyperparameters_tqc.yaml`(A1 + schedule).
+
+```bash
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+  -p updates_per_env_step:=4 \
+  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A2
+```
+
+### A3 — critic hidden 384 residual scaling
+
+- **구현**: `tqc_networks.Critic`에 `residual`/`layernorm` 옵션 추가. 둘 다 false면
+  기존 plain `nn.Sequential` critic과 파라미터 이름·수치까지 동일(baseline 불변).
+  true면 `_ResidualCriticBody`(`in_proj -> [LN?→Linear→act→Linear + skip] × n_blocks -> out`)를
+  쓰고 `critic_hdim`을 384로 올린다.
+- **config key**: `hyperparameters_tqc.yaml`의 `critic_residual`(기본 false),
+  `critic_layernorm`(기본 false), `critic_residual_blocks`(기본 2), `critic_hdim`(실험 384).
+- **바뀐 파일**: `scripts/policy/tqc_networks.py`(residual body),
+  `scripts/policy/tqc_agent.py`(config → Critic 전달), `config/hyperparameters_tqc.yaml`(키 추가),
+  `config/experiments/A3/hyperparameters_tqc.yaml`(A2 + residual 384).
+- **주의**: residual critic은 critic state_dict가 바뀌므로 **fresh run 전용**이다
+  (baseline plain-critic checkpoint를 strict load할 수 없음). trainer가 이를
+  **강제**한다 — `critic_residual=true`인데 `load_model:=true`(또는
+  `resume_weight_prefix`)이면 hybrid resume를 막기 위해 즉시 에러로 중단한다.
+
+```bash
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+  -p updates_per_env_step:=4 \
+  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A3
+```
+
+### A4 — FiLM aux fusion
+
+- **구현**: `aux_prediction.ActionConditionedAuxHead`에 `fusion_type` 옵션 추가. 기본
+  `concat`은 기존 `[z_t, action_ctx]` 그대로(byte-identical). `film`이면 action context에서
+  `(gamma, beta)`를 만들어 `z_mod = (1+gamma)*z_t + beta`로 latent를 modulation한 뒤
+  `[z_mod, action_ctx]`를 trunk로 보낸다. **identity 초기화**(zero-init generator)라 학습
+  시작 시점 출력은 concat과 완전히 동일하고(검증 max|Δ|=0), trunk 입력 폭도 그대로라
+  actor/critic·trunk는 손대지 않는다. FiLM generator는 trunk/output head를 만든
+  **뒤에 마지막으로** 생성하므로, 같은 seed에서 trunk/head 초기 가중치가 concat(A3)과
+  **동일**하다 — A4는 초기조건이 같은 상태에서 fusion만 다른 순수 ablation이다.
+- **config key**: `hyperparameters_tqc.yaml: aux_prediction.fusion_type`(기본 `concat`; `concat`|`film`).
+- **바뀐 파일**: `scripts/policy/aux_prediction.py`(fusion_type + FiLM),
+  `config/hyperparameters_tqc.yaml`(키 추가),
+  `config/experiments/A4/hyperparameters_tqc.yaml`(A3 + film).
+- **주의**: FiLM generator가 추가되어 aux head state_dict가 바뀌므로 **fresh run 전용**이며,
+  A3와 마찬가지로 `fusion_type=film`이면 trainer가 `load_model:=true` /
+  `resume_weight_prefix`를 거부한다.
+
+```bash
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+  -p updates_per_env_step:=4 \
+  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A4
+```
+
+### 실험 config 유지보수
+
+`config/experiments/A{1..4}/hyperparameters_tqc.yaml`은 baseline `config/hyperparameters_tqc.yaml`을
+복사해 실험 키만 바꾼 파일이다(각 파일 상단 헤더에 명시). baseline이 바뀌면 이 파일들도
+재생성해야 drift가 없다. 각 실험이 baseline과 다른 키만 요약하면:
+
+| 실험 | updates_per_env_step (CLI) | batch_size | stagewise_loss_schedule | critic_residual / hdim | fusion_type |
+|------|------|------|------|------|------|
+| A0 | 1 | 256 | `[]` | false / 256 | concat |
+| A1 | 4 | 512 | `[]` | false / 256 | concat |
+| A2 | 4 | 512 | 10-entry | false / 256 | concat |
+| A3 | 4 | 512 | 10-entry | true / 384 | concat |
+| A4 | 4 | 512 | 10-entry | true / 384 | film |
