@@ -38,6 +38,11 @@ class ReplayBuffer:
         self.ptr  = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
+    def reset(self):
+        """Empty the buffer (used on a contract-changing curriculum promotion)."""
+        self.ptr = 0
+        self.size = 0
+
     def sample(self):
         idx = np.random.randint(0, self.size, size=self.batch_size)
         return (

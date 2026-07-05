@@ -96,6 +96,16 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
         self.cur_pass_cr         = list(cur.get("pass_eval_collision_rate",
                                                 [0.05, 0.10, 0.15, 0.20]))
         self.cur_consec_passes   = int(cur.get("consecutive_eval_passes", 2))
+        # Replay-buffer reset + re-warmup on promotion INTO a contract-changing
+        # stage (Stage 5 unseals the yield action). Mirrors train_tqc_curriculum_agent
+        # so off-contract (yield-inactive) transitions do not poison the new critic.
+        self.cur_reset_buffer_stages = set(
+            int(s) for s in (cur.get("reset_buffer_on_promote_to", []) or [])
+        )
+        self.cur_rewarmup_steps = int(
+            cur.get("rewarmup_steps", self.timesteps_before_training)
+        )
+        self._rewarmup_until_t = 0
 
         self._curriculum_stage       = 0
         self._stage_start_step       = 0
@@ -201,6 +211,7 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                     "epoch":                  self._resume_epoch,
                     "ep_timesteps":           self._partial_ep_timesteps,
                     "ep_total_reward":        self._partial_ep_reward,
+                    "rewarmup_until_t":       self._rewarmup_until_t,
                 },
                 f,
                 indent=2,
@@ -240,6 +251,7 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
             self._resume_epoch           = int(state.get("epoch", 1))
             self._partial_ep_timesteps   = int(state.get("ep_timesteps", 0))
             self._partial_ep_reward      = float(state.get("ep_total_reward", 0.0))
+            self._rewarmup_until_t       = int(state.get("rewarmup_until_t", 0))
             self._last_global_t = self._resume_global_t
             self._resume_loaded = True
             self.get_logger().info(
@@ -445,6 +457,16 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
             f"[Curriculum] Training starts — {num_stages} stages total."
         )
 
+        # If a crash happened mid re-warmup, the reloaded buffer still holds the
+        # pre-reset (off-contract) transitions — clear it again so the resumed
+        # re-warmup refills with on-contract data.
+        if self._resume_loaded and self._rewarmup_until_t > self._resume_global_t:
+            self.rl_agent.replay_buffer.reset()
+            self.get_logger().info(
+                f"[Curriculum] Resumed during post-promotion re-warmup "
+                f"(until step {self._rewarmup_until_t}); replay buffer re-cleared."
+            )
+
         ENV_DIM = self.environment_dim
         state           = self.reset()
         ep_total_reward = 0.0
@@ -466,6 +488,14 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                 self._em.reset(state)   # new episode → reset paper-metric tracker
             train_ready = t >= self.timesteps_before_training
             use_policy  = t >  self.timesteps_before_training
+            # Post-promotion re-warmup: after a Stage-5 buffer reset, take random
+            # actions and skip gradient updates until the buffer refills on-contract.
+            if self._rewarmup_until_t:
+                if t <= self._rewarmup_until_t:
+                    train_ready = False
+                    use_policy  = False
+                else:
+                    self._rewarmup_until_t = 0
             if train_ready and not training_enabled_logged:
                 self.get_logger().info(
                     f"[Curriculum] Warmup done at step {t} — "
@@ -518,6 +548,9 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                     round(float(reward), 6), int(bool(ep_finished)), int(bool(info)),
                 ])
 
+            # train_ready is forced False during warmup AND post-promotion
+            # re-warmup (Stage-5 buffer reset), so gradient updates pause while the
+            # just-cleared buffer refills with on-contract random-action data.
             if train_ready and not self.use_checkpoints:
                 self.rl_agent.train()
 
@@ -623,7 +656,32 @@ class TrainTQCIEQNCurriculum(TrainTQC_IEQN):
                                 f"cr={metrics['collision_rate']*100:.1f}% ≤ "
                                 f"{self.cur_pass_cr[min(self._curriculum_stage, len(self.cur_pass_cr)-1)]*100:.0f}%)"
                             )
-                            self._set_curriculum_stage(new_stage)
+                            # Fail-fast: only proceed once the env has ACTUALLY
+                            # switched stages. If /gym_node/set_parameters times out
+                            # or is rejected, the env stays on the old contract while
+                            # the trainer would reset its buffer / re-warmup on the new
+                            # one — a silent desync. Abort instead.
+                            if not self._set_curriculum_stage(new_stage):
+                                raise RuntimeError(
+                                    f"[Curriculum] Failed to push stage {new_stage} to "
+                                    f"gym_node (/gym_node/set_parameters); aborting "
+                                    f"before buffer reset / re-warmup to avoid a "
+                                    f"trainer/environment stage desync."
+                                )
+                            # Contract-changing boundary (Stage 5 unseals yield):
+                            # clear the buffer + re-warmup so off-contract data does
+                            # not poison the new stage's critic.
+                            if new_stage in self.cur_reset_buffer_stages:
+                                self.rl_agent.replay_buffer.reset()
+                                self._rewarmup_until_t = (
+                                    t + self.cur_rewarmup_steps
+                                    if self.cur_rewarmup_steps > 0 else 0
+                                )
+                                self.get_logger().info(
+                                    f"[Curriculum] Stage {new_stage} unseals the yield "
+                                    f"action — replay buffer cleared; re-warmup "
+                                    f"{self.cur_rewarmup_steps} steps."
+                                )
                             self._stage_start_step       = t
                             self._stage_start_ep         = self._total_episodes
                             self._consecutive_pass_count = 0
