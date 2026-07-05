@@ -14,9 +14,17 @@ curriculum_settings:
   # Early stages require high success because the task is simple; later stages
   # allow lower success as the environment becomes genuinely harder.
   # List length should equal (num_stages - 1): one entry per promotable stage.
-  pass_eval_success_rate:   [0.90, 0.85, 0.75, 0.70]
-  pass_eval_collision_rate: [0.05, 0.10, 0.15, 0.20]
+  # 10-stage curriculum → 9 entries; matches train_tqc_curriculum_config.yaml (uniform promotion).
+  pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.80, 0.80, 0.76, 0.74, 0.72, 0.70]
+  pass_eval_collision_rate: [0.10, 0.10, 0.10, 0.12, 0.12, 0.15, 0.20, 0.20, 0.20]
 
   # How many consecutive evaluations must pass the threshold before promotion.
   # Set to 1 for faster iteration, 2-3 for more conservative advancement.
   consecutive_eval_passes: 2
+
+  # Replay-buffer reset + re-warmup on promotion INTO a contract-changing stage.
+  # Stage 5 (add_clutter_clean) unseals the yield action, so clear the buffer and
+  # refill it with on-contract data before gradient updates resume. Matches
+  # train_tqc_curriculum_config.yaml so all baselines handle the boundary identically.
+  reset_buffer_on_promote_to: [5]
+  rewarmup_steps: 5000
