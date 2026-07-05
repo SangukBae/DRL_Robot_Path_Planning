@@ -70,6 +70,15 @@ hyperparameters:
     # Empty here on purpose: use the legacy/global aux path again so Stage 0/1 do
     # NOT hard-disable aux supervision. Effective beta now follows
     # loss_weight + aux_beta_warmup_steps, matching the pre-schedule behaviour.
+    #
+    # A2 (aux beta stage schedule): set a per-stage list (indexed by curriculum
+    # stage, clamped to the last entry) to keep aux WEAK on the early clean stages
+    # and ramp it up as dynamic obstacles arrive — so aux does not over-shape the
+    # encoder before base driving is learned. The 10-stage curriculum (0..9) wants
+    # a 10-entry list, e.g.:
+    #   stagewise_loss_schedule: [0.0, 0.0, 0.02, 0.05, 0.08, 0.10, 0.10, 0.12, 0.15, 0.15]
+    # When non-empty this REPLACES loss_weight + aux_beta_warmup_steps. Empty ([])
+    # keeps the baseline global-beta path. See config/experiments/A2.
     stagewise_loss_schedule: []
     # --- v2 options ---
     min_distance_loss_weight: 0.1   # >0 enables the future min-distance head (WIRED)
