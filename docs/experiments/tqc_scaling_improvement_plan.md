@@ -76,29 +76,7 @@ batch_size = 256
 - critic 불안정성이 생기면 바로 낮춰야 한다.
 - 시작은 `2 -> 4 -> 8` 순서가 맞다.
 
-## 4.2 2순위: critic/encoder scaling
-
-현재 critic은 이미 강한 편이지만, off-policy continuous control에서 병목은 actor보다 critic/value 쪽인 경우가 많다.
-
-권장 방향:
-
-- critic hidden: `256 -> 384` 또는 `512`
-- plain MLP -> `Residual MLP`
-- LayerNorm 또는 유사 정규화 추가
-
-권장 순서:
-
-1. `384` 규모 실험
-2. 안정적이면 `512` 실험
-
-actor는 초기에는 그대로 유지한다.
-
-- `actor_hdim = 256` 유지
-- critic/encoder 변화의 효과를 먼저 본다
-
-이 단계는 **GPU 사용률을 높이는 목적**도 있지만, 더 중요한 목적은 **value estimation capacity**를 늘리는 것이다.
-
-## 4.3 3순위: aux beta stage schedule
+## 4.2 2순위: aux beta stage schedule
 
 현재 aux는 shared encoder를 critic과 함께 학습시킨다. 따라서 stage 초반부터 aux가 너무 강하면
 기본 주행 학습을 방해할 수 있다.
@@ -116,7 +94,62 @@ stagewise_loss_schedule: [0.0, 0.02, 0.05, 0.10, 0.15]
 
 정확한 값은 stage 개수와 커리큘럼 설계에 맞게 조정한다. 핵심은 **초기 clean stage에서 encoder를 aux로 과하게 끌지 않는 것**이다.
 
-## 4.4 4순위: temporal encoder ablation
+현재 코드 구조상 이 변경은 구현 비용이 작고, curriculum과도 직접 맞물린다. 따라서 critic scaling보다
+앞에 두는 편이 더 안전하다.
+
+## 4.3 3순위: critic/encoder scaling
+
+현재 critic은 이미 강한 편이지만, off-policy continuous control에서 병목은 actor보다 critic/value 쪽인 경우가 많다.
+
+권장 방향:
+
+- critic hidden: `256 -> 384`를 먼저 시도하고, 그 다음 `512`
+- plain MLP -> `Residual MLP`
+- LayerNorm 또는 유사 정규화 추가
+
+권장 순서:
+
+1. `384` 규모 실험
+2. 안정적이면 `512` 실험
+
+actor는 초기에는 그대로 유지한다.
+
+- `actor_hdim = 256` 유지
+- critic/encoder 변화의 효과를 먼저 본다
+
+이 단계는 **GPU 사용률을 높이는 목적**도 있지만, 더 중요한 목적은 **value estimation capacity**를 늘리는 것이다.
+
+다만 1차 실험으로 바로 넣기보다는, `UTD + batch + aux beta schedule`이 실제로 성능에 기여하는지 본 뒤
+2차 실험으로 넣는 편이 더 좋다.
+
+## 4.4 4순위: FiLM/gated aux fusion
+
+현재 action-conditioned aux head는 `z_t`와 미래 action context를 단순 concat한다.
+
+```text
+fused = concat(z_t, action_context)
+```
+
+이건 안정적이지만, **"이 state에서 이 미래 action이 위험에 어떤 의미를 갖는가"**를 반영하기엔 표현력이 제한적일 수 있다.
+
+권장 변경:
+
+- `FiLM fusion`
+- 또는 `gated fusion`
+
+예시:
+
+```text
+gamma, beta = MLP(action_context)
+z_mod = gamma * z + beta
+fused = concat(z_mod, action_context)
+```
+
+이 변경은 aux head를 크게 키우는 것보다 **encoder shaping quality**를 높일 가능성이 있다.
+
+다만 코드 변경이 들어가므로, 1차 실험보다는 2차 실험에 두는 것이 맞다.
+
+## 4.5 5순위: temporal encoder ablation
 
 현재 temporal actor context는 이미 들어가 있다.
 
@@ -141,31 +174,6 @@ stagewise_loss_schedule: [0.0, 0.02, 0.05, 0.10, 0.15]
 4. Transformer는 마지막
 
 history length가 짧기 때문에 Transformer는 우선순위가 높지 않다.
-
-## 4.5 5순위: aux fusion 개선
-
-현재 action-conditioned aux head는 `z_t`와 미래 action context를 단순 concat한다.
-
-```text
-fused = concat(z_t, action_context)
-```
-
-이건 안정적이지만, **"이 state에서 이 미래 action이 위험에 어떤 의미를 갖는가"**를 반영하기엔 표현력이 제한적일 수 있다.
-
-권장 변경:
-
-- `FiLM fusion`
-- 또는 `gated fusion`
-
-예시:
-
-```text
-gamma, beta = MLP(action_context)
-z_mod = gamma * z + beta
-fused = concat(z_mod, action_context)
-```
-
-이 변경은 aux head를 크게 키우는 것보다 **encoder shaping quality**를 높일 가능성이 있다.
 
 ## 4.6 6순위: risk-balanced replay
 
@@ -200,12 +208,25 @@ fused = concat(z_mod, action_context)
 | 실험 | 변경점 |
 |------|--------|
 | `A0` | 현재 baseline |
-| `A1` | `UTD=4`, `batch=512` |
-| `A2` | `A1 + critic hidden 384/512 residual` |
-| `A3` | `A2 + aux beta stage schedule` |
+| `A1` | `UTD=2` 또는 `4`, `batch=512` |
+| `A2` | `A1 + aux beta stage schedule` |
 
-권장 순서는 `A0 -> A1 -> A3 -> A2`도 가능하다. 현재 구조에서 **aux schedule**은 코드 변경 범위가 작고,
-critic scaling보다 먼저 볼 가치가 있다.
+이 단계에서는 **critic residual scaling과 FiLM fusion을 일부러 보류**한다. 목적은
+`UTD + batch` 자체의 효과와 `aux beta schedule`의 효과를 먼저 분리해서 보는 데 있다.
+
+## 5.1 2차 실험 세트
+
+1차 실험이 개선을 보일 때만 구조 변경을 올린다.
+
+| 실험 | 변경점 |
+|------|--------|
+| `A3` | `A2 + critic hidden 384 residual` |
+| `A4` | `A3 + FiLM aux fusion` |
+
+이 순서를 권장한다.
+
+- `384 residual`은 `512 residual`보다 안전한 첫 scaling step이다.
+- `FiLM fusion`은 유망하지만 코드 변경이 들어가므로, 먼저 UTD/schedule 효과를 확인한 뒤 넣는 편이 해석이 쉽다.
 
 ## 6. 평가 지표
 
@@ -247,20 +268,20 @@ aux loss만 보고 판단하면 안 된다. 반드시 아래를 같이 본다.
 따라서 첫 개선은 "모델을 무작정 크게"가 아니라 아래 순서가 맞다.
 
 1. `UTD ratio`와 `batch size`를 올려 GPU에 더 많은 학습 일을 준다.
-2. actor보다 critic/encoder를 먼저 scaling한다.
-3. aux는 head 확장보다 `beta stage schedule`과 `FiLM/gated fusion`으로 encoder shaping을 개선한다.
+2. `aux beta stage schedule`로 stage별 encoder shaping 강도를 조절한다.
+3. 그 다음에 critic/encoder scaling과 FiLM/gated fusion을 올린다.
 4. 위험 샘플링과 latent dynamics aux는 후순위 실험으로 둔다.
 
 가장 추천하는 첫 수정은 다음 조합이다.
 
-- `updates_per_env_step = 4`
+- `updates_per_env_step = 2` 또는 `4`
 - `batch_size = 512`
 - `aux beta stage schedule` 적용
 
 그 다음 단계로:
 
-- critic residual scaling
-- temporal feature `32 -> 64`
+- critic hidden `384` residual scaling
 - FiLM aux fusion
+- temporal feature `32 -> 64`
 
 순으로 진행한다.
