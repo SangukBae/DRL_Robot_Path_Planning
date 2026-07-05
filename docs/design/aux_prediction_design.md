@@ -7,6 +7,41 @@ TQC curriculum agent 위에 얹은 future-aware auxiliary prediction.
 
 기본값(양쪽 config `enabled: false`)에서는 baseline TQC와 byte 단위로 동일하다.
 
+## 아키텍처 (블록 다이어그램)
+
+```
+                             s_t  (87-D state)
+                                   │
+                                   ▼
+                     ┌─────────────────────────┐
+                     │   SharedEncoder  E      │   87 → 256 → 128
+                     └────────────┬────────────┘
+                                  │ z_t (latent 128)
+        ┌─────────────────────────┼──────────────────────────────┐
+        │ z_t.detach()            │ (z_t, a_t)                    │ z_t
+        ▼                         ▼                               ▼
+  ┌───────────┐            ┌────────────┐             ┌───────────────────────┐
+  │  Actor π  │──► a_t ──► │   Critic   │             │        Aux Head       │◄─ action_ctx   (v2)
+  └───────────┘            └─────┬──────┘             │   trunk (MLP + LN)    │◄─ temporal_ctx (v2)
+    (→ 환경)                     │ critic_loss        │   → risk map  H×K     │
+                                 │                    │     [+min-dist][+distr]│
+                                 │                    └───────────┬───────────┘
+                                 │                                │ aux_loss
+                                 │                                ▼
+                                 │                       privileged label
+                                 │                    (human_states CV rollout)
+                                 ▼
+                   (critic_loss + β·aux_loss).backward()
+                     → E + Critic + Aux(head·GRU) 갱신
+                       Actor는 z_t.detach() → encoder로 grad 안 감
+
+  v2 context (aux head 입력에만 concat, 정책은 비순환 유지):
+    action_ctx   : [a_t .. a_{t+K-1}] → action embed → GRU (+선택 self-attention)
+    temporal_ctx : [s_t .. s_{t-N+1}] → SharedEncoder E → GRU
+
+  배포/추론 : s_t → E → Actor 만 사용 (aux head·label 경로 전부 drop)
+```
+
 ## 1. 차용한 논문 아이디어
 
 | 논문 (`paper/`) | 재사용한 아이디어 |
