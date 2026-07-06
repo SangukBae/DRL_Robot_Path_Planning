@@ -308,10 +308,11 @@ ros2 run drl_agent environment_curriculum.py
 
 아래 학습 명령의 `train_config_file`은 **디렉터리**를 가리킨다(파일이 아니라).
 그 디렉터리에 있는 `hyperparameters_tqc.yaml`만 override로 쓰이고, `train_tqc_config.yaml`은
-없으므로 기본값으로 fallback된다. 절대경로 대신 아래처럼 `$PWD` 기반 경로를 써도 된다.
+없으므로 기본값으로 fallback된다. 아래 예시는 **현재 작업 디렉터리가 `ros2_ws/`인 경우**를
+기준으로 한다. 절대경로 대신 아래처럼 `$PWD` 기반 경로를 써도 된다.
 
 ```bash
-CFG=$PWD/ros2_ws/src/drl_agent/config/experiments   # 실험 config 루트
+CFG=$PWD/src/drl_agent/config/experiments   # 실험 config 루트 (cwd = ros2_ws)
 ```
 
 ### A0 — baseline (변경 없음)
@@ -336,7 +337,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py
 ```bash
 ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   -p updates_per_env_step:=4 \
-  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A1
+  -p train_config_file:=$PWD/src/drl_agent/config/experiments/A1
 ```
 
 ### A2 — aux beta stage schedule
@@ -353,7 +354,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
 ```bash
 ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   -p updates_per_env_step:=4 \
-  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A2
+  -p train_config_file:=$PWD/src/drl_agent/config/experiments/A2
 ```
 
 ### A3 — critic hidden 384 residual scaling
@@ -375,7 +376,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
 ```bash
 ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   -p updates_per_env_step:=4 \
-  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A3
+  -p train_config_file:=$PWD/src/drl_agent/config/experiments/A3
 ```
 
 ### A4 — FiLM aux fusion
@@ -399,7 +400,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
 ```bash
 ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   -p updates_per_env_step:=4 \
-  -p train_config_file:=$PWD/ros2_ws/src/drl_agent/config/experiments/A4
+  -p train_config_file:=$PWD/src/drl_agent/config/experiments/A4
 ```
 
 ### 실험 config 유지보수
