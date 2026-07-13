@@ -49,6 +49,13 @@ from curriculum_aux_eval import CurriculumAuxEvalMixin
 from file_manager import load_yaml
 import seed_utils
 from episode_metrics import EpisodeMetrics, PaperMetricsCSV
+# DYN_AVOID: consolidated per-episode dynamic-obstacle avoidance diagnostic CSV.
+# driving_mean / low_obs_speed_frac live in the pure module so they reproduce the
+# episode_driving definitions exactly AND stay unit-testable off-ROS.
+from dynamic_avoidance_log import (
+    DynamicAvoidanceCSV, driving_mean as _driving_mean,
+    low_obs_speed_frac as _low_speed_frac,
+)
 import pure_pursuit
 # AUX_PRED: expected wire-format version for the env<->agent label contract.
 from aux_prediction_labels import AUX_WIRE_VERSION
@@ -389,6 +396,20 @@ class TrainTQCCurriculum(
             f"[Metrics] Paper CSVs: {self._paper.episode_path} | {self._paper.eval_path}"
         )
 
+        # DYN_AVOID: single-file dynamic-obstacle avoidance diagnostic log. It
+        # consolidates the dynamic-avoidance-relevant columns scattered across the
+        # other CSVs (see dynamic_avoidance_log.py) and adds the env's privileged
+        # human-interaction / clutter / yield / near-event diagnostics, so this one
+        # file is enough to analyse pedestrian-avoidance behaviour.
+        self._dyn_avoid_csv = DynamicAvoidanceCSV(self.log_dir, self._csv_run_tag)
+        self.get_logger().info(
+            f"[DYN_AVOID] Dynamic-avoidance CSV: {self._dyn_avoid_csv.path}"
+        )
+        # Count episodes whose diagnostics could not be read (env param missing /
+        # service or parse failure). Used to rate-limit a WARN so a broken
+        # telemetry path is visible at run time and NOT silently logged as NaN.
+        self._dyn_diag_unavailable = 0
+
         # AUX_ABLATION: per-eval summary CSV (paper aux on/off comparison) + a
         # one-shot run manifest so per-seed aggregation never mixes configs.
         self._aux_eval_summary = aux_log.EvalSummaryCSV(
@@ -701,6 +722,33 @@ class TrainTQCCurriculum(
         """Delegate to GymParameterClient.get_current_map_type."""
         return self._gym_params.get_current_map_type()
 
+    def _fetch_dynamic_diag(self) -> dict:
+        """DYN_AVOID: read the env's privileged per-episode dynamic-avoidance
+        diagnostics for the just-finished episode (delegates to
+        GymParameterClient.get_dynamic_diag).
+
+        The env ALWAYS publishes a full diagnostic dict (all keys present) even
+        when no pedestrian was active — so an empty {} here means the telemetry
+        path is broken (parameter absent on an older env, or a service/parse
+        failure), NOT "no humans". We warn (rate-limited) in that case so the
+        resulting unknown/NaN rows are attributable to a dead telemetry path and
+        not misread as genuinely human-free episodes."""
+        diag = self._gym_params.get_dynamic_diag()
+        if not diag:
+            self._dyn_diag_unavailable += 1
+            n = self._dyn_diag_unavailable
+            # Warn on the 1st, 2nd, 5th, then every 50th unavailable episode.
+            if n <= 2 or n == 5 or n % 50 == 0:
+                self.get_logger().warn(
+                    f"[DYN_AVOID] episode_dynamic_diag unavailable (empty) — "
+                    f"dynamic-avoidance telemetry is NOT being collected; "
+                    f"dynamic_avoidance_metrics rows will be unknown/NaN "
+                    f"(occurrence #{n}). Check that the running env node exposes "
+                    f"the 'episode_dynamic_diag' parameter (rebuild if it predates "
+                    f"DYN_AVOID)."
+                )
+        return diag
+
 
     # ------------------------------------------------------------------ #
     #  AUX_PRED: formal-eval helpers                                        #
@@ -1006,6 +1054,36 @@ class TrainTQCCurriculum(
                         if _ep_gazebo_rtf_buf else float("nan"),
                     ] + self._aux_log_meta_cols()    # AUX_ABLATION
                       + [self._cur_episode_map_type])  # structured map curriculum
+
+                # DYN_AVOID: one consolidated dynamic-avoidance row per completed
+                # episode (skip eval-cut partials, matching the paper CSV). Reads
+                # the env's privileged diagnostics BEFORE the reset below clears
+                # them, and reuses ep_metrics / the motion buffers already computed.
+                if not force_eval_cut:
+                    _dyn = self._fetch_dynamic_diag()
+                    _seed_m, _aux_en_m, _aux_ver_m = self._aux_log_meta_cols()
+                    # Re-expose the episode_driving columns with the SAME
+                    # definitions as train_tqc_base (plain buffer mean; low-speed
+                    # fraction over abs(signed speed)) so the consolidated file
+                    # matches the source file for every episode.
+                    _mean_cmd_v_d = _driving_mean(_ep_cmd_v_buf)
+                    _mean_cmd_steer = _driving_mean(_ep_cmd_steer_buf)
+                    _mean_rtf = _driving_mean(_ep_gazebo_rtf_buf)
+                    _low_obs_frac = _low_speed_frac(
+                        _ep_obs_speed_buf, self._motion_low_speed_threshold_mps)
+                    self._dyn_avoid_csv.write_episode(
+                        episode=ep_num, global_t=t, stage=self._curriculum_stage,
+                        map_type=self._cur_episode_map_type,
+                        seed=_seed_m, aux_enabled=_aux_en_m, aux_version=_aux_ver_m,
+                        success=goal_reached, collision=collision, timeout=timeout,
+                        total_reward=ep_total_reward, steps=ep_timesteps,
+                        ep_metrics=ep_metrics, final_goal_dist_m=final_dist,
+                        mean_gazebo_rtf=_mean_rtf,
+                        mean_cmd_v_mps=_mean_cmd_v_d,
+                        mean_cmd_steering_rad=_mean_cmd_steer,
+                        low_obs_speed_frac=_low_obs_frac,
+                        diag=_dyn,
+                    )
 
                 self._total_episodes = ep_num
                 # Episode is done — next save should reflect a fresh episode start

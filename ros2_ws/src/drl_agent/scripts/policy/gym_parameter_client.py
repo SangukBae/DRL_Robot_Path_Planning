@@ -216,6 +216,36 @@ class GymParameterClient:
             self._log().warn(f"[AUX_ABLATION] could not read env aux params: {e}")
         return out
 
+    def get_dynamic_diag(self) -> dict:
+        """DYN_AVOID: read the env's privileged per-episode dynamic-avoidance
+        diagnostics (the `episode_dynamic_diag` JSON string parameter).
+
+        Returns the parsed dict, or {} when unavailable (older env, layout
+        without pedestrians, or a malformed payload). Cheap: one get_parameters
+        round-trip, called once per episode (before the trainer resets the env)."""
+        import json
+        try:
+            req = GetParameters.Request()
+            req.names = ["episode_dynamic_diag"]
+            res = self._node._call_service(
+                self._get_client,
+                req,
+                "gym_node/get_parameters",
+                wait_timeout=1.0,
+                call_timeout=3.0,
+            )
+            if not res.values:
+                return {}
+            pv = res.values[0]
+            if pv.type == ParameterType.PARAMETER_STRING and pv.string_value:
+                out = json.loads(pv.string_value)
+                return out if isinstance(out, dict) else {}
+        except EnvServiceError:
+            return {}
+        except (ValueError, TypeError):
+            return {}
+        return {}
+
     def get_current_map_type(self) -> str:
         """Read the env's read-only `current_map_type` parameter (structured map
         curriculum). Returns "" when unavailable (e.g. layout disabled / older

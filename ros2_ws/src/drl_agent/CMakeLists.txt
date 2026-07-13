@@ -62,6 +62,7 @@ install(
     scripts/utils/point_cloud2.py
     scripts/utils/file_manager.py
     scripts/utils/episode_metrics.py
+    scripts/utils/dynamic_avoidance_log.py     # DYN_AVOID consolidated per-episode CSV
     scripts/utils/pure_pursuit.py
     scripts/utils/geometry_utils.py    # pure helpers (extracted from environment.py)
     scripts/utils/seed_utils.py        # centralised RNG seeding
@@ -74,6 +75,7 @@ install(
     scripts/environment/environment_curriculum.py
     scripts/environment/reward_calculator.py     # extracted from environment.py
     scripts/environment/collision_checker.py     # RectSafetyChecker (from environment.py)
+    scripts/environment/dynamic_avoidance_telemetry.py # DYN_AVOID per-episode pedestrian diagnostics
     scripts/environment/localization_noise.py    # loc/proprio noise models (from environment.py)
     scripts/environment/map_catalog.py           # static-obstacle catalog policy (pure)
     scripts/environment/map_layout_registry.py   # pure map-layout geometry builder

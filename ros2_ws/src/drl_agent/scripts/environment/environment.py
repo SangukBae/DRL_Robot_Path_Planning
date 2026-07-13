@@ -4,6 +4,7 @@
 import os
 import sys
 import math
+import json      # DYN_AVOID: serialize per-episode dynamic-avoidance diagnostics
 import hashlib   # AUX_ABLATION: env config content hash for run manifests
 import threading
 import random
@@ -40,6 +41,8 @@ from collision_checker import RectSafetyChecker
 from localization_noise import LocalizationNoiseModel, ProprioNoiseModel
 # AUX_PRED: privileged future-risk label generation (training-only).
 import aux_prediction_labels as aux_labels
+# DYN_AVOID: privileged per-episode dynamic-obstacle avoidance telemetry.
+from dynamic_avoidance_telemetry import DynamicAvoidanceEpisodeDiag
 from obs_time_context import ObsTimeContext
 from sensor_msgs.msg import LaserScan
 
@@ -807,6 +810,32 @@ class Environment(
         # Read-only ROS parameter so the trainer can log the per-episode map_type
         # (and aggregate per-map evaluation) via /gym_node/get_parameters.
         self.declare_parameter("current_map_type", "")
+        # DYN_AVOID: privileged per-episode dynamic-obstacle (pedestrian)
+        # avoidance diagnostics. The accumulator is fed the privileged robot +
+        # human ground truth each /step; the resulting flat record is published as
+        # a JSON string on the read-only `episode_dynamic_diag` parameter, which
+        # the curriculum trainer reads once per episode (like current_map_type)
+        # and writes into dynamic_avoidance_metrics_<run_tag>.csv. Thresholds are
+        # ROS params so the diagnostic definitions are tunable without code edits.
+        self.declare_parameter("dyn_diag_near_human_dist_m", 1.0)
+        self.declare_parameter("dyn_diag_interaction_radius_m", 2.0)
+        self.declare_parameter("dyn_diag_collision_attrib_radius_m", 0.7)
+        self.declare_parameter("dyn_diag_ttc_collision_radius_m", 0.5)
+        self.declare_parameter("dyn_diag_static_clutter_lidar_m", 0.6)
+        self._dyn_diag = DynamicAvoidanceEpisodeDiag(
+            near_human_dist_m=float(self.get_parameter("dyn_diag_near_human_dist_m").value),
+            interaction_radius_m=float(self.get_parameter("dyn_diag_interaction_radius_m").value),
+            collision_attrib_radius_m=float(self.get_parameter("dyn_diag_collision_attrib_radius_m").value),
+            ttc_collision_radius_m=float(self.get_parameter("dyn_diag_ttc_collision_radius_m").value),
+            static_clutter_lidar_m=float(self.get_parameter("dyn_diag_static_clutter_lidar_m").value),
+        )
+        self.declare_parameter("episode_dynamic_diag", "{}")
+        # Cache of the last-published diag signature so per-step publishing is
+        # skipped whenever the diagnostic CONTENT is unchanged (see
+        # _publish_dynamic_diag). The trainer only reads this once per episode, so
+        # this keeps the ROS parameter-update + /parameter_events cost off the hot
+        # step path except when new dynamic-avoidance information actually appears.
+        self._dyn_diag_last_key = None
         # Writable flag the trainer raises around its evaluation episodes so the
         # SAME training env switches to the eval_map_types round-robin (instead of
         # the training map distribution) while STILL activating obstacles/humans.
@@ -1990,6 +2019,32 @@ class Environment(
         state_list.extend(float(v) for v in label)
         return state_list
 
+    def _publish_dynamic_diag(self, force=False):
+        """DYN_AVOID: push the current per-episode dynamic-avoidance diagnostics
+        onto the read-only `episode_dynamic_diag` parameter as a JSON string.
+
+        The curriculum trainer reads this once per episode (right after the final
+        step, before /reset). Because the env cannot know which step is the last
+        one of a trainer-owned episode (timeouts have no env-side `done`), the
+        value must stay current every step — but the actual parameter write + the
+        /parameter_events publication are only paid when the diagnostic CONTENT
+        changes (cheap ``state_key`` compare), so unchanged steps (e.g. human-free
+        stages, or steps with no new proximity/yield information) cost nothing on
+        the ROS side. `force=True` publishes unconditionally (used on reset so a
+        read before the first step never returns stale data). NaN sentinels
+        round-trip via Python json (allow_nan) on both ends."""
+        key = self._dyn_diag.state_key()
+        if not force and key == self._dyn_diag_last_key:
+            return
+        self._dyn_diag_last_key = key
+        try:
+            payload = json.dumps(self._dyn_diag.as_dict())
+        except Exception:
+            payload = "{}"
+        self.set_parameters([
+            Parameter("episode_dynamic_diag", Parameter.Type.STRING, payload)
+        ])
+
     def step_callback(self, request, response):
         """/step entrypoint. Wraps the implementation so a Gazebo service failure
         (GazeboServiceError from propagate_state → pause_world) is logged with the
@@ -2129,6 +2184,29 @@ class Environment(
         rect_proximity = self._compute_rect_proximity(environment_state)
         lidar_min = float(np.min(environment_state)) if len(environment_state) else float("inf")
         lidar_mean = float(np.mean(environment_state)) if len(environment_state) else float("inf")
+
+        # DYN_AVOID: fold this step's PRIVILEGED pedestrian geometry + the actual
+        # (per-stage-gated) yield decision into the per-episode dynamic-avoidance
+        # diagnostics, then republish them for the trainer's diagnostic CSV. Uses
+        # human_states (privileged), so it works even for an aux-OFF baseline.
+        # Contract: human_states holds ONLY the CURRENTLY-active pedestrians (it is
+        # cleared on reset and repopulated per episode), so "human_observed_steps"
+        # and "min_human_distance_m" are defined over the active set — matching how
+        # the reward path and aux labels read the same dict.
+        with self._human_lock:
+            _diag_humans = [
+                {"x": s["x"], "y": s["y"], "v": s.get("v", 0.0),
+                 "yaw": s.get("yaw", 0.0), "mode": s.get("mode", "")}
+                for s in self.human_states.values()
+            ]
+        self._dyn_diag.update(
+            (self.gt_x, self.gt_y, self.gt_yaw),
+            self.latest_actual_signed_speed,
+            _diag_humans, lidar_min, bool(collision),
+            yielding=bool(yielding),
+            yield_available=bool(self.action_dim >= 3 and self.yield_action_enabled),
+        )
+        self._publish_dynamic_diag()
 
         # 8) 보상 계산
         # v_max, w_max: Pure Pursuit controller 기준 (actions_low/high는 웨이포인트 범위)
@@ -2318,6 +2396,13 @@ class Environment(
         )
         self.current_episode_step = 0
         self.contact_collision_latched = False
+        # DYN_AVOID: start a fresh per-episode dynamic-avoidance record and clear
+        # the published diagnostics so a partial read before the first step of the
+        # new episode never returns stale (previous-episode) values. force=True so
+        # the empty-episode baseline is published even though the signature reset
+        # to the same "no data" key as a prior empty episode.
+        self._dyn_diag.reset()
+        self._publish_dynamic_diag(force=True)
         # Clear per-episode reward memory so the first step of the new episode
         # does not inherit the last state of the previous episode.
         self._prev_goal_dist   = None
