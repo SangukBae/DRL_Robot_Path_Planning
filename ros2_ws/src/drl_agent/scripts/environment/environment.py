@@ -836,12 +836,92 @@ class Environment(
         # this keeps the ROS parameter-update + /parameter_events cost off the hot
         # step path except when new dynamic-avoidance information actually appears.
         self._dyn_diag_last_key = None
+
+        # PHASE1B risk-map-dump (eval-only, default OFF): a per-step JSON-string
+        # parameter carrying the GT robot pose + a lightweight human-state
+        # summary, mirroring the episode_dynamic_diag pattern above but
+        # published EVERY step (not change-gated) so an external eval script
+        # (risk_map_eval.py) can pair it with the per-step aux label it already
+        # receives via the normal /step response (EnvInterface.last_aux_label /
+        # .last_aux_meta). risk_map_dump_enabled gates the JSON-encode +
+        # set_parameters cost, so training pays nothing when it is off.
+        self.declare_parameter("risk_map_dump_enabled", False)
+        self.declare_parameter("step_debug_state", "{}")
+
         # Writable flag the trainer raises around its evaluation episodes so the
         # SAME training env switches to the eval_map_types round-robin (instead of
         # the training map distribution) while STILL activating obstacles/humans.
         # Decouples "which maps are evaluated" from the train/test node mode.
         self._curriculum_eval_mode = False
         self.declare_parameter("curriculum_eval_mode", False)
+
+        # PHASE1B (eval-only, default OFF -- byte-identical to prior behaviour
+        # when unused): fixed evaluation scenario suite. When BOTH
+        # fixed_eval_suite_enabled and curriculum_eval_mode are true, the reset
+        # path (see _reset_callback_impl) reseeds the GLOBAL random/np.random
+        # streams AND the dedicated human RNG sub-stream from a SUITE-LOCAL
+        # episode index (fixed_eval_suite_base_seed, N) instead of the
+        # ever-growing global episode counter, so map/start/goal/static/human
+        # sampling for suite episode N is a pure, reproducible function of
+        # (base_seed, N) -- independent of prior training/eval history. This
+        # lets hard-eval, pilot judging and the final ablation all reuse the
+        # SAME suite (same base_seed) and get directly comparable episodes.
+        #
+        # The episode-index counter resets to 0 on a curriculum_eval_mode
+        # False->True TRANSITION -- but that transition is only OBSERVED
+        # during an actual reset() call, so it is not a reliable "start a
+        # fresh suite run" signal on its own: if a prior eval process left
+        # curriculum_eval_mode sitting at True (e.g. it crashed, or simply
+        # didn't restore it) and a NEW eval process sets it True again
+        # without any reset() happening while it was briefly False, no
+        # transition is ever seen and the suite silently continues from
+        # wherever the previous process left off. fixed_eval_suite_reset_token
+        # is the explicit, unambiguous alternative: an eval script sets it to
+        # a fresh value (e.g. a timestamp) once at the start of its run, and
+        # ANY change in its value forces the episode index back to 0 on the
+        # very next reset() -- independent of eval-mode toggle history.
+        self.declare_parameter("fixed_eval_suite_enabled", False)
+        self.declare_parameter("fixed_eval_suite_base_seed", 0)
+        self.declare_parameter("fixed_eval_suite_reset_token", 0)
+        self._fixed_suite_episode_index = 0
+        self._fixed_suite_eval_mode_prev = False
+        self._fixed_suite_last_reset_token = 0
+        self._fixed_suite_last_episode_index = None  # for eval-script logging
+
+        # PHASE1B (eval-only, default OFF): "hard pedestrian" preset. When BOTH
+        # hard_pedestrian_eval_enabled and curriculum_eval_mode are true, this
+        # episode's human spawn draws from eval_human_mode_weights /
+        # eval_human_mode_params (config, below) instead of the current
+        # curriculum stage's mix -- reusing the EXISTING mode vocabulary
+        # (crossing/along_path/waiting/slow_turn), just re-weighted toward
+        # direction-change/stop-heavy modes. Applied+restored around ONE
+        # episode's spawn call only (see _apply_hard_pedestrian_eval_override),
+        # so it can never leak into training or non-hard-eval episodes.
+        self.declare_parameter("hard_pedestrian_eval_enabled", False)
+        _hpe = dict(self.environment_config.get("hard_pedestrian_eval", {}) or {})
+        self._eval_human_mode_weights = dict(_hpe.get("human_mode_weights", {}) or {})
+        self._eval_human_mode_params = dict(_hpe.get("human_mode_params", {}) or {})
+
+        # PHASE1B (eval-only, default OFF): "robot-reactive pedestrian" preset.
+        # Reuses the existing Falcon-lite human-human avoidance machinery
+        # (_social_avoidance_offset, human_motion_manager.py) with a symmetric
+        # robot-repulsion term, gated by this flag so training-time humans stay
+        # non-reactive to the robot by default (required for the aux
+        # constant-velocity labels to stay valid). Declared as a live ROS
+        # parameter (not a plain attr) so an eval script can toggle it without
+        # restarting Gazebo, mirroring curriculum_eval_mode.
+        self.declare_parameter("human_robot_avoid_enabled", False)
+        _hra_default = bool(self.environment_config.get("human_robot_avoid_enabled", False))
+        if _hra_default:
+            self.set_parameters(
+                [Parameter("human_robot_avoid_enabled", Parameter.Type.BOOL, True)]
+            )
+        self.human_robot_avoid_radius = float(       # [m] robot influence radius
+            self.environment_config.get("human_robot_avoid_radius", 2.0))
+        self.human_robot_avoid_strength = float(     # blend weight of repulsion vs goal dir
+            self.environment_config.get("human_robot_avoid_strength", 0.6))
+        self.human_robot_avoid_max_heading_offset = math.radians(float(  # cap on the nudge
+            self.environment_config.get("human_robot_avoid_max_heading_offset_deg", 25.0)))
 
         self.threshold_params_config = self.config["threshold_parameters"]
         self.goal_threshold = self.threshold_params_config["goal_threshold"]
@@ -1524,6 +1604,41 @@ class Environment(
         self._human_np_rng, self._human_py_rng = seed_utils.make_substream_rngs(
             base_seed, episode_index)
 
+    def _apply_hard_pedestrian_eval_override(self):
+        """PHASE1B hard-pedestrian-eval (default OFF): if enabled AND
+        curriculum_eval_mode is on, swap self.human_mode_weights/params to the
+        eval-only preset for the duration of THIS episode's human spawn. Saves
+        and returns whatever was set beforehand (may be the current curriculum
+        stage's mix, or None if nothing changes) so the caller can restore it
+        immediately after spawning -- see _restore_hard_pedestrian_eval_override.
+        No-op (returns None) when the flag is off or no preset is configured,
+        so training / normal eval episodes are completely unaffected."""
+        enabled = bool(self.get_parameter("hard_pedestrian_eval_enabled").value)
+        eval_mode_now = bool(self.get_parameter("curriculum_eval_mode").value)
+        if not (enabled and eval_mode_now):
+            return None
+        if not self._eval_human_mode_weights:
+            self.get_logger().warn(
+                "[HardPedEval] hard_pedestrian_eval_enabled=true but no "
+                "hard_pedestrian_eval.human_mode_weights configured -- using "
+                "the current stage's mix unchanged this episode."
+            )
+            return None
+        saved = (dict(self.human_mode_weights), dict(self.human_mode_params))
+        self.human_mode_weights = dict(self._eval_human_mode_weights)
+        if self._eval_human_mode_params:
+            merged = {k: dict(v) for k, v in self.human_mode_params.items()}
+            for mode, overrides in self._eval_human_mode_params.items():
+                merged.setdefault(mode, {}).update(overrides)
+            self.human_mode_params = merged
+        return saved
+
+    def _restore_hard_pedestrian_eval_override(self, saved):
+        """Undo _apply_hard_pedestrian_eval_override (no-op if it was a no-op)."""
+        if saved is None:
+            return
+        self.human_mode_weights, self.human_mode_params = saved
+
     def seed_callback(self, request, response):
         """Sets environment seed for reproducibility of the training process.
 
@@ -2045,6 +2160,33 @@ class Environment(
             Parameter("episode_dynamic_diag", Parameter.Type.STRING, payload)
         ])
 
+    def _publish_step_debug_state(self, action_r=None, action_theta=None):
+        """PHASE1B risk-map-dump (eval-only, default OFF -- see the
+        declare_parameter comment above): publish THIS step's GT robot pose +
+        the selected waypoint (r, theta, when called from a step) + a
+        lightweight human-state summary as a JSON string on the
+        ``step_debug_state`` parameter. Only called when risk_map_dump_enabled
+        is true, so it costs nothing otherwise. Never raises: a serialization
+        failure falls back to "{}" (best-effort logging, never breaks a step)."""
+        try:
+            with self._human_lock:
+                humans = [
+                    {"x": s["x"], "y": s["y"], "yaw": s.get("yaw", 0.0),
+                     "v": s.get("v", 0.0), "mode": s.get("mode", "")}
+                    for s in self.human_states.values()
+                ]
+            payload = json.dumps({
+                "robot_x": self.gt_x, "robot_y": self.gt_y, "robot_yaw": self.gt_yaw,
+                "action_r": None if action_r is None else float(action_r),
+                "action_theta": None if action_theta is None else float(action_theta),
+                "humans": humans,
+            })
+        except Exception:
+            payload = "{}"
+        self.set_parameters([
+            Parameter("step_debug_state", Parameter.Type.STRING, payload)
+        ])
+
     def step_callback(self, request, response):
         """/step entrypoint. Wraps the implementation so a Gazebo service failure
         (GazeboServiceError from propagate_state → pause_world) is logged with the
@@ -2326,6 +2468,12 @@ class Environment(
         response.reward = float(reward)
         response.done   = bool(done)
         response.target = bool(target)
+        # PHASE1B risk-map-dump (eval-only, default OFF): publish this step's
+        # GT pose + selected waypoint + human summary for an external eval
+        # script to pair with the aux label above. No-op cost when the flag
+        # is off (the default).
+        if bool(self.get_parameter("risk_map_dump_enabled").value):
+            self._publish_step_debug_state(action_r=r, action_theta=theta)
         return response
 
     def _apply_episode_active_counts(self):
@@ -2384,16 +2532,46 @@ class Environment(
             self.human_states = {}
 
         self._episode_count += 1
+
+        # PHASE1B fixed-eval-suite (default OFF -- see the declare_parameter
+        # comment above): when active, reseed the GLOBAL random/np.random
+        # streams from a SUITE-LOCAL episode index (not the ever-growing
+        # _episode_count) BEFORE any start/goal/static sampling below draws
+        # from them, and re-derive the human sub-stream from that same index.
+        # No-op / byte-identical to prior behaviour when the flag is off.
+        _suite_enabled = bool(self.get_parameter("fixed_eval_suite_enabled").value)
+        _eval_mode_now = bool(self.get_parameter("curriculum_eval_mode").value)
+        _reset_token = int(self.get_parameter("fixed_eval_suite_reset_token").value)
+        # Reset on EITHER an eval-mode toggle OR an explicit reset-token change
+        # (see the declare_parameter comment above for why the toggle alone is
+        # not reliable across separate eval-script invocations).
+        if _suite_enabled and (
+            _eval_mode_now != self._fixed_suite_eval_mode_prev
+            or _reset_token != self._fixed_suite_last_reset_token
+        ):
+            self._fixed_suite_episode_index = 0
+        self._fixed_suite_eval_mode_prev = _eval_mode_now
+        self._fixed_suite_last_reset_token = _reset_token
+        if _suite_enabled and _eval_mode_now:
+            _suite_seed = int(self.get_parameter("fixed_eval_suite_base_seed").value)
+            _suite_idx = self._fixed_suite_episode_index
+            self._fixed_suite_episode_index += 1
+            _episode_seed = seed_utils.derive_resume_seed(_suite_seed, _suite_idx)
+            seed_utils.seed_basic_rngs(_episode_seed)
+            _human_seed_base, _human_episode_index = _suite_seed, _suite_idx
+            self._fixed_suite_last_episode_index = _suite_idx
+        else:
+            _human_seed_base = getattr(self, "_human_rng_base_seed", self.pool_build_seed)
+            _human_episode_index = self._episode_count
+            self._fixed_suite_last_episode_index = None
         # Re-seed the dedicated human RNG sub-stream for THIS episode. Done while
         # the motion timer is disabled (above) and human_states is empty, so no
         # concurrent reader. This makes the episode's human spawn config a pure
         # function of (run seed, episode_count) — independent of the previous
         # episode's wall-clock-paced motion tick count — and keeps every human
         # draw off the global streams used for start/goal/map/static sampling.
-        self._seed_human_rngs(
-            getattr(self, "_human_rng_base_seed", self.pool_build_seed),
-            self._episode_count,
-        )
+        # (Fixed-eval-suite mode substitutes the suite-local index above.)
+        self._seed_human_rngs(_human_seed_base, _human_episode_index)
         self.current_episode_step = 0
         self.contact_collision_latched = False
         # DYN_AVOID: start a fresh per-episode dynamic-avoidance record and clear
@@ -2473,10 +2651,20 @@ class Environment(
 		*****************************************************"""
         self.change_goal(start_x, start_y)
         if self.train_mode:
-            if self.use_obstacle_pool:
-                self._activate_random_obstacles(start_x, start_y)
-            else:
-                self._spawn_random_obstacles(start_x, start_y)
+            # PHASE1B hard-pedestrian-eval (default OFF): temporarily swap in the
+            # eval-only human_mode_weights/params for THIS episode's spawn only,
+            # then restore whatever was set before -- so it can never leak into
+            # training or non-hard-eval episodes (see the declare_parameter
+            # comment above for why a save/restore this tightly scoped needs no
+            # curriculum-stage bookkeeping).
+            _saved_hm = self._apply_hard_pedestrian_eval_override()
+            try:
+                if self.use_obstacle_pool:
+                    self._activate_random_obstacles(start_x, start_y)
+                else:
+                    self._spawn_random_obstacles(start_x, start_y)
+            finally:
+                self._restore_hard_pedestrian_eval_override(_saved_hm)
         # Obstacle motion state is now fully populated — re-enable the timer
         self._human_updates_enabled = True
         # Publish markers for rviz
@@ -2539,6 +2727,11 @@ class Environment(
         state0 = self._assemble_state(obs_state, agent_state, advance=False)
         # AUX_PRED: append privileged future-risk label (no-op when disabled).
         response.state = self._append_aux_labels(state0)
+        # PHASE1B risk-map-dump (eval-only, default OFF): seed step_debug_state
+        # for step 0 too, so an eval script reading it right after reset() (before
+        # any step()) never sees stale data from a previous episode.
+        if bool(self.get_parameter("risk_map_dump_enabled").value):
+            self._publish_step_debug_state()
         return response
 
     def change_goal(self, start_x=0.0, start_y=0.0):

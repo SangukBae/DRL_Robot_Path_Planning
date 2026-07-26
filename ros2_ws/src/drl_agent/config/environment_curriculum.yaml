@@ -192,6 +192,35 @@ environment:
   human_social_avoid_strength: 0.6  # blend weight repulsion vs goal (stage-overridable)
   human_social_avoid_max_heading_offset_deg: 25.0  # cap on the avoidance nudge
 
+  # ── PHASE1B: robot-reactive pedestrian (eval-only, default OFF) ─────────────
+  # Symmetric extension of the human-human avoidance above: when enabled, humans
+  # ALSO repel from the robot's GT pose (human_motion_manager._social_avoidance_
+  # offset). human_robot_avoid_enabled is exposed as a LIVE ROS parameter (not
+  # just this YAML default) so an eval script can flip it on/off without
+  # restarting Gazebo -- see environment.py's declare_parameter comment.
+  # Training NEVER sets this true, so Falcon-lite pedestrians stay non-reactive
+  # to the robot (required for the aux constant-velocity labels to stay valid)
+  # unless this "robot-reactive" eval preset is explicitly requested.
+  human_robot_avoid_enabled: false
+  human_robot_avoid_radius: 2.0     # m  robot influence radius
+  human_robot_avoid_strength: 0.6   # blend weight repulsion vs goal
+  human_robot_avoid_max_heading_offset_deg: 25.0  # cap on the avoidance nudge
+
+  # ── PHASE1B: hard-pedestrian eval preset (eval-only, default OFF) ───────────
+  # Reuses the EXISTING mode vocabulary (crossing/along_path/waiting/slow_turn)
+  # re-weighted toward direction-change/stop-heavy behaviour, instead of adding
+  # a new pedestrian AI. Applied for one episode's spawn only when BOTH
+  # hard_pedestrian_eval_enabled (a live ROS param, default false) and
+  # curriculum_eval_mode are true -- see environment.py::_apply_hard_pedestrian_
+  # eval_override. human_mode_params here is deep-merged onto the base
+  # _HUMAN_MODE_DEFAULTS per mode (same contract as the per-stage
+  # human_mode_params override), so only the listed knobs change.
+  hard_pedestrian_eval:
+    human_mode_weights: {crossing: 0.5, along_path: 0.5, waiting: 1.0, slow_turn: 1.5}
+    human_mode_params:
+      slow_turn:  {stop_prob: 0.03, dir_spread_deg: 70.0}
+      waiting:    {stop_prob: 0.15, dir_spread_deg: 75.0}
+
   # ── Human-only DYNAMIC-RISK reward shaping (reward_calculator) ─────────────
   # A pedestrian-specific collision-risk penalty, SEPARATE from the static
   # obstacle-proximity penalty (w_obs). Computed from privileged GT robot+human

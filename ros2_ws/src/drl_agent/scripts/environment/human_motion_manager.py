@@ -201,39 +201,63 @@ class HumanMotionMixin:
             if pose_batch:
                 self._publish_model_poses(pose_batch)
 
-    def _social_avoidance_offset(self, key, x, y, desired_yaw, human_pos):
+    def _social_avoidance_offset(self, key, x, y, desired_yaw, human_pos, robot_xy=None):
         """Falcon-lite weak human-human avoidance: a small, capped heading nudge.
 
         Sums a repulsion vector from neighbouring HUMANS within
         human_social_avoid_radius (linear falloff: closer = stronger), blends it
         with the current goal-directed heading using human_social_avoid_strength,
         and returns the resulting heading change CLAMPED to
-        human_social_avoid_max_heading_offset.  The robot is never considered, so
-        humans stay non-reactive to it; the cap + the caller's yaw-rate limiter
-        keep turns gentle so the constant-velocity aux labels stay valid.
-        Returns 0.0 when disabled or no neighbour is close.
+        human_social_avoid_max_heading_offset.  The robot is never considered by
+        default, so humans stay non-reactive to it; the cap + the caller's
+        yaw-rate limiter keep turns gentle so the constant-velocity aux labels
+        stay valid. Returns 0.0 when disabled or no neighbour is close.
+
+        PHASE1B ROBOT_REACTIVE (eval-only, default OFF): when
+        ``human_robot_avoid_enabled`` and ``robot_xy`` is given, ALSO repels
+        from the robot's ground-truth pose using its own radius/strength/cap
+        (human_robot_avoid_*), independent of the human-human term above -- so
+        this can be enabled even with human_social_avoid disabled. Training
+        never sets human_robot_avoid_enabled, so Falcon-lite pedestrians stay
+        non-reactive to the robot unless an eval preset turns it on.
         """
-        R = self.human_social_avoid_radius
-        if not self.human_social_avoid_enabled or R <= 0.0:
+        human_on = self.human_social_avoid_enabled
+        robot_on = robot_xy is not None and bool(
+            self.get_parameter("human_robot_avoid_enabled").value)
+        if not human_on and not robot_on:
             return 0.0
         rx = ry = 0.0
-        for k, (ox, oy) in human_pos.items():
-            if k == key:
-                continue
-            dx, dy = x - ox, y - oy
+        if human_on and self.human_social_avoid_radius > 0.0:
+            R = self.human_social_avoid_radius
+            for k, (ox, oy) in human_pos.items():
+                if k == key:
+                    continue
+                dx, dy = x - ox, y - oy
+                d = math.hypot(dx, dy)
+                if 1e-3 < d < R:
+                    wgt = (1.0 - d / R) * self.human_social_avoid_strength
+                    rx += (dx / d) * wgt
+                    ry += (dy / d) * wgt
+        if robot_on and self.human_robot_avoid_radius > 0.0:
+            Rr = self.human_robot_avoid_radius
+            dx, dy = x - robot_xy[0], y - robot_xy[1]
             d = math.hypot(dx, dy)
-            if 1e-3 < d < R:
-                wgt = 1.0 - d / R           # linear falloff (1 at contact, 0 at R)
+            if 1e-3 < d < Rr:
+                wgt = (1.0 - d / Rr) * self.human_robot_avoid_strength
                 rx += (dx / d) * wgt
                 ry += (dy / d) * wgt
         if rx == 0.0 and ry == 0.0:
             return 0.0
-        # Blend the unit goal heading with the repulsion vector, then cap the
-        # angular deviation so avoidance only ever bends the path slightly.
-        bx = math.cos(desired_yaw) + self.human_social_avoid_strength * rx
-        by = math.sin(desired_yaw) + self.human_social_avoid_strength * ry
+        # Blend the unit goal heading with the (already-weighted) repulsion
+        # vector, then cap the angular deviation so avoidance only ever bends
+        # the path slightly.
+        bx = math.cos(desired_yaw) + rx
+        by = math.sin(desired_yaw) + ry
         delta = (math.atan2(by, bx) - desired_yaw + math.pi) % (2.0 * math.pi) - math.pi
-        cap = self.human_social_avoid_max_heading_offset
+        cap = max(
+            self.human_social_avoid_max_heading_offset if human_on else 0.0,
+            self.human_robot_avoid_max_heading_offset if robot_on else 0.0,
+        )
         return float(np.clip(delta, -cap, cap))
 
     def _resolve_human_wall_collision(self, x, y, nx, ny, r):
@@ -430,10 +454,14 @@ class HumanMotionMixin:
                 )
             # Falcon-lite weak avoidance: nudge the desired heading away from
             # nearby humans by a small capped amount (then the rate limiter below
-            # smooths it). Robot is never considered.
-            if self.human_social_avoid_enabled:
+            # smooths it). Robot is considered ONLY when the eval-only
+            # human_robot_avoid_enabled parameter is on (PHASE1B ROBOT_REACTIVE,
+            # default OFF -- training never sets it).
+            _robot_reactive = bool(self.get_parameter("human_robot_avoid_enabled").value)
+            if self.human_social_avoid_enabled or _robot_reactive:
                 desired_yaw_raw += self._social_avoidance_offset(
-                    _key, x, y, desired_yaw_raw, human_pos)
+                    _key, x, y, desired_yaw_raw, human_pos,
+                    robot_xy=(self.gt_x, self.gt_y) if _robot_reactive else None)
             desired_yaw_raw = (desired_yaw_raw + math.pi) % (2.0 * math.pi) - math.pi
 
             prev_desired_yaw = float(state.get("desired_yaw", yaw))

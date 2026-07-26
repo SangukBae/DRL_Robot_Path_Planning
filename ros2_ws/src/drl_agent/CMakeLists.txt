@@ -105,6 +105,7 @@ install(
     scripts/policy/train_sb3_sac_curriculum_agent.py
     scripts/policy/train_sb3_td3_curriculum_agent.py
     scripts/policy/generalization_eval.py
+    scripts/policy/risk_map_eval.py               # PHASE1B: per-step risk-map dump eval harness
     scripts/policy/real_policy_runner.py
     scripts/policy/sim_validation_runner.py    # SIM_VALIDATION
     scripts/utils/aggregate_results.py
@@ -117,6 +118,7 @@ install(
     scripts/utils/aux_ablation_summary.py       # AUX_ABLATION
     scripts/utils/analyze_yield_freezing.py     # PHASE1A: yield precision/recall/freezing post-processing
     scripts/utils/analyze_aux_correlation.py    # PHASE1A: aux-accuracy vs avoidance correlation post-processing
+    scripts/utils/risk_map_dump.py               # PHASE1B: per-step risk-map dump writer (JSONL)
     scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics
   DESTINATION
     lib/${PROJECT_NAME}
