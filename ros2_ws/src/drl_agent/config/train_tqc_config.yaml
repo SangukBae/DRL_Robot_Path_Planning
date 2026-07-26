@@ -17,7 +17,7 @@ train_settings:
                                   #          특정 run을 이어서 학습할 때만 true로.
   use_checkpoints: false          # checkpoint policy(best-min-return) 갱신 루틴 사용 여부
   eval_freq: 12000                # 몇 step마다 정식 evaluation을 돌릴지
-  eval_eps: 10                    # evaluation 시 실행할 episode 개수
+  eval_eps: 20                    # evaluation 시 실행할 episode 개수
   timesteps_before_training: 12000 # replay buffer warmup 후 gradient update 시작 step
 
   # A1 (UTD ratio): non-checkpoint 학습 경로에서 env step 1번당 실행할 gradient
