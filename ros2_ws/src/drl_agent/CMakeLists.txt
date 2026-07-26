@@ -115,6 +115,8 @@ install(
     scripts/environment/obs_time_context.py      # observation time-context (frame stacking)
     scripts/utils/aux_ablation_logging.py       # AUX_ABLATION
     scripts/utils/aux_ablation_summary.py       # AUX_ABLATION
+    scripts/utils/analyze_yield_freezing.py     # PHASE1A: yield precision/recall/freezing post-processing
+    scripts/utils/analyze_aux_correlation.py    # PHASE1A: aux-accuracy vs avoidance correlation post-processing
     scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics
   DESTINATION
     lib/${PROJECT_NAME}
