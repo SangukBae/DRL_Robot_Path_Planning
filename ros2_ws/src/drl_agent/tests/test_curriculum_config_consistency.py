@@ -90,8 +90,12 @@ def test_all_baseline_curriculum_configs_share_promotion_contract():
 
 
 def test_axis_separation_human_vs_observation_noise():
-    """Stages 3-6 must each change EXACTLY ONE axis vs. the prior stage, so the
-    credit-assignment signal for every robustness skill stays clean."""
+    """Stages 3-6 keep observation-noise changes separated.
+
+    Stage 5 intentionally also shifts the obstacle mix toward dynamic obstacles
+    (fewer static, more humans) so dynamic-avoidance practice dominates once the
+    clutter map appears.
+    """
     by_name = {s["name"]: s for s in _stages()}
     s3 = by_name["first_human_clean"]
     s4 = by_name["first_human_noisy"]
@@ -111,11 +115,15 @@ def test_axis_separation_human_vs_observation_noise():
     assert s4.get("localization_profile") == "weak_goal_noise"
     assert "proprio_noise_profile" not in s4
 
-    # Stage 5 adds clutter ONLY: human count/modes and ALL observation noise are
-    # held at the Stage-4 level (terrain is the single new variable). The crowd is
-    # NOT scaled here (that is the integration stage 7's job).
+    # Stage 5 adds clutter and increases dynamic-obstacle density while keeping
+    # human modes and ALL observation noise at the Stage-4 level.
     assert "clutter" in s5["allowed_map_types"]
-    assert s5["active_humans"] == s4["active_humans"]
+    assert s5["active_humans"] > s4["active_humans"]
+    for mt in ("corridor", "intersection"):
+        assert s5["active_static_by_map"][mt] == s4["active_static_by_map"][mt]
+        assert s5["active_humans_by_map"][mt] > s4["active_humans_by_map"][mt]
+    assert s5["active_static_by_map"]["clutter"] == 4
+    assert s5["active_humans_by_map"]["clutter"] == 2
     assert s5["human_mode_weights"] == s4["human_mode_weights"]
     assert s5["human_scan_noise_std"] == s4["human_scan_noise_std"]
     assert s5["human_scan_dropout_prob"] == s4["human_scan_dropout_prob"]

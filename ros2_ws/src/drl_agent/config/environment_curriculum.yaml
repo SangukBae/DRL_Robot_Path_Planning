@@ -181,7 +181,7 @@ environment:
   # global. false -> legacy random waypoint walk.
   human_goal_driven_enabled: true  # human이 episode-level global goal을 따라 움직일지
   human_goal_reach_threshold: 0.6   # m  within this of the goal -> rest + new goal
-  human_goal_pause_duration: 2.0    # s  rest at a reached goal
+  human_goal_pause_duration: 0.0    # s  no rest at a reached goal during training
   human_local_step_m: 2.0           # m  local step length toward the goal
   human_goal_span_multiplier: 2.0   # goal distance = (mode wp_dist_max) * this
   human_goal_min_span_m: 4.0        # m  floor on a newly sampled goal distance
@@ -755,9 +755,9 @@ curriculum:
     # per-stage override.
     - name: first_human_clean
       yield_reward: {action_enabled: false}   # 첫 사람 stage도 "빠른 회피"부터 (yield 봉인)
-      active_static: 6
+      active_static: 3
       active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6} # corridor/intersection별 static 수
+      active_static_by_map: {corridor: 2, intersection: 3} # corridor/intersection별 static 수
       active_humans_by_map: {corridor: 1, intersection: 1} # corridor/intersection별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
@@ -767,7 +767,8 @@ curriculum:
       eval_map_types: ["corridor", "intersection"]
       human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # human behavior mix
       human_social_avoid_strength: 0.3 # human-human avoidance 세기
-      human_goal_span_multiplier: 1.5  # human global goal 거리 배수
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
+      human_goal_span_multiplier: 2.5  # goal span 확대 -> goal 도착 빈도(=정지 빈도) 감소
       localization_profile: clean   # observation-noise introduced in Stage 4
 
     # ── Stage 4: SAME humans as Stage 3 + weak localization noise ────────
@@ -777,9 +778,9 @@ curriculum:
     # clean — those arrive together in Stage 6.
     - name: first_human_noisy
       yield_reward: {action_enabled: false}   # yield 봉인 (마지막 봉인 stage)
-      active_static: 6
+      active_static: 3
       active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6} # map_type별 static 수
+      active_static_by_map: {corridor: 2, intersection: 3} # map_type별 static 수
       active_humans_by_map: {corridor: 1, intersection: 1} # map_type별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
@@ -789,7 +790,8 @@ curriculum:
       eval_map_types: ["corridor", "intersection"]
       human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # behavior mix 유지
       human_social_avoid_strength: 0.3 # avoidance 세기 유지
-      human_goal_span_multiplier: 1.5  # goal span 유지
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
+      human_goal_span_multiplier: 2.5  # goal span 확대 -> goal 도착 빈도(=정지 빈도) 감소
       localization_profile: weak_goal_noise
 
     # ── Stage 5: + clutter (TERRAIN axis ONLY) ───────────────────────────
@@ -801,10 +803,10 @@ curriculum:
     # corridor stays the lightest map.
     - name: add_clutter_clean
       yield_reward: {action_enabled: true}    # ← YIELD 해제 (여기부터 stop/creep 허용)
-      active_static: 8
-      active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8} # map_type별 static 수
-      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1} # map_type별 human 수
+      active_static: 4
+      active_humans: 2
+      active_static_by_map: {corridor: 2, intersection: 3, clutter: 4} # map_type별 static 수
+      active_humans_by_map: {corridor: 2, intersection: 2, clutter: 2} # map_type별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection", "clutter"]
@@ -813,7 +815,8 @@ curriculum:
       eval_map_types: ["corridor", "intersection", "clutter"]
       human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # 간단한 behavior mix 유지
       human_social_avoid_strength: 0.3 # avoidance 세기 유지
-      human_goal_span_multiplier: 1.5  # goal span 유지
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
+      human_goal_span_multiplier: 2.5  # goal span 확대 -> goal 도착 빈도(=정지 빈도) 감소
       localization_profile: weak_goal_noise
 
     # ── Stage 6: SAME map/humans as Stage 5 + light proprio noise (ONLY) ─
@@ -823,10 +826,10 @@ curriculum:
     # perception noise is deferred to the integration stage (7) so it does not
     # confound the proprio axis here.
     - name: add_clutter_noisy
-      active_static: 8
-      active_humans: 1
-      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8} # map_type별 static 수
-      active_humans_by_map: {corridor: 1, intersection: 1, clutter: 1} # map_type별 human 수
+      active_static: 4
+      active_humans: 2
+      active_static_by_map: {corridor: 2, intersection: 3, clutter: 4} # map_type별 static 수
+      active_humans_by_map: {corridor: 2, intersection: 2, clutter: 2} # map_type별 human 수
       human_scan_noise_std: 0.0
       human_scan_dropout_prob: 0.0
       allowed_map_types: ["corridor", "intersection", "clutter"]
@@ -835,7 +838,8 @@ curriculum:
       eval_map_types: ["corridor", "intersection", "clutter"]
       human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # behavior mix 유지
       human_social_avoid_strength: 0.3 # avoidance 세기 유지
-      human_goal_span_multiplier: 1.5  # goal span 유지
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
+      human_goal_span_multiplier: 2.5  # goal span 확대 -> goal 도착 빈도(=정지 빈도) 감소
       localization_profile: weak_goal_noise
       proprio_noise_profile: light # named proprio noise profile selector
 
@@ -846,10 +850,10 @@ curriculum:
     # Localization stays weak (Stage 5/6 level, NOT drift yet), human modes stay
     # simple, proprio stays light — those scale in Stage 8.
     - name: add_lobby
-      active_static: 8
-      active_humans: 3
-      active_static_by_map: {corridor: 4, intersection: 6, clutter: 8, lobby: 8} # map_type별 static 수
-      active_humans_by_map: {corridor: 1, intersection: 2, clutter: 2, lobby: 3} # map_type별 human 수 (modest)
+      active_static: 4
+      active_humans: 4
+      active_static_by_map: {corridor: 2, intersection: 3, clutter: 4, lobby: 4} # map_type별 static 수
+      active_humans_by_map: {corridor: 2, intersection: 3, clutter: 3, lobby: 4} # map_type별 human 수 (modest)
       human_scan_noise_std: 0.03     # FIRST human-scan perception noise (weak)
       human_scan_dropout_prob: 0.015
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
@@ -858,6 +862,7 @@ curriculum:
       eval_map_types: ["lobby", "corridor", "intersection", "clutter"]
       human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.0, slow_turn: 0.0} # 간단 mix 유지
       human_social_avoid_strength: 0.3 # avoidance 세기 유지
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
       human_goal_span_multiplier: 1.5  # goal span 유지
       localization_profile: weak_goal_noise # loc noise는 Stage 5/6 수준 유지
       proprio_noise_profile: light # light proprio 유지
@@ -867,10 +872,10 @@ curriculum:
     # noise, and adds the crowd-scale + behaviour-richness + mid (drift)
     # localization-noise axes together (these belong to one "busier crowd" step).
     - name: scale_crowd
-      active_static: 8
-      active_humans: 5
-      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 8} # map_type별 static 수
-      active_humans_by_map: {corridor: 2, intersection: 3, clutter: 4, lobby: 5} # map_type별 human 수
+      active_static: 4
+      active_humans: 6
+      active_static_by_map: {corridor: 2, intersection: 3, clutter: 4, lobby: 4} # map_type별 static 수
+      active_humans_by_map: {corridor: 3, intersection: 4, clutter: 4, lobby: 6} # map_type별 human 수
       human_scan_noise_std: 0.045
       human_scan_dropout_prob: 0.025
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
@@ -879,6 +884,7 @@ curriculum:
       eval_map_types: ["lobby", "corridor", "intersection", "clutter"]
       human_mode_weights: {crossing: 1.0, along_path: 1.0, waiting: 0.5, slow_turn: 0.75} # richer human behavior mix
       human_social_avoid_strength: 0.6 # avoidance 세기 증가
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
       human_goal_span_multiplier: 2.0  # 더 긴 human goal span
       localization_profile: drift_goal_noise # mid (drift) localization noise 도입
       proprio_noise_profile: light # light proprio profile 유지
@@ -887,10 +893,10 @@ curriculum:
     # corridor remains lighter (static 5 / humans 3) than the open maps even at
     # full difficulty.
     - name: full_complexity
-      active_static: 9
-      active_humans: 7
-      active_static_by_map: {corridor: 5, intersection: 7, clutter: 8, lobby: 9} # map_type별 최종 static 수
-      active_humans_by_map: {corridor: 3, intersection: 4, clutter: 4, lobby: 6} # map_type별 최종 human 수
+      active_static: 5
+      active_humans: 6
+      active_static_by_map: {corridor: 3, intersection: 4, clutter: 5, lobby: 5} # map_type별 최종 static 수
+      active_humans_by_map: {corridor: 3, intersection: 4, clutter: 5, lobby: 6} # map_type별 최종 human 수
       human_scan_noise_std: 0.06
       human_scan_dropout_prob: 0.04
       allowed_map_types: ["lobby", "corridor", "intersection", "clutter"]
@@ -905,6 +911,7 @@ curriculum:
       human_social_avoid_strength: 0.8 # strongest avoidance blend
       human_social_avoid_radius: 1.8   # avoidance가 작동하는 neighbor radius
       human_social_avoid_max_heading_offset_deg: 35.0 # avoidance로 허용할 최대 heading offset
+      human_goal_pause_duration: 0.0   # goal 도착 후 정지 없음 (continuous dynamic-obstacle 학습)
       human_goal_span_multiplier: 2.5  # 가장 긴 human goal span
       # hardest TRAIN localization: full correlated noise + bias + drift + delay
       # + RARE small/big relocalization jumps. NO yaw flip in training — the ±π
