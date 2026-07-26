@@ -99,6 +99,7 @@ install(
     scripts/policy/curriculum_aux_eval.py        # CurriculumAuxEvalMixin
     scripts/policy/curriculum_eval_runner.py     # CurriculumEvalMixin (eval loop)
     scripts/policy/train_tqc_curriculum_agent.py
+    scripts/policy/train_rl.py                   # unified trainer launcher (MODEL_REGISTRY, see file header)
     scripts/policy/train_td7_curriculum_agent.py
     scripts/policy/train_sac_curriculum_agent.py
     scripts/policy/train_tqc_ieqn_curriculum_agent.py
