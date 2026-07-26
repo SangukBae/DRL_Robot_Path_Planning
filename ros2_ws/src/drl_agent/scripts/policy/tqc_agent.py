@@ -186,6 +186,45 @@ class Agent(object):
                 "critic will NOT strict-load."
             )
 
+        # PHASE2: optional temporal context on the Action-Risk Head, reusing the
+        # SAME compressed feature temporal_actor_context already computes for
+        # the actor/critic (TemporalFusionEncoder.temporal_feature()) -- no new
+        # feature extractor, no replay-buffer schema change. Config-validation
+        # fail-fast only (no silent fallback): a wrong/incompatible config must
+        # error immediately, not quietly train on the un-augmented head.
+        if self.action_risk_cfg.use_temporal_context and not self.action_risk_enabled:
+            raise RuntimeError(
+                "action_risk_head.use_temporal_context=true requires "
+                "action_risk_head.enabled=true."
+            )
+        self.action_risk_temporal_enabled = bool(
+            self.action_risk_enabled and self.action_risk_cfg.use_temporal_context
+        )
+        if self.action_risk_temporal_enabled:
+            if not self.temporal_actor_enabled:
+                raise RuntimeError(
+                    "action_risk_head.use_temporal_context=true requires "
+                    "temporal_actor_context.enabled=true -- the Action-Risk Head "
+                    "reuses the actor's compressed temporal feature and has no "
+                    "fallback source. Enable temporal_actor_context or turn "
+                    "use_temporal_context back off."
+                )
+            if self.action_risk_cfg.temporal_context_source != "actor":
+                raise RuntimeError(
+                    "action_risk_head.temporal_context_source="
+                    f"'{self.action_risk_cfg.temporal_context_source}' is not "
+                    "supported -- only 'actor' (reusing temporal_actor_context's "
+                    "ScanTemporalEncoder feature) is implemented."
+                )
+            print(
+                "[Agent] action_risk_head.use_temporal_context=true: the "
+                "Action-Risk Head's input width changes (+temporal_feature_dim) "
+                "-- an old action-risk-head checkpoint will NOT strict-load; "
+                "tqc_io.load() falls back to a freshly-initialised head (and "
+                "fresh critic-optimizer moments) while actor/critic/encoder/"
+                "replay resume normally."
+            )
+
         def _make_encoder():
             if not self.temporal_actor_enabled:
                 return SharedEncoder(state_dim, self.aux_cfg)
@@ -254,10 +293,19 @@ class Agent(object):
         # keep whatever extra signal the TARGET Q sees on a slow-moving copy for
         # stability). None when disabled.
         if self.action_risk_enabled:
+            # PHASE2: temporal_dim>0 only when use_temporal_context=true (which
+            # the fail-fast above already guaranteed implies self.encoder IS a
+            # TemporalFusionEncoder, i.e. has .temporal.out_dim).
+            _ar_temporal_dim = (
+                self.encoder.temporal.out_dim
+                if self.action_risk_temporal_enabled else 0
+            )
             self.action_risk_head = ActionRiskHead(
-                latent_dim, action_dim, self.action_risk_cfg).to(self.device)
+                latent_dim, action_dim, self.action_risk_cfg,
+                temporal_dim=_ar_temporal_dim).to(self.device)
             self.action_risk_head_target = ActionRiskHead(
-                latent_dim, action_dim, self.action_risk_cfg).to(self.device)
+                latent_dim, action_dim, self.action_risk_cfg,
+                temporal_dim=_ar_temporal_dim).to(self.device)
             self.action_risk_head_target.load_state_dict(
                 self.action_risk_head.state_dict())
         else:
@@ -669,7 +717,14 @@ class Agent(object):
             # torch.no_grad() so no explicit .detach() is needed.
             extra_next = None
             if self.critic_risk_input_enabled:
-                extra_next = self.action_risk_head_target(z_next, next_actions)
+                # PHASE2 (temporal): paired with z_next -> from the TARGET
+                # encoder on next_state, mirroring z_next's own origin.
+                ar_temporal_next = (
+                    self.encoder_target.temporal_feature(next_state)
+                    if self.action_risk_temporal_enabled else None
+                )
+                extra_next = self.action_risk_head_target(
+                    z_next, next_actions, temporal_feature=ar_temporal_next)
 
             # Get target quantiles
             next_quantiles = self.critic_target(z_next, next_actions, extra=extra_next)  # [B, n_critics, n_quantiles]
@@ -694,9 +749,16 @@ class Agent(object):
         # `extra` input (critic loss must never backprop into this head -- see
         # action_risk_head.py's gradient-rule docstring), the SAME tensor
         # (still attached) for the supervised loss further below.
+        # PHASE2 (temporal): ar_temporal_cur also gets REUSED (detached) for the
+        # actor-update call further below -- same state batch, same encoder ->
+        # identical feature, no need to recompute it a third time.
         ar_pred_cur = None
+        ar_temporal_cur = None
         if self.action_risk_enabled and self.action_risk_head is not None:
-            ar_pred_cur = self.action_risk_head(z, action)
+            if self.action_risk_temporal_enabled:
+                ar_temporal_cur = self.encoder.temporal_feature(state)
+            ar_pred_cur = self.action_risk_head(
+                z, action, temporal_feature=ar_temporal_cur)
         extra_cur = (
             ar_pred_cur.detach()
             if (self.critic_risk_input_enabled and ar_pred_cur is not None)
@@ -790,9 +852,20 @@ class Agent(object):
         # forward pass.
         extra_pi = None
         if self.critic_risk_input_enabled:
+            # PHASE2 (temporal): reuse ar_temporal_cur (same state batch, same
+            # online encoder as z_actor's origin) -- .detach() so actor_loss
+            # cannot flow into self.encoder.temporal's parameters, mirroring
+            # why z_actor itself is detached from z. This does NOT touch the
+            # actions_pi gradient path (a separate cat() branch below), so it
+            # does not affect the critic_risk_input "gradient into the actor"
+            # channel at all.
+            ar_temporal_pi = (
+                ar_temporal_cur.detach() if ar_temporal_cur is not None else None
+            )
             for p in self.action_risk_head.parameters():
                 p.requires_grad_(False)
-            extra_pi = self.action_risk_head(z_actor, actions_pi)
+            extra_pi = self.action_risk_head(
+                z_actor, actions_pi, temporal_feature=ar_temporal_pi)
             for p in self.action_risk_head.parameters():
                 p.requires_grad_(True)
 

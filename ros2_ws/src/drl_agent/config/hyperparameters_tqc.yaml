@@ -192,6 +192,17 @@ hyperparameters:
     enabled: false
     hidden_dim: 64
     loss_weight: 0.1
+    # Optional: concat the actor's compressed temporal feature (the SAME one
+    # temporal_actor_context produces -- TemporalFusionEncoder.temporal_feature(),
+    # no new extractor) into the head's input: [z, temporal_feature, action]
+    # instead of [z, action]. DEFAULT OFF -> byte-identical head, no state_dict
+    # change. Requires temporal_actor_context.enabled=true (fail-fast in
+    # tqc_agent.py otherwise -- no silent fallback). Changes the head's input
+    # width when turned on -> an old action-risk-head checkpoint will NOT
+    # strict-load (tqc_io.load degrades gracefully to a freshly-initialised
+    # head; actor/critic/encoder/replay resume normally).
+    use_temporal_context: false
+    temporal_context_source: "actor"  # only "actor" is implemented
 
   # ── PHASE2 candidate 2b: feed the (DETACHED) Action-Risk Head prediction into
   # the critic's input, [z, action] -> [z, action, predicted_action_risk]. The

@@ -180,6 +180,21 @@ class TemporalFusionEncoder(nn.Module):
         z_temporal = self.temporal(scan) * self.temporal_gain
         return F.elu(self.fusion(torch.cat([z_cur, z_temporal], dim=-1)))
 
+    def temporal_feature(self, state):
+        """PHASE2: the RAW (pre-fusion) compressed temporal feature z_temporal
+        for ``state``, scaled by the same ``temporal_gain`` as ``forward()``.
+
+        ``forward()`` only returns the FUSED latent (z_temporal is squashed
+        back down to ``latent_dim`` through ``self.fusion``, a bottleneck
+        shared by the critic/actor/aux paths). A consumer that wants a
+        DEDICATED view of the temporal signal itself (e.g. action_risk_head's
+        optional ``use_temporal_context``) calls this instead -- on the SAME
+        ``state`` batch already passed to ``forward()``, so the split/gain
+        logic is guaranteed identical, at the cost of recomputing the (cheap,
+        ``feature_dim``-wide) ScanTemporalEncoder pass a second time."""
+        _, scan = self._split(state)
+        return self.temporal(scan) * self.temporal_gain
+
 
 class TemporalContextEncoder(nn.Module):
     """AUX_PRED (v2): GRU over the shared-encoder latents of the last N states.

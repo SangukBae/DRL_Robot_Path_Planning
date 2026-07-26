@@ -1,13 +1,25 @@
 # PHASE2: Critic-connected Action-Risk Head.
 #
 # A small supervised head that predicts the SELECTED action's directional risk
-# from [z, action]: risk_dir (closeness risk in the action's waypoint-theta
-# sector) and min_dist_dir (nearest-human distance in that sector), both in
-# [0, 1] -- same convention/target as the env-side directional_risk block (see
+# from [z, action] (or [z, temporal_feature, action], see below): risk_dir
+# (closeness risk in the action's waypoint-theta sector) and min_dist_dir
+# (nearest-human distance in that sector), both in [0, 1] -- same
+# convention/target as the env-side directional_risk block (see
 # environment/aux_prediction_labels.py, environment.py::_compute_directional_
 # risk). Trained via supervised MSE against the PRIVILEGED GT target stored in
 # the replay buffer (buffer.py's action_risk_target, aligned with the stored
 # `action`), added into the trunk loss like aux_prediction's AuxiliaryHead.
+#
+# Optional temporal context (action_risk_head.use_temporal_context, default
+# false -> byte-identical [z, action] head): a moving pedestrian's future risk
+# direction depends on recent motion, which a single fused z only sees
+# indirectly (through temporal_actor_context's shared fusion bottleneck).
+# When enabled, the caller (tqc_agent.py) concatenates the SAME compressed
+# temporal feature the actor already reuses from temporal_actor_context
+# (TemporalFusionEncoder.temporal_feature()), giving this head a DEDICATED
+# view of it: [z, temporal_feature, action]. Fail-fasts at Agent construction
+# if temporal_actor_context is not enabled -- there is no fallback source,
+# see tqc_agent.py.
 #
 # Gradient rule (enforced by tqc_agent.py, documented here):
 #   - the head's OWN PARAMETERS are updated ONLY by its dedicated supervised
@@ -43,20 +55,45 @@ class ActionRiskConfig:
         self.enabled = bool(cfg.get("enabled", False))
         self.hidden_dim = int(cfg.get("hidden_dim", 64))
         self.loss_weight = float(cfg.get("loss_weight", 0.1))
+        # Default OFF -> the head's input width (and therefore its state_dict)
+        # is unchanged from the original [z, action] contract; only tqc_agent.py
+        # setting this true (which it only does when temporal_actor_context is
+        # also enabled -- see the fail-fast there) changes anything.
+        self.use_temporal_context = bool(cfg.get("use_temporal_context", False))
+        # Only "actor" (reuse temporal_actor_context's feature) is implemented;
+        # tqc_agent.py fail-fasts on any other value instead of guessing.
+        self.temporal_context_source = str(cfg.get("temporal_context_source", "actor"))
 
 
 class ActionRiskHead(nn.Module):
-    """PHASE2: Linear(latent_dim+action_dim -> hidden) -> ELU -> Linear(hidden -> 2),
-    sigmoid outputs (risk_dir, min_dist_dir), both in [0, 1]."""
+    """PHASE2: Linear(latent_dim[+temporal_dim]+action_dim -> hidden) -> ELU ->
+    Linear(hidden -> 2), sigmoid outputs (risk_dir, min_dist_dir), both in [0, 1].
 
-    def __init__(self, latent_dim: int, action_dim: int, cfg: ActionRiskConfig):
+    ``temporal_dim`` is 0 (the default) unless the caller explicitly enables
+    ``action_risk_head.use_temporal_context`` AND passes the actor's temporal
+    feature width -- in which case ``forward()`` REQUIRES a matching
+    ``temporal_feature`` tensor on every call (no silent zero-fill fallback,
+    so a wiring bug fails loudly instead of training on a degraded input)."""
+
+    def __init__(self, latent_dim: int, action_dim: int, cfg: ActionRiskConfig,
+                 temporal_dim: int = 0):
         super().__init__()
         hidden = cfg.hidden_dim
-        self.l1 = nn.Linear(latent_dim + action_dim, hidden)
+        self.temporal_dim = int(temporal_dim)
+        self.l1 = nn.Linear(latent_dim + self.temporal_dim + action_dim, hidden)
         self.act = nn.ELU()
         self.out = nn.Linear(hidden, 2)
 
-    def forward(self, z, action):
-        h = self.act(self.l1(torch.cat([z, action], dim=-1)))
+    def forward(self, z, action, temporal_feature=None):
+        if self.temporal_dim > 0:
+            if temporal_feature is None:
+                raise RuntimeError(
+                    "ActionRiskHead was built with temporal_dim="
+                    f"{self.temporal_dim} (use_temporal_context=true) but "
+                    "forward() was called without temporal_feature."
+                )
+            h = self.act(self.l1(torch.cat([z, temporal_feature, action], dim=-1)))
+        else:
+            h = self.act(self.l1(torch.cat([z, action], dim=-1)))
         pred = torch.sigmoid(self.out(h))
         return pred  # (B, 2): [:, 0] = risk_dir, [:, 1] = min_dist_dir

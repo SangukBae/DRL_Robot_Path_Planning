@@ -57,6 +57,72 @@ def test_action_risk_head_forward_shape():
     assert torch.all(out >= 0.0) and torch.all(out <= 1.0)  # sigmoid outputs
 
 
+# --------------------------------------------------------------------------- #
+#  PHASE2 temporal context: ActionRiskConfig defaults + ActionRiskHead shapes
+# --------------------------------------------------------------------------- #
+def test_action_risk_config_temporal_defaults_off():
+    cfg = ActionRiskConfig({})
+    assert cfg.use_temporal_context is False
+    assert cfg.temporal_context_source == "actor"
+
+
+def test_temporal_dim_zero_is_byte_identical_to_original_head():
+    """use_temporal_context=false (temporal_dim=0, the default) must build the
+    ORIGINAL [z, action] -> hidden Linear width -- no size change, no new
+    required argument."""
+    cfg = ActionRiskConfig(dict(enabled=True, hidden_dim=32))
+    head = ActionRiskHead(latent_dim=128, action_dim=ACTION_DIM, cfg=cfg)
+    assert head.temporal_dim == 0
+    assert head.l1.in_features == 128 + ACTION_DIM
+    z = torch.randn(8, 128)
+    a = torch.randn(8, ACTION_DIM)
+    out = head(z, a)  # no temporal_feature kwarg -- must still work
+    assert out.shape == (8, 2)
+
+
+def test_temporal_dim_positive_widens_input_and_requires_temporal_feature():
+    cfg = ActionRiskConfig(dict(enabled=True, hidden_dim=32, use_temporal_context=True))
+    head = ActionRiskHead(latent_dim=128, action_dim=ACTION_DIM, cfg=cfg, temporal_dim=32)
+    assert head.temporal_dim == 32
+    assert head.l1.in_features == 128 + 32 + ACTION_DIM
+
+    z = torch.randn(8, 128)
+    a = torch.randn(8, ACTION_DIM)
+    temporal = torch.randn(8, 32)
+
+    out = head(z, a, temporal_feature=temporal)
+    assert out.shape == (8, 2)
+    assert torch.all(out >= 0.0) and torch.all(out <= 1.0)
+
+    with pytest.raises(RuntimeError):
+        head(z, a)  # temporal_dim>0 but no temporal_feature -> fail loud
+
+
+def test_temporal_head_forward_keeps_action_gradient_and_freezes_params():
+    """Same freeze-mechanism regression as
+    test_frozen_head_forward_keeps_input_gradient_but_not_param_gradient, with
+    a non-empty temporal_feature concatenated in: the extra input branch must
+    not interfere with the action-direction gradient or the parameter freeze."""
+    cfg = ActionRiskConfig(dict(enabled=True, hidden_dim=16, use_temporal_context=True))
+    head = ActionRiskHead(latent_dim=8, action_dim=2, cfg=cfg, temporal_dim=5)
+    z = torch.randn(4, 8)
+    temporal = torch.randn(4, 5)
+    action = torch.randn(4, 2, requires_grad=True)
+
+    for p in head.parameters():
+        p.requires_grad_(False)
+    out = head(z, action, temporal_feature=temporal)
+    for p in head.parameters():
+        p.requires_grad_(True)
+
+    out.sum().backward()
+
+    assert action.grad is not None and torch.any(action.grad != 0.0), \
+        "gradient must still reach the action input"
+    assert all(p.grad is None for p in head.parameters()), \
+        "the head's own parameters must receive NO gradient from this path"
+
+
 def test_frozen_head_forward_keeps_input_gradient_but_not_param_gradient():
     """Regression for the reviewed actor-update bug: tqc_agent.py's actor block
     must NOT fully detach the head's output for `actions_pi` -- that would sever
@@ -209,3 +275,203 @@ def test_save_load_roundtrip_with_both_enabled(tmp_path):
     for p1, p2 in zip(a1.action_risk_head.parameters(),
                       a2.action_risk_head.parameters()):
         assert torch.allclose(p1, p2)
+
+
+# --------------------------------------------------------------------------- #
+#  PHASE2 temporal context: Agent-level fail-fast + end-to-end wiring
+# --------------------------------------------------------------------------- #
+OBS, AGENT_DIM, HIST = 80, 7, 4
+CUR = OBS + AGENT_DIM                     # 87
+TEMPORAL_STATE_DIM = CUR + (HIST - 1) * OBS  # 327 (stacked obs history)
+
+
+def _tac(**over):
+    tac = dict(enabled=True, history_len=HIST, temporal_feature_dim=32,
+               encoder_type="conv1d", stack_agent_state=False, stage_enable_from=0)
+    tac.update(over)
+    return tac
+
+
+def test_use_temporal_context_requires_action_risk_head_enabled(tmp_path):
+    with pytest.raises(RuntimeError):
+        Agent(STATE_DIM, ACTION_DIM, 1.0,
+              _hp(action_risk={"enabled": False, "use_temporal_context": True}),
+              log_dir=str(tmp_path))
+
+
+def test_use_temporal_context_requires_temporal_actor_context_enabled(tmp_path):
+    """The fail-fast this task specifically requires: use_temporal_context=true
+    with temporal_actor_context OFF (the default) must error immediately, not
+    silently fall back to the un-augmented [z, action] head."""
+    with pytest.raises(RuntimeError):
+        Agent(STATE_DIM, ACTION_DIM, 1.0,
+              _hp(action_risk={"enabled": True, "use_temporal_context": True}),
+              log_dir=str(tmp_path))
+    # temporal_actor_context explicitly disabled -> same failure.
+    with pytest.raises(RuntimeError):
+        Agent(STATE_DIM, ACTION_DIM, 1.0,
+              _hp(action_risk={"enabled": True, "use_temporal_context": True},
+                  temporal_actor_context={"enabled": False}),
+              log_dir=str(tmp_path))
+
+
+def test_unsupported_temporal_context_source_fails_fast(tmp_path):
+    with pytest.raises(RuntimeError):
+        Agent(TEMPORAL_STATE_DIM, ACTION_DIM, 1.0,
+              _hp(action_risk={"enabled": True, "use_temporal_context": True,
+                                "temporal_context_source": "aux"},
+                  temporal_actor_context=_tac()),
+              log_dir=str(tmp_path),
+              env_obs_dim=OBS, env_agent_dim=AGENT_DIM)
+
+
+def test_temporal_context_off_by_default_even_with_temporal_actor_context_on(tmp_path):
+    """action_risk_head.use_temporal_context defaults false -> enabling
+    temporal_actor_context alone must NOT change the head's input width."""
+    agent = Agent(TEMPORAL_STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32},
+                      temporal_actor_context=_tac()),
+                  log_dir=str(tmp_path),
+                  env_obs_dim=OBS, env_agent_dim=AGENT_DIM)
+    assert agent.action_risk_temporal_enabled is False
+    assert agent.action_risk_head.temporal_dim == 0
+    assert agent.action_risk_head.l1.in_features == agent.encoder.out_dim + ACTION_DIM
+
+
+def _fill_temporal(agent, n=40, ep_len=10):
+    for i in range(n):
+        s = np.random.randn(TEMPORAL_STATE_DIM).astype(np.float32)
+        a = np.random.uniform(-1, 1, ACTION_DIM).astype(np.float32)
+        agent.replay_buffer.add(s, a, s, 0.1, 0.0,
+                                 action_risk_target=np.random.rand(2).astype(np.float32))
+        if (i + 1) % ep_len == 0:
+            agent.replay_buffer.mark_last_traj_end()
+
+
+def test_temporal_context_on_trains_end_to_end(tmp_path):
+    agent = Agent(TEMPORAL_STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "use_temporal_context": True},
+                      critic_risk_input={"enabled": True},
+                      temporal_actor_context=_tac()),
+                  log_dir=str(tmp_path),
+                  env_obs_dim=OBS, env_agent_dim=AGENT_DIM)
+    assert agent.action_risk_temporal_enabled is True
+    assert agent.action_risk_head.temporal_dim == 32
+    assert agent.action_risk_head.l1.in_features == agent.encoder.out_dim + 32 + ACTION_DIM
+    assert agent.critic.extra_dim == 2   # critic_risk_input width unaffected by temporal_dim
+
+    _fill_temporal(agent, n=40)
+    before = [p.detach().clone() for p in agent.action_risk_head.parameters()]
+    for _ in range(5):
+        agent.train()
+    after = list(agent.action_risk_head.parameters())
+    assert any(not torch.equal(b, a) for b, a in zip(before, after)), \
+        "temporal action_risk_head did not update from its supervised loss"
+
+    # select_action still takes the stacked 327-D state and returns a 2-D action
+    # (the actor's own input width is untouched by the risk-head temporal option).
+    a = agent.select_action(np.random.randn(TEMPORAL_STATE_DIM).astype(np.float32))
+    assert a.shape == (ACTION_DIM,)
+
+
+def test_actor_update_gradient_isolation_with_temporal_context(tmp_path):
+    """Replicates tqc_agent.py's actor-update block EXACTLY (same real Agent
+    objects, same detach/freeze calls) in isolation, so the actor_loss
+    gradient's effect on each module can be checked directly without also
+    running the critic-trunk backward first (which legitimately DOES update
+    the temporal encoder, and would otherwise mask a leak from the actor
+    path specifically):
+      * agent.actor.parameters()            MUST receive gradient (qf_pi path)
+      * agent.action_risk_head.parameters() MUST receive NO gradient (frozen)
+      * agent.encoder.temporal.parameters() MUST receive NO gradient (the
+        temporal feature fed to action_risk_head in the actor block is
+        .detach()-ed, mirroring why z_actor itself is detached from z)
+    """
+    agent = Agent(TEMPORAL_STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "use_temporal_context": True},
+                      critic_risk_input={"enabled": True},
+                      temporal_actor_context=_tac()),
+                  log_dir=str(tmp_path),
+                  env_obs_dim=OBS, env_agent_dim=AGENT_DIM)
+    _fill_temporal(agent, n=40)
+
+    agent.critic_optimizer.zero_grad()
+    agent.actor_optimizer.zero_grad()
+
+    state, action, next_state, reward, not_done = agent.replay_buffer.sample()
+    z = agent.encoder(state)
+    z_actor = z.detach()
+    actions_pi, log_prob = agent.actor.action_log_prob(z_actor)
+
+    ar_temporal_pi = agent.encoder.temporal_feature(state).detach()
+    for p in agent.action_risk_head.parameters():
+        p.requires_grad_(False)
+    extra_pi = agent.action_risk_head(z_actor, actions_pi, temporal_feature=ar_temporal_pi)
+    for p in agent.action_risk_head.parameters():
+        p.requires_grad_(True)
+
+    qf_pi = agent.critic(z_actor, actions_pi, extra=extra_pi)
+    qf_pi = qf_pi.mean(dim=2).mean(dim=1, keepdim=True)
+    actor_loss = (0.2 * log_prob - qf_pi).mean()
+    actor_loss.backward()
+
+    assert any(p.grad is not None and torch.any(p.grad != 0.0)
+               for p in agent.actor.parameters()), \
+        "actor_loss must reach the actor's own parameters"
+    assert all(p.grad is None for p in agent.action_risk_head.parameters()), \
+        "action_risk_head params must receive NO gradient from actor_loss"
+    assert all(p.grad is None for p in agent.encoder.temporal.parameters()), \
+        "temporal encoder must receive NO gradient from actor_loss (leaked " \
+        "through the un-detached temporal_feature side-input)"
+
+
+def test_temporal_checkpoint_incompatibility_falls_back_gracefully(tmp_path):
+    """'기존 checkpoint와 최대한 호환되게 하되, 입력 차원이 바뀌는 경우
+    fresh-run-only 경고를 명확히 남긴다': a checkpoint saved WITHOUT temporal
+    context must NOT crash a resume into a run WITH it enabled -- tqc_io.load's
+    existing graceful-mismatch handling (shape mismatch -> fresh-init just the
+    head + rebuild the critic optimizer) must cover this case too."""
+    a1 = Agent(TEMPORAL_STATE_DIM, ACTION_DIM, 1.0,
+               _hp(action_risk={"enabled": True, "hidden_dim": 32},
+                   temporal_actor_context=_tac()),
+               log_dir=str(tmp_path / "a"),
+               env_obs_dim=OBS, env_agent_dim=AGENT_DIM)
+    _fill_temporal(a1, n=16)
+    a1.train()
+    a1.save(str(tmp_path), "ckpt")
+    assert a1.action_risk_head.temporal_dim == 0
+
+    a2 = Agent(TEMPORAL_STATE_DIM, ACTION_DIM, 1.0,
+               _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                 "use_temporal_context": True},
+                   temporal_actor_context=_tac()),
+               log_dir=str(tmp_path / "b"),
+               env_obs_dim=OBS, env_agent_dim=AGENT_DIM)
+    assert a2.action_risk_head.temporal_dim == 32
+    fresh_before = [p.detach().clone() for p in a2.action_risk_head.parameters()]
+    fresh_target_before = [p.detach().clone()
+                            for p in a2.action_risk_head_target.parameters()]
+
+    a2.load(str(tmp_path), "ckpt", load_replay_buffer=False)  # must NOT raise
+
+    # tqc_io.load() snapshots the pre-load state and restores it verbatim on a
+    # RuntimeError, so a shape mismatch (e.g. l1.weight: 89 vs 121 in_features)
+    # must leave EVERY parameter -- not just the resized one -- exactly as this
+    # run's own fresh init. Without that snapshot/restore, torch's strict
+    # load_state_dict copies matching-shape tensors (l1.bias/out.*) in place
+    # BEFORE raising, silently hybridising "fresh" head with a1's incompatible
+    # checkpoint values -- this is the regression this test locks.
+    fresh_after = list(a2.action_risk_head.parameters())
+    assert all(torch.equal(b, a) for b, a in zip(fresh_before, fresh_after)), \
+        "a shape-mismatched checkpoint must leave the head FULLY fresh-init, " \
+        "not a hybrid of fresh + partially-loaded incompatible weights"
+    target_after = list(a2.action_risk_head_target.parameters())
+    assert all(torch.equal(b, a) for b, a in zip(fresh_target_before, target_after)), \
+        "the TARGET head must also stay fully fresh-init on a mismatch"
+    assert a2.action_risk_head.temporal_dim == 32  # architecture stays as configured
+
+    # The rest of the run is still usable (actor/critic/encoder resumed).
+    _fill_temporal(a2, n=16)
+    a2.train()

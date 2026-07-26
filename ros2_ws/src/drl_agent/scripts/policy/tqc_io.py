@@ -8,6 +8,7 @@ their first argument; ``Agent.save`` / ``Agent.load`` /
 so every existing call site and the on-disk checkpoint layout are unchanged.
 """
 
+import copy
 import os
 
 import torch
@@ -259,18 +260,30 @@ def load(
 
     # PHASE2: Action-Risk Head (+ target), training-only. Same graceful
     # mismatch contract as the aux head: a strict load on an architecture/
-    # config change (e.g. hidden_dim toggled) falls back to a freshly-
-    # initialised head and rebuilds the critic optimizer (the head's params
-    # live in that trunk group) rather than aborting the whole resume.
+    # config change (e.g. hidden_dim toggled, or use_temporal_context flipped)
+    # falls back to a freshly-initialised head and rebuilds the critic
+    # optimizer (the head's params live in that trunk group) rather than
+    # aborting the whole resume.
     if getattr(agent, "action_risk_head", None) is not None:
         p = f"{directory}/{filename}_action_risk_head.pth"
         if os.path.exists(p):
+            # torch's strict load_state_dict copies EVERY matching-shape
+            # tensor in place BEFORE raising for a mismatched one (e.g. only
+            # l1.weight's width changed -> l1.bias/out.* silently warm-start
+            # from the incompatible checkpoint even though the call raises).
+            # Snapshot this run's own fresh init now and restore it verbatim
+            # on failure, so "keeping a freshly-initialised head" below is
+            # actually true instead of a fresh/partially-loaded hybrid.
+            _ar_fresh = copy.deepcopy(agent.action_risk_head.state_dict())
+            _art_fresh = copy.deepcopy(agent.action_risk_head_target.state_dict())
             try:
                 agent.action_risk_head.load_state_dict(_torch_load(p))
                 p_t = f"{directory}/{filename}_action_risk_head_target.pth"
                 if os.path.exists(p_t):
                     agent.action_risk_head_target.load_state_dict(_torch_load(p_t))
             except (RuntimeError, KeyError) as e:
+                agent.action_risk_head.load_state_dict(_ar_fresh)
+                agent.action_risk_head_target.load_state_dict(_art_fresh)
                 agent.critic_optimizer = agent._make_critic_optimizer()
                 print(
                     "[PHASE2] action-risk-head checkpoint is incompatible with "
