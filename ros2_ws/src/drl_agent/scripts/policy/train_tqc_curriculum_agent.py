@@ -459,6 +459,10 @@ class TrainTQCCurriculum(
             "h_coll_rate", "psc",
             "aux_risk_rmse", "aux_min_dist_mae_m",
             "aux_peak_sector_acc", "aux_near_event_f1",
+            # append-only: per-map paper metrics (same PaperMetricsCSV.aggregate()
+            # the global eval_summary row uses), for corridor/intersection/lobby/
+            # clutter breakdowns of clearance compliance + path efficiency.
+            "lidar_clearance_rate", "spl",
         ])
         self.get_logger().info(
             f"[Curriculum] Per-map eval log: {self._curriculum_eval_per_map_csv}"

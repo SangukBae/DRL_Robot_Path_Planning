@@ -40,6 +40,11 @@ class CurriculumEvalMixin:
         per_ep_metrics = []
         # Structured map curriculum: per-map_type breakdown of this evaluation.
         per_map = {}   # map_type -> {n, success, collision, timeout, reward, goal_dist, h_coll}
+        # map_type -> list of per-episode EpisodeMetrics.compute() dicts, so the
+        # per-map CSV can report spl / lidar_clearance_rate via
+        # PaperMetricsCSV.aggregate() (the same function the global eval_summary
+        # row already uses) without a second metric-computation path.
+        per_map_ep_metrics = {}
         # Formal aux-evaluation accumulator (global + per map_type). Only used
         # when the agent has an aux head; otherwise it stays empty (aux off path).
         aux_acc = None
@@ -110,7 +115,12 @@ class CurriculumEvalMixin:
                 final_dist = float(s[ENV_DIM])
                 final_dists.append(final_dist)
                 rewards.append(ep_rew)
-                per_ep_metrics.append(self._em.compute(bool(done and info)))
+                _ep_metrics = self._em.compute(bool(done and info))
+                per_ep_metrics.append(_ep_metrics)
+                # Per-map paper-metric aggregation (spl / lidar_clearance_rate / ...)
+                # -- reuses PaperMetricsCSV.aggregate() below, the SAME function the
+                # global eval_summary row uses, instead of recomputing anything.
+                per_map_ep_metrics.setdefault(map_type or "na", []).append(_ep_metrics)
 
                 ep_success   = bool(done and info)
                 ep_collision = bool(done and not info)
@@ -274,9 +284,12 @@ class CurriculumEvalMixin:
         try:
             with open(self._curriculum_eval_per_map_csv, "a", newline="") as f:
                 w = csv.writer(f)
-                def _b(am, key):
-                    # blank when a metric is absent / None / NaN (aux off / no labels)
-                    v = am.get(key) if isinstance(am, dict) else am
+                def _b(am, key=None):
+                    # blank when a metric is absent / None / NaN (aux off / no labels).
+                    # `key=None` -> `am` IS the raw value (h_coll_rate / psc / a lookup
+                    # from a per-map paper-metric dict); `key` set -> dict-lookup style
+                    # (aux_eval_per_map entries).
+                    v = am.get(key) if (key is not None and isinstance(am, dict)) else am
                     if v is None:
                         return ""
                     try:
@@ -294,19 +307,29 @@ class CurriculumEvalMixin:
                     hc = (d["h_coll"] / d["h_coll_n"]) if d["h_coll_n"] > 0 else None
                     psc = (d["psc_sum"] / d["psc_n"]) if d["psc_n"] > 0 else None
                     am = aux_eval_per_map.get(mt, {})
+                    # Per-map paper metrics (spl / lidar_clearance_rate / ...) via the
+                    # SAME aggregate() the global eval_summary row uses -- no map ever
+                    # reaches here with an empty episode list (per_map only gets a key
+                    # once >=1 episode ran on it), so this is never the all-zero
+                    # EpisodeMetrics.empty() fallback in practice.
+                    pm_paper = PaperMetricsCSV.aggregate(per_map_ep_metrics.get(mt, []))
                     metrics["per_map"][mt] = {
                         "eval_eps": d["n"], "success_rate": sr,
                         "collision_rate": cr, "timeout_rate": tr,
                         "mean_reward": mr, "mean_goal_dist": gd,
-                        "h_coll_rate": hc, "psc": psc, **am,
+                        "h_coll_rate": hc, "psc": psc,
+                        "spl": pm_paper.get("spl"),
+                        "lidar_clearance_rate": pm_paper.get("lidar_clearance_rate"),
+                        **am,
                     }
                     w.writerow([
                         epoch, self._last_global_t, self._curriculum_stage, mt, d["n"],
                         round(sr, 4), round(cr, 4), round(tr, 4),
                         round(mr, 4), round(gd, 4),
-                        _b(None, hc), _b(None, psc),
+                        _b(hc), _b(psc),
                         _b(am, "aux_risk_rmse"), _b(am, "aux_min_dist_mae_m"),
                         _b(am, "aux_peak_sector_acc"), _b(am, "aux_near_event_f1"),
+                        _b(pm_paper, "lidar_clearance_rate"), _b(pm_paper, "spl"),
                     ])
                     _hc_ms = f"{hc*100:.1f}%" if hc is not None else "n/a"
                     self.get_logger().info(
