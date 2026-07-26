@@ -34,6 +34,8 @@ import csv
 import math
 import numpy as np
 
+import run_layout
+
 # Canonical column order for the paper metrics (header == row guaranteed).
 # NOTE: append-only — new metrics go at the END so existing positional readers of
 # the older columns keep working (stl / psc were added for the aux experiments).
@@ -203,12 +205,18 @@ class PaperMetricsCSV:
     """
 
     def __init__(self, log_dir: str, run_tag: str):
-        self.episode_path = os.path.join(log_dir, f"episode_metrics_{run_tag}.csv")
-        self.eval_path = os.path.join(log_dir, f"eval_metrics_{run_tag}.csv")
-        with open(self.episode_path, "w", newline="") as f:
-            csv.writer(f).writerow(EPISODE_METRIC_HEADER)
-        with open(self.eval_path, "w", newline="") as f:
-            csv.writer(f).writerow(EVAL_METRIC_HEADER)
+        # RUN_LAYOUT: an empty run_tag (new-structure run, see run_layout.py)
+        # yields plain "episode_metrics.csv" / "eval_metrics.csv"; a non-empty
+        # tag (legacy layout) keeps the old "_<timestamp>" suffix.
+        self.episode_path = os.path.join(
+            log_dir, run_layout.tagged_filename("episode_metrics", ".csv", run_tag))
+        self.eval_path = os.path.join(
+            log_dir, run_layout.tagged_filename("eval_metrics", ".csv", run_tag))
+        # RUN_LAYOUT: only write the header for a genuinely NEW file. A resume
+        # into an existing new-structure run dir (plain filename, same path
+        # every process start) must APPEND to its history, not truncate it.
+        run_layout.write_csv_header_if_new(self.episode_path, EPISODE_METRIC_HEADER)
+        run_layout.write_csv_header_if_new(self.eval_path, EVAL_METRIC_HEADER)
 
     def write_episode(self, *, episode, global_t, stage, success, collision,
                       timeout, total_reward, steps, metrics):

@@ -67,6 +67,7 @@ install(
     scripts/utils/geometry_utils.py    # pure helpers (extracted from environment.py)
     scripts/utils/seed_utils.py        # centralised RNG seeding
     scripts/utils/config_paths.py      # pure path/config-discovery helpers
+    scripts/utils/run_layout.py        # RUN_LAYOUT: runtime/experiments/<run_id>/ per-run dirs
     scripts/utils/sim_validation.py            # SIM_VALIDATION
     scripts/utils/sim_validation_summary.py    # SIM_VALIDATION
     scripts/environment/environment_interface.py

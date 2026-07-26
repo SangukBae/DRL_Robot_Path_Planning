@@ -65,10 +65,14 @@ def _to_float(v):
 
 
 def discover_csvs(runtime_root):
-    """glob <runtime_root>/*/seed_*/logs/eval_summary_*.csv, mirroring the
-    discovery convention already used by utils/aggregate_results.py."""
-    pattern = os.path.join(runtime_root, "*", "seed_*", "logs", "eval_summary_*.csv")
-    return sorted(glob.glob(pattern))
+    """Find every eval_summary CSV under ``runtime_root``, RUN_LAYOUT-aware:
+    matches both the legacy
+    ``<runtime_root>/tqc/seed_<seed>/logs/eval_summary_<tag>.csv`` (mirroring
+    utils/aggregate_results.py's convention) and the new
+    ``<runtime_root>/experiments/<run_id>/logs/eval_summary.csv`` (plain
+    filename, no tag -- see run_layout.py), via one recursive glob."""
+    pattern = os.path.join(runtime_root, "**", "logs", "eval_summary*.csv")
+    return sorted(glob.glob(pattern, recursive=True))
 
 
 def load_rows(csv_paths):

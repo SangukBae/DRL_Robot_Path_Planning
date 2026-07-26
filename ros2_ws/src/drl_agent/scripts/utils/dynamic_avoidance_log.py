@@ -40,6 +40,8 @@ import math
 
 import numpy as np
 
+import run_layout
+
 
 DYN_AVOID_HEADER = [
     # ── identifiers ───────────────────────────────────────────────────────
@@ -117,10 +119,15 @@ class DynamicAvoidanceCSV:
     """
 
     def __init__(self, log_dir: str, run_tag: str):
+        # RUN_LAYOUT: empty run_tag (new-structure run) -> plain filename.
         self.path = os.path.join(
-            log_dir, f"dynamic_avoidance_metrics_{run_tag}.csv")
-        with open(self.path, "w", newline="") as f:
-            csv.writer(f).writerow(DYN_AVOID_HEADER)
+            log_dir,
+            run_layout.tagged_filename("dynamic_avoidance_metrics", ".csv", run_tag),
+        )
+        # RUN_LAYOUT: only write the header for a genuinely NEW file -- a
+        # resume into an existing new-structure run dir (plain filename) must
+        # APPEND to its history, not truncate it.
+        run_layout.write_csv_header_if_new(self.path, DYN_AVOID_HEADER)
 
     def write_episode(self, *, episode, global_t, stage, map_type,
                       seed, aux_enabled, aux_version,

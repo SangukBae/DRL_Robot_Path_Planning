@@ -64,7 +64,10 @@ def _find_csvs(paths):
     for p in paths:
         p = os.path.expanduser(p)
         if os.path.isdir(p):
-            found += sorted(glob.glob(os.path.join(p, "**", "eval_summary_*.csv"),
+            # RUN_LAYOUT: "eval_summary*.csv" (no forced underscore) matches
+            # BOTH the legacy "eval_summary_<tag>.csv" and the new-structure
+            # plain "eval_summary.csv" (runtime/experiments/<run_id>/logs/).
+            found += sorted(glob.glob(os.path.join(p, "**", "eval_summary*.csv"),
                                       recursive=True))
         elif os.path.isfile(p):
             found.append(p)

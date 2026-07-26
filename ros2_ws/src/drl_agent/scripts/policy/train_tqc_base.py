@@ -117,6 +117,10 @@ class TrainTQCBase(EnvInterface):
         if _upe_override > 0:
             self.updates_per_env_step = _upe_override
         base_file_name                  = train_settings["base_file_name"]
+        # RUN_LAYOUT: kept as an attribute (not just the local var above) so a
+        # subclass's _setup_directories() override (see TrainTQCCurriculum) can
+        # build a run_id from it without re-parsing train_tqc_config.yaml.
+        self.base_file_name             = base_file_name
 
         current_date = datetime.now().strftime("%Y%m%d")
         self.file_name = f"{base_file_name}_seed_{self.seed}_{current_date}"

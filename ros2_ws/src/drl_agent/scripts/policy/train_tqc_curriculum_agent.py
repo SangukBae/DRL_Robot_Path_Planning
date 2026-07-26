@@ -61,6 +61,8 @@ import pure_pursuit
 from aux_prediction_labels import AUX_WIRE_VERSION
 # AUX_ABLATION: run-identity / ablation logging helpers.
 import aux_ablation_logging as aux_log
+# RUN_LAYOUT: per-run runtime/experiments/<run_id>/ directory structure.
+import run_layout
 # AUX_PRED: formal aux-evaluation metric helpers (pure numpy).
 from aux_eval_metrics import AuxEvalAccumulator, split_label
 
@@ -88,15 +90,96 @@ class TrainTQCCurriculum(
     # AUX_PRED: this is the trainer that fully supports auxiliary prediction.
     AUX_SUPPORTED = True
 
+    # ------------------------------------------------------------------ #
+    #  RUN_LAYOUT: runtime/experiments/<run_id>/{configs,logs,models,      #
+    #  analysis} per-run directory structure (overrides TrainTQCBase's     #
+    #  flat runtime/tqc/seed_<seed>/ layout for THIS trainer only --       #
+    #  other TrainTQCBase subclasses, e.g. generalization_eval.py, are     #
+    #  unaffected).                                                        #
+    # ------------------------------------------------------------------ #
+
+    def _setup_directories(self):
+        """Resolve this run's directory layout and create every subdir.
+
+        Precedence:
+          1. Explicit override (``run_dir`` ROS param or ``DRL_AGENT_RUN_DIR``
+             env var) -- used AS-IS as the run dir (unchanged from the prior
+             behaviour), but still gets the new configs/logs/models/analysis
+             substructure created inside it.
+          2. Otherwise: ``run_layout.resolve_run_layout`` -- a fresh
+             ``runtime/experiments/<run_id>/`` for a new run, or a reused
+             existing new-structure / legacy-structure dir when resuming
+             (``load_model=true``) into one. See run_layout.py's module
+             docstring for the full precedence and the "never migrate a
+             legacy run" guarantee.
+        """
+        self.declare_parameter("run_dir", "")
+        run_dir_param = (
+            self.get_parameter("run_dir").get_parameter_value().string_value.strip()
+        )
+        env_run_dir = os.environ.get("DRL_AGENT_RUN_DIR", "").strip()
+
+        if run_dir_param or env_run_dir:
+            base_run_dir = os.path.expanduser(run_dir_param or env_run_dir)
+            layout = run_layout.new_layout(base_run_dir, is_fresh=True)
+        else:
+            package_root = self._resolve_drl_agent_source_root()
+            layout = run_layout.resolve_run_layout(
+                package_root, self.base_file_name, self.seed,
+                load_model=self.load_model,
+            )
+
+        self._run_layout          = layout
+        self.run_dir               = layout["run_dir"]
+        self.run_id                = layout["run_id"]
+        self._using_legacy_layout  = bool(layout["is_legacy"])
+        self.log_dir                = layout["logs_dir"]
+        self.pytorch_models_dir     = layout["models_dir"]
+        if self._using_legacy_layout:
+            # Legacy resume: replicate the OLD 4-separate-dir structure
+            # exactly (no configs/analysis dirs -- nothing new-structure-only
+            # is ever written into an existing seed_<seed> folder).
+            self.final_models_dir  = layout["final_models_dir"]
+            self.results_dir       = layout["results_dir"]
+            self.configs_dir       = None
+            self.analysis_dir      = None
+        else:
+            # New structure: a single models/ dir doubles as "final" (each
+            # run already has its own folder, so the old checkpoint-vs-final
+            # directory split no longer carries information), and logs/
+            # doubles as the small eval-history bookkeeping dir (evals.npy).
+            self.final_models_dir  = layout["models_dir"]
+            self.results_dir       = layout["logs_dir"]
+            self.configs_dir       = layout["configs_dir"]
+            self.analysis_dir      = layout["analysis_dir"]
+
+        run_layout.create_run_dirs(layout)
+        self.get_logger().info(
+            f"[RunLayout] run_dir={self.run_dir} "
+            f"(legacy={self._using_legacy_layout}, run_id={self.run_id})"
+        )
+
     def _init_csv_loggers(self):
-        """Create CSV logs for curriculum training (step-level log disabled)."""
-        self._csv_run_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+        """Create CSV logs for curriculum training (step-level log disabled).
+
+        RUN_LAYOUT: ``self._csv_run_tag`` is the legacy "_<timestamp>" filename
+        suffix. New-structure runs leave it empty (the run folder itself
+        already carries the timestamp, so a plain "episode_rewards.csv" is
+        enough and stays readable without a glob); a legacy-structure run
+        (resumed into an existing seed_<seed> dir) keeps generating a fresh
+        timestamp exactly as before, so multiple restarts keep accumulating
+        distinct per-run CSVs there like they always have.
+        """
+        self._csv_run_tag = (
+            "" if not self._using_legacy_layout
+            else datetime.now().strftime("%Y%m%d_%H%M%S")
+        )
         self._step_csv    = None  # step-level debug log disabled for curriculum
         self._reward_csv  = os.path.join(
-            self.log_dir, f"episode_rewards_{self._csv_run_tag}.csv"
+            self.log_dir, run_layout.tagged_filename("episode_rewards", ".csv", self._csv_run_tag)
         )
         self._driving_csv = os.path.join(
-            self.log_dir, f"episode_driving_{self._csv_run_tag}.csv"
+            self.log_dir, run_layout.tagged_filename("episode_driving", ".csv", self._csv_run_tag)
         )
 
         # AUX_ABLATION: append [seed, aux_enabled, aux_version] (header == row;
@@ -116,12 +199,15 @@ class TrainTQCCurriculum(
             "mean_obs_steering_rad", "mean_abs_cmd_obs_speed_err_mps",
             "low_obs_speed_frac",
         ] + _meta
+        # RUN_LAYOUT: only write the header for a genuinely NEW file -- a
+        # resume into an existing new-structure run dir (plain filename, same
+        # path every process start) must APPEND to its history, not truncate
+        # it (_write_episode_logs in train_tqc_base.py already opens "a").
         for path, header in [
             (self._reward_csv,  reward_header),
             (self._driving_csv, driving_header),
         ]:
-            with open(path, "w", newline="") as f:
-                csv.writer(f).writerow(header)
+            run_layout.write_csv_header_if_new(path, header)
 
         self.get_logger().info(f"Episode rewards CSV: {self._reward_csv}")
         self.get_logger().info(f"Episode driving CSV: {self._driving_csv}")
@@ -339,16 +425,18 @@ class TrainTQCCurriculum(
         # Extra CSV that includes the curriculum_stage column
         self._curriculum_reward_csv = os.path.join(
             self.log_dir,
-            f"curriculum_episode_rewards_{self._csv_run_tag}.csv",
+            run_layout.tagged_filename("curriculum_episode_rewards", ".csv", self._csv_run_tag),
         )
-        with open(self._curriculum_reward_csv, "w", newline="") as f:
-            csv.writer(f).writerow([
-                "episode", "global_t", "steps",
-                "total_reward", "mean_reward",
-                "goal_reached", "collision", "timeout", "eval_cut",
-                "final_goal_dist_m", "curriculum_stage", "mean_gazebo_rtf",
-            ] + aux_log.META_COLUMN_NAMES   # AUX_ABLATION: seed/aux_enabled/aux_version
-              + ["map_type"])               # structured map curriculum
+        # RUN_LAYOUT: header only for a genuinely NEW file -- a resume into an
+        # existing new-structure run dir (plain filename) must APPEND to its
+        # history (line ~1185 already opens "a"), not truncate it.
+        run_layout.write_csv_header_if_new(self._curriculum_reward_csv, [
+            "episode", "global_t", "steps",
+            "total_reward", "mean_reward",
+            "goal_reached", "collision", "timeout", "eval_cut",
+            "final_goal_dist_m", "curriculum_stage", "mean_gazebo_rtf",
+        ] + aux_log.META_COLUMN_NAMES   # AUX_ABLATION: seed/aux_enabled/aux_version
+          + ["map_type"])               # structured map curriculum
         self.get_logger().info(
             f"[Curriculum] Episode log (with stage): {self._curriculum_reward_csv}"
         )
@@ -357,19 +445,21 @@ class TrainTQCCurriculum(
         # map_type per evaluation) so the paper can report corridor / intersection
         # / clutter / lobby performance separately, not just the mixed average.
         self._curriculum_eval_per_map_csv = os.path.join(
-            self.log_dir, f"curriculum_eval_per_map_{self._csv_run_tag}.csv",
+            self.log_dir,
+            run_layout.tagged_filename("curriculum_eval_per_map", ".csv", self._csv_run_tag),
         )
-        with open(self._curriculum_eval_per_map_csv, "w", newline="") as f:
-            csv.writer(f).writerow([
-                "epoch", "global_t", "curriculum_stage", "map_type", "eval_eps",
-                "success_rate", "collision_rate", "timeout_rate",
-                "mean_reward", "mean_goal_dist",
-                # append-only extras (label-derived human metrics + formal aux
-                # metrics; blank when env labels / agent aux head are off)
-                "h_coll_rate", "psc",
-                "aux_risk_rmse", "aux_min_dist_mae_m",
-                "aux_peak_sector_acc", "aux_near_event_f1",
-            ])
+        # RUN_LAYOUT: header only for a genuinely NEW file (see the comment
+        # above the curriculum_reward_csv header write for why).
+        run_layout.write_csv_header_if_new(self._curriculum_eval_per_map_csv, [
+            "epoch", "global_t", "curriculum_stage", "map_type", "eval_eps",
+            "success_rate", "collision_rate", "timeout_rate",
+            "mean_reward", "mean_goal_dist",
+            # append-only extras (label-derived human metrics + formal aux
+            # metrics; blank when env labels / agent aux head are off)
+            "h_coll_rate", "psc",
+            "aux_risk_rmse", "aux_min_dist_mae_m",
+            "aux_peak_sector_acc", "aux_near_event_f1",
+        ])
         self.get_logger().info(
             f"[Curriculum] Per-map eval log: {self._curriculum_eval_per_map_csv}"
         )
@@ -501,6 +591,20 @@ class TrainTQCCurriculum(
                 _env_cfg = self._find_config_file("environment_curriculum.yaml") or ""
             except Exception:
                 _env_cfg = ""
+
+        # RUN_LAYOUT: freeze the 4 configs THIS run actually used into
+        # configs/ (new-layout runs only -- a legacy-layout resume has no
+        # configs_dir, see run_layout.legacy_layout, and is left untouched).
+        _copied_cfg = {"train": "", "curriculum": "", "hyperparameters": "", "environment": ""}
+        if self.configs_dir:
+            _copied_cfg = run_layout.copy_run_configs(self.configs_dir, {
+                "train": getattr(self, "_train_cfg_path", ""),
+                "curriculum": getattr(self, "_curriculum_cfg_path", ""),
+                "hyperparameters": getattr(self, "_hparams_path", ""),
+                "environment": _env_cfg,
+            })
+            self.get_logger().info(f"[RunLayout] configs copied into {self.configs_dir}")
+
         aux_log.write_run_manifest(
             self.log_dir, seed=self.seed, agent=self.rl_agent,
             run_tag=self._csv_run_tag,
@@ -510,6 +614,18 @@ class TrainTQCCurriculum(
             hyperparameters_file=getattr(self, "_hparams_path", ""),
             environment_config_file=_env_cfg,
             environment_config_sha1=_envp.get("loaded_config_sha1", ""),
+            # RUN_LAYOUT: run identity + frozen-config paths (blank/legacy-safe
+            # when this run is using the legacy runtime/tqc/seed_<seed> layout).
+            run_id=getattr(self, "run_id", "") or "",
+            run_dir=getattr(self, "run_dir", "") or "",
+            logs_dir=self.log_dir,
+            models_dir=getattr(self, "pytorch_models_dir", "") or "",
+            configs_dir=self.configs_dir or "",
+            analysis_dir=self.analysis_dir or "",
+            copied_train_config_file=_copied_cfg.get("train", ""),
+            copied_curriculum_config_file=_copied_cfg.get("curriculum", ""),
+            copied_hyperparameters_file=_copied_cfg.get("hyperparameters", ""),
+            copied_environment_config_file=_copied_cfg.get("environment", ""),
             env_aux={
                 "aux_enabled": _envp.get("aux_enabled"),
                 "num_sectors": _envp.get("aux_num_sectors"),

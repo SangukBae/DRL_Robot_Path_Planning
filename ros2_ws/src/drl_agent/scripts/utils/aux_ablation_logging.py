@@ -15,6 +15,8 @@ import json
 import os
 import subprocess
 
+import run_layout
+
 # Common run-identity columns appended to existing per-episode CSVs.
 META_COLUMN_NAMES = ["seed", "aux_enabled", "aux_version"]
 
@@ -201,7 +203,18 @@ def write_run_manifest(log_dir, *, seed, agent, train_config_file="",
                        env_aux=None, aux_eval=None, file_name="", repo_dir=None,
                        run_tag="", curriculum_config_file="",
                        hyperparameters_file="", seed_source="",
-                       determinism=None, human_rng=None, extra=None):
+                       determinism=None, human_rng=None, extra=None,
+                       # RUN_LAYOUT: runtime/experiments/<run_id>/ identity +
+                       # config provenance (original path -> copied-into-run-dir
+                       # path). All default "" / None so a caller that predates
+                       # this (e.g. a non-curriculum trainer) still gets a valid
+                       # manifest with these fields blank.
+                       run_id="", run_dir="", logs_dir="", models_dir="",
+                       configs_dir="", analysis_dir="",
+                       copied_train_config_file="",
+                       copied_curriculum_config_file="",
+                       copied_hyperparameters_file="",
+                       copied_environment_config_file=""):
     """Write the per-run config/identity manifest at run start (config-tracking).
 
     Lets per-seed aggregation avoid mixing configs AND lets us answer "what code
@@ -211,16 +224,32 @@ def write_run_manifest(log_dir, *, seed, agent, train_config_file="",
 
     Two files are written:
       * ``run_manifest.json``                  — latest run (back-compat readers)
-      * ``run_manifest_<run_tag>.json``        — PER-RUN copy (history preserved)
+      * ``run_manifest_<run_tag>.json``        — PER-RUN copy (history preserved,
+        legacy layout only -- a RUN_LAYOUT run_tag is empty so this second copy
+        is skipped; the run folder itself is already unique)
 
     ``environment_config_file`` / ``environment_config_sha1`` / ``env_aux`` should
     come from the running env node (via ROS parameters), not a re-discovered
     file, so the manifest records the TRUE env config that produced the run.
+
+    RUN_LAYOUT fields (``run_id``/``run_dir``/``logs_dir``/``models_dir``/
+    ``configs_dir``/``analysis_dir``, and the ``copied_*_config_file`` paths)
+    record the runtime/experiments/<run_id>/ structure this run used, alongside
+    the ``*_config_file`` (original source path) fields already above — so a
+    reader can see BOTH where a config was read from AND where its frozen copy
+    for this run lives.
     """
     m = agent_aux_meta(agent)
     g = git_info(repo_dir)
     manifest = {
         "run_tag": str(run_tag or ""),
+        # RUN_LAYOUT identity (blank for a legacy-layout run / an older caller).
+        "run_id": str(run_id or ""),
+        "run_dir": str(run_dir or ""),
+        "logs_dir": str(logs_dir or ""),
+        "models_dir": str(models_dir or ""),
+        "configs_dir": str(configs_dir or ""),
+        "analysis_dir": str(analysis_dir or ""),
         "seed": int(seed) if seed is not None else None,
         "seed_source": str(seed_source or ""),
         "aux_enabled": m["aux_enabled"],
@@ -245,6 +274,19 @@ def write_run_manifest(log_dir, *, seed, agent, train_config_file="",
         "environment_config_sha1": (
             str(environment_config_sha1 or "") or file_sha1(environment_config_file)
         ),
+        # RUN_LAYOUT: explicit original-vs-copied path pairs (item 6 of the
+        # runtime/experiments/<run_id>/ spec). "original_*" duplicates the
+        # "*_config_file" values above under the requested names; "copied_*"
+        # is where that file was frozen inside THIS run's configs/ dir ("" for
+        # a legacy-layout run, which has no configs/ dir -- see run_layout.py).
+        "original_train_config_file": str(train_config_file or ""),
+        "copied_train_config_file": str(copied_train_config_file or ""),
+        "original_curriculum_config_file": str(curriculum_config_file or ""),
+        "copied_curriculum_config_file": str(copied_curriculum_config_file or ""),
+        "original_hyperparameters_file": str(hyperparameters_file or ""),
+        "copied_hyperparameters_file": str(copied_hyperparameters_file or ""),
+        "original_environment_config_file": str(environment_config_file or ""),
+        "copied_environment_config_file": str(copied_environment_config_file or ""),
         # What the env node reports it is ACTUALLY running (label geometry).
         "env_aux": dict(env_aux or {}),
         # Formal aux-evaluation config (thresholds / reference speeds) so paper
@@ -304,15 +346,16 @@ EVAL_SUMMARY_HEADER = [
 
 
 class EvalSummaryCSV:
-    """Append-only eval summary CSV (logs/eval_summary_<run>.csv)."""
+    """Append-only eval summary CSV (logs/eval_summary_<run>.csv, or plain
+    logs/eval_summary.csv for a RUN_LAYOUT new-structure run -- see
+    run_layout.tagged_filename)."""
 
     def __init__(self, log_dir, run_tag, seed, agent):
-        self.path = os.path.join(log_dir, f"eval_summary_{run_tag}.csv")
+        self.path = os.path.join(
+            log_dir, run_layout.tagged_filename("eval_summary", ".csv", run_tag))
         self._seed = seed
         self._agent = agent
-        if not os.path.isfile(self.path):
-            with open(self.path, "w", newline="") as f:
-                csv.writer(f).writerow(EVAL_SUMMARY_HEADER)
+        run_layout.write_csv_header_if_new(self.path, EVAL_SUMMARY_HEADER)
 
     def append(self, *, eval_global_t, curriculum_stage, eval_eps, metrics):
         """metrics: the merged eval dict (base rates + aggregated paper metrics).

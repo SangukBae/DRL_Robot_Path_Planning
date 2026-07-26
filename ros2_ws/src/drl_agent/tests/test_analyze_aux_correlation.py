@@ -130,3 +130,38 @@ def test_main_no_input_does_not_crash(tmp_path):
         rc = aac.main(["--out", str(out_dir), "--no-plots"])
     assert rc == 0
     assert (out_dir / "aux_correlation_summary.json").exists()
+
+
+# ── RUN_LAYOUT: discover_csvs must find both the legacy and the new          ──
+# ── runtime/experiments/<run_id>/logs/ plain-filename layout.                 ──
+def test_discover_csvs_finds_legacy_layout(tmp_path):
+    legacy_logs = tmp_path / "tqc" / "seed_0" / "logs"
+    legacy_logs.mkdir(parents=True)
+    csv_path = legacy_logs / "eval_summary_20260701_000000.csv"
+    csv_path.write_text("seed\n0\n")
+
+    found = aac.discover_csvs(str(tmp_path))
+    assert found == [str(csv_path)]
+
+
+def test_discover_csvs_finds_new_run_layout_plain_filename(tmp_path):
+    new_logs = tmp_path / "experiments" / "20260726_101200_tqc_both_seed0" / "logs"
+    new_logs.mkdir(parents=True)
+    csv_path = new_logs / "eval_summary.csv"
+    csv_path.write_text("seed\n0\n")
+
+    found = aac.discover_csvs(str(tmp_path))
+    assert found == [str(csv_path)]
+
+
+def test_discover_csvs_finds_both_layouts_together(tmp_path):
+    legacy_logs = tmp_path / "tqc" / "seed_0" / "logs"
+    legacy_logs.mkdir(parents=True)
+    (legacy_logs / "eval_summary_20260701_000000.csv").write_text("seed\n0\n")
+
+    new_logs = tmp_path / "experiments" / "20260726_101200_tqc_both_seed0" / "logs"
+    new_logs.mkdir(parents=True)
+    (new_logs / "eval_summary.csv").write_text("seed\n0\n")
+
+    found = aac.discover_csvs(str(tmp_path))
+    assert len(found) == 2
