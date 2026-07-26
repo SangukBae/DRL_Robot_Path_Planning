@@ -134,6 +134,42 @@ def aux_label_dim(cfg: dict) -> int:
     return AuxLabelConfig(cfg).label_dim
 
 
+# ── PHASE2: Action-Risk Head env-side supervision-target wire block ──────────
+# A separate, independently-gated tiny block ([SENTINEL, risk_dir, min_dist_dir])
+# environment.py may prepend ahead of the (optional) aux_prediction tail above —
+# see environment.py::_append_aux_labels and environment_interface.py::
+# EnvInterface._strip_action_risk_target. It is ACTION-CONDITIONED (computed for
+# the exact theta just decoded from the selected action), unlike the aux label
+# above (which is action-agnostic), so it needs no cur/next carry-over: it is
+# attached directly to the response for the transition that just happened.
+#
+# ACTION_RISK_WIRE_SENTINEL can never collide with a legitimate wire value: the
+# aux wire's own VERSION field is always a small positive int (1 or 2), and
+# risk_dir/min_dist_dir are always in [0, 1].
+ACTION_RISK_WIRE_SENTINEL = -999.0
+ACTION_RISK_WIRE_LEN = 3   # [SENTINEL, risk_dir, min_dist_dir]
+
+
+def strip_action_risk_wire(tail):
+    """PHASE2: split an optional action-risk-head target off the FRONT of an
+    appended wire tail.
+
+    Returns
+    -------
+    (action_risk_target, remainder)
+        action_risk_target : (risk_dir, min_dist_dir) floats, or None when the
+                              block is absent (tail too short / no sentinel).
+        remainder           : the tail with that block removed (the ORIGINAL
+                              tail, unchanged, when the block is absent) — the
+                              caller (EnvInterface) hands this on to
+                              parse_aux_wire exactly as before.
+    """
+    arr = np.asarray(tail, dtype=np.float32).ravel()
+    if arr.shape[0] >= ACTION_RISK_WIRE_LEN and float(arr[0]) == ACTION_RISK_WIRE_SENTINEL:
+        return (float(arr[1]), float(arr[2])), arr[ACTION_RISK_WIRE_LEN:].copy()
+    return None, arr.copy()
+
+
 def parse_aux_wire(tail):
     """AUX_PRED: split an appended wire tail into (meta, label).
 
@@ -184,6 +220,99 @@ def _wrap_pi(angle: float) -> float:
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def sector_index_for_theta(theta: float, num_sectors: int) -> int:
+    """Angle (radians, robot frame) -> risk_map sector index.
+
+    Canonical convention for this module's risk_map K-axis: straight ahead
+    (theta=0) maps to the MIDDLE bin (num_sectors // 2), not bin 0. Also
+    re-exported/duplicated (documented as matching this EXACTLY) by
+    utils/risk_map_dump.py for eval-time dump records -- this is the single
+    source of truth the formula must stay in sync with.
+    """
+    if num_sectors <= 0:
+        return 0
+    ang = _wrap_pi(theta)
+    k = int((ang + math.pi) / (2.0 * math.pi) * num_sectors)
+    return max(0, min(num_sectors - 1, k))
+
+
+def _parse_humans(humans, min_speed_for_motion):
+    """Pre-extract (x, y, vx, vy) once per human (empty list when no humans).
+    Shared by compute_future_risk_labels and compute_directional_risk_map so
+    the velocity-fallback convention (vx/vy if given, else v+yaw, else
+    stationary below min_speed_for_motion) has ONE implementation."""
+    parsed = []
+    for s in (humans or []):
+        x = float(s["x"])
+        y = float(s["y"])
+        if "vx" in s and "vy" in s:
+            vx = float(s["vx"])
+            vy = float(s["vy"])
+        else:
+            v = float(s.get("v", 0.0))
+            yaw = float(s.get("yaw", 0.0))
+            if abs(v) < min_speed_for_motion:
+                vx = vy = 0.0
+            else:
+                vx = v * math.cos(yaw)
+                vy = v * math.sin(yaw)
+        parsed.append((x, y, vx, vy))
+    return parsed
+
+
+def compute_directional_risk_map(humans, robot_pose, cfg: AuxLabelConfig):
+    """PHASE2: per-SECTOR (risk, min_dist) pair, using ONLY the first horizon
+    (cfg.horizons_sec[0]) -- environment.py's _directional_risk_cfg is single-
+    horizon by construction (see environment.py::_compute_directional_risk).
+
+    UNLIKE compute_future_risk_labels's min_dist_norm -- which is, by design,
+    the horizon's GLOBAL nearest-human distance over ALL humans/sectors, and
+    MUST stay exactly that for AUX_PRED wire-format / checkpoint compatibility
+    -- min_dist_row here is the nearest human WITHIN EACH SECTOR. That is what
+    lets risk_dir/min_dist_dir (sliced at the SAME sector index in
+    environment.py) both genuinely describe the SAME direction, instead of
+    pairing a directional risk with a distance that could come from a human in
+    a completely different direction.
+
+    Returns (risk_row, min_dist_row), each length cfg.num_sectors, both in
+    [0, 1] (min_dist_row[k]: 1 == no human in sector k within D_c).
+    """
+    K = cfg.num_sectors
+    Dc = max(cfg.risk_distance_scale, 1e-6)
+    rx, ry, ryaw = robot_pose
+    h_sec = cfg.horizons_sec[0] if cfg.horizons_sec else 0.0
+
+    risk_row = [0.0] * K
+    min_dist_row = [1.0] * K  # 1.0 == no human within D_c in this sector
+
+    for (x, y, vx, vy) in _parse_humans(humans, cfg.min_speed_for_motion):
+        fx = x + vx * h_sec
+        fy = y + vy * h_sec
+        dx = fx - rx
+        dy = fy - ry
+        d = math.hypot(dx, dy)
+        ang = math.atan2(dy, dx) - ryaw
+        k = sector_index_for_theta(ang, K)
+
+        risk = 1.0 - d / Dc
+        if risk < 0.0:
+            risk = 0.0
+        elif risk > 1.0:
+            risk = 1.0
+        if risk > risk_row[k]:
+            risk_row[k] = risk
+
+        dn = d / Dc
+        if dn < 0.0:
+            dn = 0.0
+        elif dn > 1.0:
+            dn = 1.0
+        if dn < min_dist_row[k]:
+            min_dist_row[k] = dn
+
+    return risk_row, min_dist_row
+
+
 def compute_future_risk_labels(humans, robot_pose, cfg: AuxLabelConfig,
                                robot_vel=(0.0, 0.0)):
     """AUX_PRED: build the canonical label vector.
@@ -215,23 +344,7 @@ def compute_future_risk_labels(humans, robot_pose, cfg: AuxLabelConfig,
     risk_map = [[0.0] * K for _ in range(H)]
     min_dist_norm = [1.0] * H  # 1.0 == no human within D_c
 
-    # Pre-extract (x, y, vx, vy) once per human (empty when no humans).
-    parsed = []
-    for s in (humans or []):
-        x = float(s["x"])
-        y = float(s["y"])
-        if "vx" in s and "vy" in s:
-            vx = float(s["vx"])
-            vy = float(s["vy"])
-        else:
-            v = float(s.get("v", 0.0))
-            yaw = float(s.get("yaw", 0.0))
-            if abs(v) < cfg.min_speed_for_motion:
-                vx = vy = 0.0
-            else:
-                vx = v * math.cos(yaw)
-                vy = v * math.sin(yaw)
-        parsed.append((x, y, vx, vy))
+    parsed = _parse_humans(humans, cfg.min_speed_for_motion)
 
     if parsed:
         for hi, h_sec in enumerate(cfg.horizons_sec):
@@ -245,12 +358,8 @@ def compute_future_risk_labels(humans, robot_pose, cfg: AuxLabelConfig,
                 d = math.hypot(dx, dy)
                 if d < min_d:
                     min_d = d
-                ang = _wrap_pi(math.atan2(dy, dx) - ryaw)
-                k = int((ang + math.pi) / (2.0 * math.pi) * K)
-                if k < 0:
-                    k = 0
-                elif k >= K:
-                    k = K - 1
+                ang = math.atan2(dy, dx) - ryaw
+                k = sector_index_for_theta(ang, K)
                 risk = 1.0 - d / Dc
                 if risk < 0.0:
                     risk = 0.0

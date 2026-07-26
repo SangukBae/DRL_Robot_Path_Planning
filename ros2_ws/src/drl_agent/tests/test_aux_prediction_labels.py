@@ -194,3 +194,76 @@ def test_env_agent_aux_label_geometry_agree():
     assert meta["ttc_len"] == a.ttc_len
     assert meta["hazard_len"] == a.hazard_len
     assert len(label) == a.label_dim
+
+
+# ── PHASE2: Action-Risk Head wire block (strip_action_risk_wire) ─────────────
+def test_strip_action_risk_wire_absent_passthrough():
+    tail = [al.AUX_WIRE_VERSION, 16.0, 3.0, 0.0, 0.0, 0.5, 1.0, 1.5] + [0.0] * (3 * 16 + 3)
+    target, remainder = al.strip_action_risk_wire(tail)
+    assert target is None
+    assert list(remainder) == list(map(float, tail))
+
+
+def test_strip_action_risk_wire_present_splits_block():
+    risk_dir, min_dist_dir = 0.42, 0.87
+    aux_tail = [al.AUX_WIRE_VERSION, 16.0, 3.0, 0.0, 0.0, 0.5, 1.0, 1.5] + [0.0] * (3 * 16 + 3)
+    tail = [al.ACTION_RISK_WIRE_SENTINEL, risk_dir, min_dist_dir] + aux_tail
+    target, remainder = al.strip_action_risk_wire(tail)
+    assert target is not None
+    assert abs(target[0] - risk_dir) < 1e-5
+    assert abs(target[1] - min_dist_dir) < 1e-5
+    assert len(remainder) == len(aux_tail)
+    meta, label = al.parse_aux_wire(remainder)
+    assert meta["version"] == al.AUX_WIRE_VERSION
+
+
+def test_action_risk_sentinel_never_collides_with_aux_version():
+    # The sentinel must be unambiguous against any legitimate wire VERSION.
+    assert al.ACTION_RISK_WIRE_SENTINEL != float(al.AUX_WIRE_VERSION)
+    assert al.ACTION_RISK_WIRE_SENTINEL < 0.0
+
+
+# ── PHASE2: compute_directional_risk_map (per-SECTOR min_dist, NOT global) ───
+def test_directional_risk_map_min_dist_is_per_sector_not_global():
+    cfg = al.AuxLabelConfig(dict(enabled=True, num_sectors=16, horizons_sec=[1.0],
+                                  risk_distance_scale=3.0))
+    # One human very close, directly BEHIND (sector 0); query direction is
+    # FORWARD (sector 8, theta=0). The forward sector's min_dist must stay at
+    # the "no human here" default (1.0), NOT be pulled down by the close human
+    # in a different sector -- that was the bug compute_future_risk_labels's
+    # (deliberately global) min_dist_norm would have caused if reused directly.
+    humans = [{"x": -0.2, "y": 0.0, "yaw": 0.0, "v": 0.0}]
+    risk_row, min_dist_row = al.compute_directional_risk_map(
+        humans, (0.0, 0.0, 0.0), cfg)
+    fwd = al.sector_index_for_theta(0.0, 16)
+    behind = al.sector_index_for_theta(math.pi, 16)
+    assert risk_row[fwd] == 0.0
+    assert min_dist_row[fwd] == 1.0
+    assert risk_row[behind] > 0.5
+    assert min_dist_row[behind] < 0.2  # 0.2 / 3.0
+
+
+def test_directional_risk_map_no_humans_is_all_default():
+    cfg = al.AuxLabelConfig(dict(enabled=True, num_sectors=8, horizons_sec=[1.0],
+                                  risk_distance_scale=3.0))
+    risk_row, min_dist_row = al.compute_directional_risk_map([], (0.0, 0.0, 0.0), cfg)
+    assert risk_row == [0.0] * 8
+    assert min_dist_row == [1.0] * 8
+
+
+def test_future_risk_labels_min_dist_norm_unchanged_by_parse_humans_refactor():
+    """Regression: extracting _parse_humans out of compute_future_risk_labels
+    must not change its (deliberately GLOBAL-over-all-sectors) min_dist_norm."""
+    cfg = al.AuxLabelConfig(dict(enabled=True, num_sectors=16,
+                                  horizons_sec=[1.0], risk_distance_scale=3.0))
+    # Two humans: one far (sector matches query), one very close but in a
+    # DIFFERENT sector. The horizon-global min_dist_norm must reflect the
+    # CLOSE human regardless of sector (unlike compute_directional_risk_map).
+    humans = [
+        {"x": 2.9, "y": 0.0, "yaw": 0.0, "v": 0.0},   # forward, near D_c edge
+        {"x": -0.1, "y": 0.0, "yaw": 0.0, "v": 0.0},  # behind, very close
+    ]
+    label = al.compute_future_risk_labels(humans, (0.0, 0.0, 0.0), cfg)
+    K = cfg.num_sectors
+    min_dist_norm = label[K:K + 1][0]
+    assert abs(min_dist_norm - (0.1 / 3.0)) < 1e-6  # global min == the close one

@@ -149,7 +149,8 @@ class _ResidualCriticBody(nn.Module):
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hdim=256,
                  activ=F.elu, n_quantiles=25, n_critics=2,
-                 residual=False, layernorm=False, residual_blocks=2):
+                 residual=False, layernorm=False, residual_blocks=2,
+                 extra_dim=0):
         super().__init__()
         self.activ = activ
         self.n_quantiles = n_quantiles
@@ -160,20 +161,27 @@ class Critic(nn.Module):
         # existing checkpoints are unaffected.
         self.residual = bool(residual)
         self.layernorm = bool(layernorm)
+        # PHASE2 (critic_risk_input): optional extra input width, appended after
+        # [state, action] -- e.g. the (detached) Action-Risk Head prediction.
+        # extra_dim=0 (default) is byte-for-byte the original [state, action]
+        # critic; extra_dim>0 changes the input Linear's shape -> FRESH-RUN ONLY
+        # (an old checkpoint's critic weights will not strict-load).
+        self.extra_dim = int(extra_dim)
 
         # activ 모듈 선택
         ActivMod = nn.ELU if activ is F.elu else nn.ReLU
 
+        in_dim = state_dim + action_dim + self.extra_dim
         self.critics = nn.ModuleList()
         for _ in range(n_critics):
             if self.residual:
                 self.critics.append(_ResidualCriticBody(
-                    state_dim + action_dim, hdim, n_quantiles, ActivMod,
+                    in_dim, hdim, n_quantiles, ActivMod,
                     n_blocks=residual_blocks, layernorm=self.layernorm,
                 ))
             else:
                 self.critics.append(nn.Sequential(
-                    nn.Linear(state_dim + action_dim, hdim),
+                    nn.Linear(in_dim, hdim),
                     ActivMod(),
                     nn.Linear(hdim, hdim),
                     ActivMod(),
@@ -182,8 +190,16 @@ class Critic(nn.Module):
                     nn.Linear(hdim, n_quantiles),
                 ))
 
-    def forward(self, state, action):
-        sa = torch.cat([state, action], 1)
+    def forward(self, state, action, extra=None):
+        parts = [state, action]
+        if self.extra_dim > 0:
+            if extra is None:
+                raise ValueError(
+                    f"Critic(extra_dim={self.extra_dim}) requires `extra` "
+                    "(e.g. the detached Action-Risk Head prediction) at forward()."
+                )
+            parts.append(extra)
+        sa = torch.cat(parts, 1)
 
         quantiles_list = []
         for critic in self.critics:

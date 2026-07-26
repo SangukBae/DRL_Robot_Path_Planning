@@ -310,6 +310,47 @@ environment:
     min_freeze_steps: 12        # consecutive freeze steps before the penalty starts
     w_penalty: 0.02             # small per-step penalty once the streak is exceeded
 
+  # ── PHASE2: directional risk-map candidates ─────────────────────────────────
+  # Shared privileged GT geometry (self.human_states + GT robot pose, single
+  # near-term horizon, sector-binned like aux_prediction's risk_map — theta=0 ->
+  # middle bin). Used by BOTH risk_map_reward and action_risk_head below;
+  # neither depends on aux_prediction.enabled (independent computation, no
+  # wire/label sharing with the aux_prediction block above). Present
+  # unconditionally (cheap to parse) — each consumer has its own enabled switch.
+  directional_risk:
+    num_sectors: 16
+    horizon_sec: 1.0
+    risk_distance_scale: 3.0
+    min_speed_for_motion: 0.05
+
+  # PHASE2 candidate 1 (priority): Directional Risk-map Reward Shaping.
+  # PRIVILEGED: risk_dir/min_dist_dir come straight from the GT pedestrian state
+  # (never an observation) and are added DIRECTLY to the reward — training-time
+  # shaping only, not available at deployment. Penalises progressing into a
+  # risky selected-waypoint direction; rewards a step-over-step DECREASE of that
+  # same directional risk. Both terms are hard-gated on ACTUAL positive progress
+  # this step (progress_positive_gate_eps) to prevent reward hacking (a policy
+  # standing still / creeping cannot collect risk-shaping reward without ever
+  # actually navigating). Independent of aux_prediction.enabled AND
+  # action_risk_head.enabled. DEFAULT OFF -> reward byte-identical to before.
+  risk_map_reward:
+    enabled: false
+    penalty_weight: 0.3
+    bonus_weight: 0.15
+    bonus_max: 0.1
+    progress_positive_gate_eps: 0.0
+
+  # PHASE2 candidate 2: Critic-connected Action-Risk Head (env-side mirror).
+  # When true, the env appends a tiny action-conditioned (risk_dir, min_dist_dir)
+  # supervision-target wire block (see aux_prediction_labels.strip_action_risk_
+  # wire) for the agent's Action-Risk Head to train on. The agent-side switch
+  # (hyperparameters_tqc.yaml action_risk_head.enabled) must ALSO be true for
+  # the head to actually exist/train — same mirrored-flag convention as
+  # aux_prediction.enabled. Independent of risk_map_reward.enabled AND
+  # aux_prediction.enabled. DEFAULT OFF -> no wire change, state dim unchanged.
+  action_risk_head:
+    enabled: false
+
   # Episode-level pedestrian behaviour-mode mix. Each human is assigned ONE mode
   # at spawn and keeps it for the episode. Weights need not sum to 1 (normalised
   # internally); empty/absent → uniform. Per-mode kinematics live in code

@@ -939,6 +939,33 @@ class TrainTQCCurriculum(
             # AUX_PRED: label paired with the next state s_{t+1} (sliced off
             # centrally in EnvInterface.step and exposed as last_aux_label).
             self._aux_label_next = self.last_aux_label
+            # PHASE2: the Action-Risk Head's target is ALREADY action-conditioned
+            # (computed by the env for the a_t just executed, pre-step) -- unlike
+            # last_aux_label it needs no cur/next carry-over, just read straight
+            # off EnvInterface for this same step() call (None when disabled).
+            action_risk_target = self.last_action_risk_target
+            # PHASE2 fail-fast: when this agent expects a supervision target
+            # (hyperparameters_tqc.yaml action_risk_head.enabled=true) but the
+            # env never emitted one this step, the buffer would otherwise
+            # silently zero-pad it (buffer.py's add()) and the head would train
+            # toward an all-zero "always safe" target with no visible error.
+            # This ALWAYS means the env-side mirror is off (environment(_
+            # curriculum).yaml action_risk_head.enabled=false) or the wire got
+            # dropped -- environment.py computes this target unconditionally
+            # (never returns None) whenever its own flag is on, and a genuine
+            # env-side exception aborts the whole /step call instead of
+            # returning a state, so a None here is never a transient hiccup.
+            if self.rl_agent.action_risk_enabled and action_risk_target is None:
+                raise RuntimeError(
+                    "[PHASE2] hyperparameters_tqc.yaml action_risk_head.enabled="
+                    "true but the env produced NO action-risk supervision target "
+                    "this step (last_action_risk_target is None). The two "
+                    "action_risk_head.enabled switches (env config AND agent "
+                    "config) must BOTH be true -- check "
+                    "environment_curriculum.yaml's action_risk_head.enabled. "
+                    "Refusing to silently train the head toward an all-zero "
+                    "target."
+                )
 
             # Timeout penalty (same as base class)
             if ep_timesteps == self.max_episode_steps - 1 and not ep_finished:
@@ -950,6 +977,7 @@ class TrainTQCCurriculum(
             self.rl_agent.replay_buffer.add(
                 state, action, next_state, reward, done,
                 aux_target=self._aux_label_cur,
+                action_risk_target=action_risk_target,
             )
             self._aux_label_cur = self._aux_label_next
 

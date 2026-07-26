@@ -179,3 +179,29 @@ hyperparameters:
     encoder_type: "conv1d"
     stack_agent_state: false        # MUST match observation_time_context.stack_agent_state
     stage_enable_from: 2            # real temporal feature used from stage 2 on
+
+  # ── PHASE2 candidate 2: Critic-connected Action-Risk Head ───────────────────
+  # Small supervised head predicting the SELECTED action's directional risk
+  # (risk_dir, min_dist_dir) from [z, action]. Trained via MSE against the
+  # PRIVILEGED GT target stored in the replay buffer (env-side mirror:
+  # environment(_curriculum).yaml action_risk_head.enabled MUST also be true, or
+  # the buffer never receives a target). INDEPENDENT of aux_prediction.enabled
+  # AND risk_map_reward.enabled -- this is one of the 4 experiment-matrix axes.
+  # DEFAULT OFF -> no new module, critic/actor unchanged, checkpoint-compatible.
+  action_risk_head:
+    enabled: false
+    hidden_dim: 64
+    loss_weight: 0.1
+
+  # ── PHASE2 candidate 2b: feed the (DETACHED) Action-Risk Head prediction into
+  # the critic's input, [z, action] -> [z, action, predicted_action_risk]. The
+  # actor NEVER sees this prediction directly -- it only learns to prefer safer
+  # actions INDIRECTLY, through the critic's Q-values. Requires
+  # action_risk_head.enabled=true (nothing to feed the critic otherwise).
+  # FRESH-RUN-ONLY: this changes the critic's input width (+2), so an existing
+  # checkpoint's critic will NOT strict-load (tqc_io.load degrades gracefully to
+  # a freshly-initialised critic + critic-optimizer, logged loudly -- but that
+  # means a "resume" under this flag is really a fresh critic, not a true
+  # resume). DEFAULT OFF -> Critic(extra_dim=0), byte-identical to baseline.
+  critic_risk_input:
+    enabled: false

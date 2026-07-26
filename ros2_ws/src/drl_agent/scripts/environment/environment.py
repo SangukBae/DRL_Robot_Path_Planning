@@ -570,6 +570,45 @@ class Environment(
         self.antifreeze_w           = float(_af.get("w_penalty", 0.02))
         self._freeze_streak         = 0
 
+        # ── PHASE2 candidates: directional risk-map reward shaping + the
+        # Action-Risk Head's env-side supervision target. Both consume the SAME
+        # privileged GT risk_map geometry (directional_risk block) computed from
+        # self.human_states, independent of aux_prediction.enabled — a single
+        # near-term horizon, sector-binned exactly like aux_prediction_labels'
+        # risk_map convention (theta=0 -> middle bin). Each feature has its OWN
+        # enabled switch so the 4-way experiment matrix (baseline / reward-shaping
+        # only / action-risk-head only / both) is reachable; the shared geometry
+        # is just avoiding a duplicated CV-rollout implementation.
+        _dr = dict(self.environment_config.get("directional_risk", {}) or {})
+        self._directional_risk_cfg = aux_labels.AuxLabelConfig({
+            "enabled": True,
+            "horizons_sec": [float(_dr.get("horizon_sec", 1.0))],
+            "num_sectors": int(_dr.get("num_sectors", 16)),
+            "risk_distance_scale": float(_dr.get("risk_distance_scale", 3.0)),
+            "min_speed_for_motion": float(_dr.get("min_speed_for_motion", 0.05)),
+        })
+
+        # PRIVILEGED: risk_map_reward feeds the GT risk_map DIRECTLY into the
+        # reward (training-time only; never an observation). Default OFF ->
+        # reward is byte-identical to before this feature (see reward_calculator
+        # .compute_reward's risk_map_reward_enabled docstring for the anti-
+        # reward-hacking progress-positive gate).
+        _rmr = dict(self.environment_config.get("risk_map_reward", {}) or {})
+        self.risk_map_reward_enabled       = bool(_rmr.get("enabled", False))
+        self.risk_map_reward_penalty_w     = float(_rmr.get("penalty_weight", 0.3))
+        self.risk_map_reward_bonus_w       = float(_rmr.get("bonus_weight", 0.15))
+        self.risk_map_reward_bonus_max     = float(_rmr.get("bonus_max", 0.1))
+        self.risk_map_reward_gate_eps      = float(_rmr.get("progress_positive_gate_eps", 0.0))
+        self._prev_risk_dir = None  # reset per episode; None on episode start
+
+        # Env-side mirror of the agent's action_risk_head.enabled (hyperparameters_
+        # tqc.yaml). Independent of risk_map_reward.enabled AND aux_prediction.
+        # enabled. When true, the env appends a tiny (risk_dir, min_dist_dir)
+        # supervision-target wire block ahead of the (optional) aux label tail —
+        # see _prepend_action_risk_target(). Default OFF -> no wire change.
+        _arh = dict(self.environment_config.get("action_risk_head", {}) or {})
+        self.action_risk_head_env_enabled = bool(_arh.get("enabled", False))
+
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
         self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
@@ -1903,6 +1942,8 @@ class Environment(
             "reward_yield_bonus",
             "penalty_idle",
             "penalty_freeze",
+            "penalty_risk_map",
+            "reward_risk_map_bonus",
             "reward_terminal",
             "reward",
             "collision", "target", "done",
@@ -2088,7 +2129,38 @@ class Environment(
     # ====================================Ignition Finish===========================================
     # ----------------------------------------------------------------------------------------------
 
-    def _append_aux_labels(self, state_array):
+    def _compute_directional_risk(self, theta):
+        """PHASE2: pre-step GT risk in the sector the SELECTED waypoint
+        direction (theta, robot frame) points into. Shared by risk_map_reward
+        (fed straight into get_reward) and the Action-Risk Head's env-side
+        supervision target (wired onto the response) -- one privileged CV-
+        rollout computation, two independent consumers/switches.
+
+        MUST be called with self.human_states / GT robot pose as they stand
+        BEFORE this step's motion (i.e. before propagate_state()) -- see the
+        call site in _step_callback_impl -- so neither consumer ever sees
+        post-step information leak into an action-credit signal.
+
+        Returns (risk_dir, min_dist_dir), both in [0, 1] and both about the
+        SAME sector (the one theta points into) -- min_dist_dir is the nearest
+        human WITHIN that sector, NOT the horizon-global nearest human over all
+        directions (that global quantity is a different, existing thing: see
+        aux_prediction_labels.compute_future_risk_labels's min_dist_norm, used
+        only by the AUX_PRED wire label).
+        """
+        with self._human_lock:
+            humans = [
+                {"x": s["x"], "y": s["y"],
+                 "yaw": s.get("yaw", 0.0), "v": s.get("v", 0.0)}
+                for s in self.human_states.values()
+            ]
+        cfg = self._directional_risk_cfg
+        risk_row, min_dist_row = aux_labels.compute_directional_risk_map(
+            humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg)
+        sector = aux_labels.sector_index_for_theta(theta, cfg.num_sectors)
+        return float(risk_row[sector]), float(min_dist_row[sector])
+
+    def _append_aux_labels(self, state_array, action_risk_target=None):
         """AUX_PRED: return state_array (list) with the privileged future-risk
         label appended.  When disabled, returns the plain state list so the
         wire format is identical to baseline.
@@ -2097,8 +2169,21 @@ class Environment(
         read from self.human_states (privileged sim state).  Nothing here is
         needed at inference -- the trainer simply stops slicing when labels are
         absent, and the deployed policy is encoder + actor only.
+
+        PHASE2: when ``action_risk_head_env_enabled`` and ``action_risk_target``
+        (risk_dir, min_dist_dir) is supplied, PREPEND that action-conditioned
+        block ahead of the (optional) aux_prediction tail below -- see
+        aux_prediction_labels.strip_action_risk_wire for the wire format. The
+        two tails are independent: this block is always absent on /reset
+        responses (no action has been taken yet at reset).
         """
         state_list = np.asarray(state_array, dtype=np.float32).ravel().tolist()
+        if self.action_risk_head_env_enabled and action_risk_target is not None:
+            risk_dir, min_dist_dir = action_risk_target
+            state_list.extend([
+                aux_labels.ACTION_RISK_WIRE_SENTINEL,
+                float(risk_dir), float(min_dist_dir),
+            ])
         if not self._aux_pred_enabled:
             return state_list
 
@@ -2238,6 +2323,17 @@ class Environment(
             r, theta, x_wp, y_wp = self._map_action_to_waypoint(action)
             v, cmd_steering = self._controller_waypoint_to_command(x_wp, y_wp)
             yielding = False
+
+        # PHASE2: pre-step (decision-time) directional GT risk for the JUST-
+        # DECODED waypoint direction `theta` -- MUST run before propagate_state()
+        # below so self.human_states / GT pose reflect the state the policy
+        # actually conditioned on, not this step's motion outcome. Shared by
+        # risk_map_reward (reward shaping) and the Action-Risk Head's env-side
+        # supervision target (wired onto the response further down); each has
+        # its own independent enable switch.
+        action_risk_dir = action_risk_min_dist = None
+        if self.risk_map_reward_enabled or self.action_risk_head_env_enabled:
+            action_risk_dir, action_risk_min_dist = self._compute_directional_risk(theta)
 
         # 2) Twist publish:
         #   linear.x  = speed from Pure Pursuit [m/s]
@@ -2413,12 +2509,25 @@ class Environment(
             stall_progress_eps=self.stall_progress_eps,
             stall_speed_mps=self.stall_speed_mps,
             stall_static_risk_thr=self.stall_static_risk_thr,
+            # PHASE2: directional risk-map reward shaping (0 unless enabled).
+            risk_map_reward_enabled=self.risk_map_reward_enabled,
+            risk_dir=action_risk_dir,
+            min_dist_dir=action_risk_min_dist,
+            prev_risk_dir=self._prev_risk_dir,
+            risk_penalty_weight=self.risk_map_reward_penalty_w,
+            risk_bonus_weight=self.risk_map_reward_bonus_w,
+            risk_bonus_max=self.risk_map_reward_bonus_max,
+            progress_positive_gate_eps=self.risk_map_reward_gate_eps,
             return_terms=True,
         )
         # Carry the anti-freeze / yield streaks into the next step (reset per episode).
         self._freeze_streak = int(reward_terms.get("freeze_streak", 0))
         self._yield_streak  = int(reward_terms.get("yield_streak", 0))
         self._prev_waypoint_theta = theta
+        # PHASE2: carry this step's directional risk into the next step's bonus
+        # comparison (None on episode start / when risk_map_reward is off and
+        # action_risk_head didn't compute it either).
+        self._prev_risk_dir = action_risk_dir
     
         # 9) 다음 스텝 대비 기록
         self._prev_goal_dist = curr_goal_dist
@@ -2457,6 +2566,8 @@ class Environment(
                 round(float(reward_terms["yield_bonus"]), 6),
                 round(float(reward_terms["idle_pen"]), 6),
                 round(float(reward_terms["freeze_pen"]), 6),
+                round(float(reward_terms["risk_map_penalty"]), 6),
+                round(float(reward_terms["risk_map_bonus"]), 6),
                 round(float(reward_terms["terminal"]), 6),
                 round(float(reward), 6),
                 int(bool(collision)), int(bool(target)), int(bool(done)),
@@ -2464,7 +2575,13 @@ class Environment(
 
         # 10) 응답
         # AUX_PRED: append privileged future-risk label (no-op when disabled).
-        response.state  = self._append_aux_labels(state)
+        # PHASE2: also prepend the Action-Risk Head's action-conditioned target
+        # for THIS transition (no-op unless action_risk_head_env_enabled).
+        _action_risk_target = (
+            (action_risk_dir, action_risk_min_dist)
+            if action_risk_dir is not None else None
+        )
+        response.state  = self._append_aux_labels(state, action_risk_target=_action_risk_target)
         response.reward = float(reward)
         response.done   = bool(done)
         response.target = bool(target)
@@ -2589,6 +2706,7 @@ class Environment(
         self._prev_waypoint_theta = 0.0
         self._freeze_streak    = 0
         self._yield_streak     = 0
+        self._prev_risk_dir    = None  # PHASE2: no risk-decrease bonus on episode's first step
         self._reset_robot_path()
         prev_scan_updates = self.scan_update_count
         prev_role_updates = dict(self._odom_role_count)

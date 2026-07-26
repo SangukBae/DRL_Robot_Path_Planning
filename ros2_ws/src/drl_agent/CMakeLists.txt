@@ -120,6 +120,7 @@ install(
     scripts/utils/analyze_aux_correlation.py    # PHASE1A: aux-accuracy vs avoidance correlation post-processing
     scripts/utils/risk_map_dump.py               # PHASE1B: per-step risk-map dump writer (JSONL)
     scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics
+    scripts/policy/action_risk_head.py          # PHASE2: Critic-connected Action-Risk Head
   DESTINATION
     lib/${PROJECT_NAME}
 )

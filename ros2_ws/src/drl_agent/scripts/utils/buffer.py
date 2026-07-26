@@ -17,6 +17,7 @@ class LAP(object):
         prioritized=True,
         aux_dim=0,
         track_traj=False,
+        action_risk_dim=0,
     ):
 
         max_size = int(max_size)
@@ -51,6 +52,16 @@ class LAP(object):
         else:
             self.traj_end = None
 
+        # PHASE2: optional per-transition Action-Risk Head supervision target
+        # (risk_dir, min_dist_dir), aligned with `state`+`action` exactly like
+        # aux_target. action_risk_dim == 0 keeps the buffer identical to
+        # baseline for every config that doesn't opt in.
+        self.action_risk_dim = int(action_risk_dim)
+        if self.action_risk_dim > 0:
+            self.action_risk_target = np.zeros((max_size, self.action_risk_dim))
+        else:
+            self.action_risk_target = None
+
         self.prioritized = prioritized
         if prioritized:
             self.priority = torch.zeros(max_size, device=device)
@@ -59,7 +70,7 @@ class LAP(object):
         self.normalize_actions = max_action if normalize_actions else 1
 
     def add(self, state, action, next_state, reward, done, aux_target=None,
-            traj_end=0.0):
+            traj_end=0.0, action_risk_target=None):
         self.state[self.ptr] = state
         self.action[self.ptr] = action / self.normalize_actions
         self.next_state[self.ptr] = next_state
@@ -81,6 +92,17 @@ class LAP(object):
         # by a previous wrap); mark_last_traj_end() sets it after an episode ends.
         if self.traj_end is not None:
             self.traj_end[self.ptr] = float(traj_end)
+
+        # PHASE2: store the Action-Risk Head target aligned with `state`+`action`
+        # (the transition that just happened). Missing / wrong-length targets
+        # zero-pad, same graceful contract as aux_target.
+        if self.action_risk_target is not None:
+            row = np.zeros(self.action_risk_dim, dtype=self.action_risk_target.dtype)
+            if action_risk_target is not None:
+                a = np.asarray(action_risk_target, dtype=self.action_risk_target.dtype).reshape(-1)
+                n = min(self.action_risk_dim, a.shape[0])
+                row[:n] = a[:n]
+            self.action_risk_target[self.ptr] = row
 
         if self.prioritized:
             self.priority[self.ptr] = self.max_priority
@@ -149,6 +171,19 @@ class LAP(object):
             return None
         return torch.tensor(
             self.aux_target[ind], dtype=torch.float, device=self.device
+        )
+
+    def get_last_action_risk(self):
+        """PHASE2: Action-Risk Head supervision targets for the indices from the
+        last sample(). Returns a (batch, action_risk_dim) float tensor, or None
+        when the feature is disabled. Mirrors get_last_aux()."""
+        if self.action_risk_target is None:
+            return None
+        ind = getattr(self, "ind", None)
+        if ind is None:
+            return None
+        return torch.tensor(
+            self.action_risk_target[ind], dtype=torch.float, device=self.device
         )
 
     def get_last_future_actions(self, k_steps):
@@ -274,6 +309,9 @@ class LAP(object):
             save_kwargs["aux_target"] = self.aux_target[: self.size]
         if self.traj_end is not None:
             save_kwargs["traj_end"] = self.traj_end[: self.size]
+        # PHASE2: persist the Action-Risk Head target (optional key).
+        if self.action_risk_target is not None:
+            save_kwargs["action_risk_target"] = self.action_risk_target[: self.size]
         np.savez_compressed(path, **save_kwargs)
         if self.prioritized:
             torch.save(
@@ -321,6 +359,17 @@ class LAP(object):
                     "changed, e.g. TTC / hazard heads toggled). Resume with "
                     "load_replay_buffer=False."
                 )
+        # PHASE2: same fail-fast contract for the Action-Risk Head target width.
+        if self.action_risk_target is not None and "action_risk_target" in d.files:
+            saved_ar_dim = (int(d["action_risk_target"].shape[1])
+                             if d["action_risk_target"].ndim == 2 else -1)
+            if saved_ar_dim != self.action_risk_target.shape[1]:
+                raise RuntimeError(
+                    f"[buffer] replay-buffer checkpoint action_risk_dim={saved_ar_dim} "
+                    f"!= current action_risk_dim={self.action_risk_target.shape[1]} "
+                    "(action_risk_head toggled/changed). Resume with "
+                    "load_replay_buffer=False."
+                )
         meta = d["meta"].tolist()
         ptr, size = int(meta[0]), int(meta[1])
         self.state[: size]      = d["state"]
@@ -337,6 +386,11 @@ class LAP(object):
         # AUX_PRED: restore episode-boundary flags when both sides carry them.
         if self.traj_end is not None and "traj_end" in d.files:
             self.traj_end[: size] = d["traj_end"][: size]
+        # PHASE2: restore the Action-Risk Head target when both sides carry it.
+        if self.action_risk_target is not None and "action_risk_target" in d.files:
+            saved_ar = d["action_risk_target"]
+            cols = min(self.action_risk_dim, saved_ar.shape[1])
+            self.action_risk_target[: size, :cols] = saved_ar[: size, :cols]
         self.ptr  = ptr
         self.size = size
         if self.prioritized:

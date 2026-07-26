@@ -225,6 +225,29 @@ def compute_reward(
     stall_progress_eps=0.0,         # "no progress" = progress <= this
     stall_speed_mps=0.15,           # "low speed" = |speed| below this [m/s]
     stall_static_risk_thr=0.2,      # "low static risk" = rect_proximity below this
+
+    # ---- PHASE2 candidate: Directional Risk-map Reward Shaping (opt-in;
+    # default OFF -> byte-identical reward). PRIVILEGED: risk_dir/min_dist_dir
+    # are built from the ground-truth pedestrian state (environment.py's
+    # self.human_states), NOT from any observation -- this is training-time-only
+    # shaping, never available at deployment. risk_dir is the pre-step GT risk
+    # (in [0, 1], see aux_prediction_labels.compute_future_risk_labels) of the
+    # sector the SELECTED waypoint direction (this step's theta) points into.
+    # Penalises progressing into a risky direction; rewards a step-over-step
+    # DECREASE of that same directional risk. Both terms are hard-gated on
+    # ACTUAL positive progress this step (delta_d > progress_positive_gate_eps)
+    # -- the anti-reward-hacking guard: without it a policy could pick a
+    # "safe-looking" direction / stand still and collect risk-shaping reward
+    # without ever actually navigating. Mirrors the existing heading-bonus gate
+    # (`delta_d > 0.0`) above.
+    risk_map_reward_enabled=False,
+    risk_dir=None,                  # pre-step GT risk in the selected sector, or None
+    min_dist_dir=None,              # pre-step GT min-dist (unused in the reward math; passthrough for logging)
+    prev_risk_dir=None,             # caller-owned: risk_dir from the PREVIOUS step (None on episode start)
+    risk_penalty_weight=0.3,
+    risk_bonus_weight=0.15,
+    risk_bonus_max=0.1,
+    progress_positive_gate_eps=0.0,
     return_terms=False,
 ):
     terms = {
@@ -255,6 +278,12 @@ def compute_reward(
         "yield_streak": 0.0,
         # Generic low-progress stall penalty (0 unless stall_enabled + safe stall).
         "stall_pen": 0.0,
+        # PHASE2: directional risk-map reward shaping (0 unless risk_map_reward_enabled
+        # and the progress-positive gate is open).
+        "risk_map_penalty": 0.0,
+        "risk_map_bonus": 0.0,
+        "risk_dir": 0.0,
+        "min_dist_dir": 1.0,
         "terminal": 0.0,
     }
     # 터미널
@@ -431,9 +460,28 @@ def compute_reward(
         stall_pen = stall_w
     terms["stall_pen"] = float(stall_pen)
 
+    # 5f) PHASE2: directional risk-map reward shaping (opt-in). Gated on ACTUAL
+    # positive progress this step (see the parameter docstring above for the
+    # reward-hacking rationale) -- with the gate closed (or risk_dir unknown)
+    # both terms are exactly 0, so a disabled/no-signal step is unaffected.
+    risk_map_penalty = 0.0
+    risk_map_bonus = 0.0
+    if (risk_map_reward_enabled and risk_dir is not None
+            and delta_d > progress_positive_gate_eps):
+        risk_map_penalty = risk_penalty_weight * float(risk_dir)
+        if prev_risk_dir is not None:
+            risk_map_bonus = min(
+                risk_bonus_max,
+                risk_bonus_weight * max(0.0, float(prev_risk_dir) - float(risk_dir)),
+            )
+    terms["risk_map_penalty"] = float(risk_map_penalty)
+    terms["risk_map_bonus"] = float(risk_map_bonus)
+    terms["risk_dir"] = float(risk_dir) if risk_dir is not None else 0.0
+    terms["min_dist_dir"] = float(min_dist_dir) if min_dist_dir is not None else 1.0
+
     # 6) 시간 페널티 및 합산
-    reward = (progress + heading + yield_bonus
+    reward = (progress + heading + yield_bonus + risk_map_bonus
               - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen - idle_pen
-              - freeze_pen - bad_yield_pen - stall_pen)
+              - freeze_pen - bad_yield_pen - stall_pen - risk_map_penalty)
 
     return (float(reward), terms) if return_terms else float(reward)

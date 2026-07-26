@@ -44,6 +44,13 @@ def save(agent, directory, filename):
                 f"{directory}/{filename}_temporal_encoder.pth",
             )
 
+    # PHASE2: Action-Risk Head (+ target copy), training-only, like the aux head.
+    if getattr(agent, "action_risk_head", None) is not None:
+        torch.save(agent.action_risk_head.state_dict(),
+                   f"{directory}/{filename}_action_risk_head.pth")
+        torch.save(agent.action_risk_head_target.state_dict(),
+                   f"{directory}/{filename}_action_risk_head_target.pth")
+
     # Entropy coefficient
     if agent.ent_coef_auto:
         torch.save(agent.log_ent_coef, f"{directory}/{filename}_log_ent_coef.pth")
@@ -249,6 +256,33 @@ def load(
                     "enabled); using a freshly-initialised temporal encoder and "
                     "fresh critic-optimizer moments."
                 )
+
+    # PHASE2: Action-Risk Head (+ target), training-only. Same graceful
+    # mismatch contract as the aux head: a strict load on an architecture/
+    # config change (e.g. hidden_dim toggled) falls back to a freshly-
+    # initialised head and rebuilds the critic optimizer (the head's params
+    # live in that trunk group) rather than aborting the whole resume.
+    if getattr(agent, "action_risk_head", None) is not None:
+        p = f"{directory}/{filename}_action_risk_head.pth"
+        if os.path.exists(p):
+            try:
+                agent.action_risk_head.load_state_dict(_torch_load(p))
+                p_t = f"{directory}/{filename}_action_risk_head_target.pth"
+                if os.path.exists(p_t):
+                    agent.action_risk_head_target.load_state_dict(_torch_load(p_t))
+            except (RuntimeError, KeyError) as e:
+                agent.critic_optimizer = agent._make_critic_optimizer()
+                print(
+                    "[PHASE2] action-risk-head checkpoint is incompatible with "
+                    "the current config; keeping a freshly-initialised head AND "
+                    f"fresh critic-optimizer moments (both retrain). Details: {e}"
+                )
+        else:
+            print(
+                "[PHASE2] no action-risk-head file in this checkpoint (resuming "
+                "a run saved before action_risk_head was enabled); using a "
+                "freshly-initialised head."
+            )
 
     # Entropy coefficient
     if agent.ent_coef_auto:

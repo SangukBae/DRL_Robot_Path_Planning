@@ -24,6 +24,10 @@ from aux_prediction_temporal import TemporalContextEncoder
 # temporal feature into the shared latent (actor/critic stay non-recurrent).
 from aux_prediction_temporal import TemporalFusionEncoder
 
+# PHASE2: Critic-connected Action-Risk Head (default OFF). See
+# action_risk_head.py's module docstring for the gradient rule.
+from action_risk_head import ActionRiskConfig, ActionRiskHead
+
 
 # Network definitions + TQC loss now live in tqc_networks.py; checkpoint I/O in
 # tqc_io.py.  Re-imported here so `from tqc_agent import Actor` etc. still works.
@@ -153,6 +157,35 @@ class Agent(object):
         self.temporal_stage_enable_from = int(tcfg.get("stage_enable_from", 0))
         self.current_stage = 0
 
+        # ----------------------------
+        # PHASE2: Critic-connected Action-Risk Head (default OFF, independent of
+        # aux_prediction). action_risk_head.enabled builds the head + its
+        # supervised loss; critic_risk_input.enabled additionally feeds the
+        # head's (DETACHED) prediction into the critic's input -- a separate
+        # switch so "train the head" and "let the critic use it" can be ablated
+        # independently. critic_risk_input requires action_risk_head (nothing to
+        # feed the critic otherwise) and, when on, changes the critic's input
+        # width -> FRESH-RUN ONLY (an old checkpoint's critic will not strict-load).
+        # ----------------------------
+        self.action_risk_cfg = ActionRiskConfig(
+            self.hyperparameters.get("action_risk_head", {}))
+        self.action_risk_enabled = self.action_risk_cfg.enabled
+        self.critic_risk_input_enabled = bool(
+            dict(self.hyperparameters.get("critic_risk_input", {}) or {}).get(
+                "enabled", False))
+        if self.critic_risk_input_enabled and not self.action_risk_enabled:
+            raise RuntimeError(
+                "critic_risk_input.enabled=true requires "
+                "action_risk_head.enabled=true."
+            )
+        if self.critic_risk_input_enabled:
+            print(
+                "[Agent] critic_risk_input.enabled=true: the critic's input "
+                "width changes (+2 for the Action-Risk Head prediction) -- this "
+                "is a FRESH-RUN-ONLY architecture change, an old checkpoint's "
+                "critic will NOT strict-load."
+            )
+
         def _make_encoder():
             if not self.temporal_actor_enabled:
                 return SharedEncoder(state_dim, self.aux_cfg)
@@ -216,6 +249,21 @@ class Agent(object):
                 latent_dim, self.aux_cfg, temporal_dim=temporal_dim
             ).to(self.device)
 
+        # PHASE2: Action-Risk Head (+ polyak-averaged target copy, used ONLY to
+        # feed the TD-target critic call -- mirrors why encoder_target exists:
+        # keep whatever extra signal the TARGET Q sees on a slow-moving copy for
+        # stability). None when disabled.
+        if self.action_risk_enabled:
+            self.action_risk_head = ActionRiskHead(
+                latent_dim, action_dim, self.action_risk_cfg).to(self.device)
+            self.action_risk_head_target = ActionRiskHead(
+                latent_dim, action_dim, self.action_risk_cfg).to(self.device)
+            self.action_risk_head_target.load_state_dict(
+                self.action_risk_head.state_dict())
+        else:
+            self.action_risk_head = None
+            self.action_risk_head_target = None
+
         # ----------------------------
         # Networks & Optimizers
         # ----------------------------
@@ -224,11 +272,15 @@ class Agent(object):
         self.actor = Actor(latent_dim, action_dim, self.actor_hdim, self.actor_activ).to(self.device)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=self.actor_lr)
 
+        # PHASE2 (critic_risk_input): extra_dim=2 (risk_dir, min_dist_dir) when
+        # enabled, else 0 -> byte-identical Critic input width to baseline.
+        _critic_extra_dim = 2 if self.critic_risk_input_enabled else 0
         self.critic = Critic(
             latent_dim, action_dim, self.critic_hdim, self.critic_activ,
             self.n_quantiles, self.n_critics,
             residual=self.critic_residual, layernorm=self.critic_layernorm,
             residual_blocks=self.critic_residual_blocks,
+            extra_dim=_critic_extra_dim,
         ).to(self.device)
 
         # AUX_PRED: a single optimizer updates critic + encoder + aux head from
@@ -241,6 +293,7 @@ class Agent(object):
             self.n_quantiles, self.n_critics,
             residual=self.critic_residual, layernorm=self.critic_layernorm,
             residual_blocks=self.critic_residual_blocks,
+            extra_dim=_critic_extra_dim,
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
 
@@ -275,6 +328,8 @@ class Agent(object):
             prioritized=self.prioritized,
             # AUX_PRED: store the future-risk label alongside each transition.
             aux_dim=(self.aux_cfg.label_dim if self.aux_enabled else 0),
+            # PHASE2: store the Action-Risk Head's (risk_dir, min_dist_dir) target.
+            action_risk_dim=(2 if self.action_risk_enabled else 0),
             # AUX_PRED: track episode boundaries when EITHER the action-conditioned
             # aux (future-action lookup) OR the temporal context (backward
             # state-history lookup) is on, so neither walk crosses an episode.
@@ -391,6 +446,12 @@ class Agent(object):
         # flow with critic + aux loss (never the actor) -> same optimizer group.
         if getattr(self, "temporal_encoder", None) is not None:
             trunk_params += list(self.temporal_encoder.parameters())
+        # PHASE2: the Action-Risk Head trains from its own supervised loss added
+        # into the SAME trunk loss (critic + beta_aux*aux + risk_beta*action_risk)
+        # -> same optimizer group. The TARGET copy is never optimized directly
+        # (polyak-updated only, like critic_target/encoder_target).
+        if getattr(self, "action_risk_head", None) is not None:
+            trunk_params += list(self.action_risk_head.parameters())
         return torch.optim.Adam(trunk_params, lr=self.critic_lr)
 
     def set_curriculum_stage(self, stage: int):
@@ -601,8 +662,17 @@ class Agent(object):
             # Sample actions for next states
             next_actions, next_log_prob = self.actor.action_log_prob(z_next)
 
+            # PHASE2 (critic_risk_input): action-risk prediction for the TD
+            # target's (z_next, next_actions) pair, via the polyak-averaged
+            # TARGET head (mirrors encoder_target -- keeps whatever extra signal
+            # feeds the target Q on a slow-moving copy). Already under
+            # torch.no_grad() so no explicit .detach() is needed.
+            extra_next = None
+            if self.critic_risk_input_enabled:
+                extra_next = self.action_risk_head_target(z_next, next_actions)
+
             # Get target quantiles
-            next_quantiles = self.critic_target(z_next, next_actions)  # [B, n_critics, n_quantiles]
+            next_quantiles = self.critic_target(z_next, next_actions, extra=extra_next)  # [B, n_critics, n_quantiles]
 
             # Sort and truncate quantiles
             batch_size = state.shape[0]
@@ -619,8 +689,22 @@ class Agent(object):
             )
             target_quantiles = target_quantiles.unsqueeze(1)  # [B, 1, n_target_quantiles]
         
+        # PHASE2: Action-Risk Head prediction for the STORED (z, action) pair.
+        # Computed once (with graph) and reused: `.detach()` for the critic's
+        # `extra` input (critic loss must never backprop into this head -- see
+        # action_risk_head.py's gradient-rule docstring), the SAME tensor
+        # (still attached) for the supervised loss further below.
+        ar_pred_cur = None
+        if self.action_risk_enabled and self.action_risk_head is not None:
+            ar_pred_cur = self.action_risk_head(z, action)
+        extra_cur = (
+            ar_pred_cur.detach()
+            if (self.critic_risk_input_enabled and ar_pred_cur is not None)
+            else None
+        )
+
         # Get current quantiles (encoder latent keeps its graph here)
-        current_quantiles = self.critic(z, action)  # [B, n_critics, n_quantiles]
+        current_quantiles = self.critic(z, action, extra=extra_cur)  # [B, n_critics, n_quantiles]
 
         # Compute critic loss
         critic_loss = quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=False)
@@ -664,6 +748,22 @@ class Agent(object):
                 aux_loss_val = float(aux_loss.detach().item())
                 aux_logs["aux/beta"] = float(beta)
 
+        # PHASE2: Action-Risk Head supervised loss (MSE against the PRIVILEGED
+        # GT target stored in the buffer, aligned with the sampled `action`).
+        # This is the head's ONLY gradient path -- added into the SAME trunk
+        # loss as the aux loss above, independent of whether critic_risk_input
+        # is on (the head can be trained standalone, condition 3 of the 4-way
+        # experiment matrix).
+        action_risk_loss_val = 0.0
+        action_risk_logs = {}
+        if self.action_risk_enabled and ar_pred_cur is not None:
+            ar_target = self.replay_buffer.get_last_action_risk()
+            if ar_target is not None:
+                action_risk_loss = F.mse_loss(ar_pred_cur, ar_target)
+                total_trunk_loss = total_trunk_loss + self.action_risk_cfg.loss_weight * action_risk_loss
+                action_risk_loss_val = float(action_risk_loss.detach().item())
+                action_risk_logs["action_risk/loss"] = action_risk_loss_val
+
         self.critic_optimizer.zero_grad()
         total_trunk_loss.backward()
         self.critic_optimizer.step()
@@ -674,8 +774,30 @@ class Agent(object):
         # Sample new actions (on the DETACHED latent: actor never updates encoder)
         actions_pi, log_prob = self.actor.action_log_prob(z_actor)
 
+        # PHASE2 (critic_risk_input): action-risk prediction for the actor's OWN
+        # candidate action. Do NOT detach the whole tensor here -- that would
+        # sever d(extra_pi)/d(actions_pi), which is exactly the pathway that
+        # lets "this action raises predicted risk" propagate into the actor's
+        # gradient via qf_pi (the actor never sees extra_pi directly; it only
+        # feels it through the critic's learned Q, which is the intended
+        # "indirect" channel). What must NOT happen is action_risk_head's OWN
+        # parameters picking up a gradient from actor_loss (only its dedicated
+        # supervised loss may update it) -- so freeze its params for this one
+        # forward call instead of detaching the output. requires_grad=False at
+        # forward-time means autograd never records those weights as needing
+        # grad for this graph, so restoring True right after (before backward())
+        # is safe and standard practice for a "frozen submodule, live input"
+        # forward pass.
+        extra_pi = None
+        if self.critic_risk_input_enabled:
+            for p in self.action_risk_head.parameters():
+                p.requires_grad_(False)
+            extra_pi = self.action_risk_head(z_actor, actions_pi)
+            for p in self.action_risk_head.parameters():
+                p.requires_grad_(True)
+
         # Get Q-values for policy actions
-        qf_pi = self.critic(z_actor, actions_pi)
+        qf_pi = self.critic(z_actor, actions_pi, extra=extra_pi)
         # Average over quantiles and critics
         qf_pi = qf_pi.mean(dim=2).mean(dim=1, keepdim=True)
         
@@ -712,6 +834,15 @@ class Agent(object):
                 ):
                     target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
 
+            # PHASE2: keep the target Action-Risk Head in lock-step (mirrors the
+            # encoder_target block above).
+            if self.action_risk_head is not None:
+                for param, target_param in zip(
+                    self.action_risk_head.parameters(),
+                    self.action_risk_head_target.parameters(),
+                ):
+                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+
             if self.prioritized:
                 self.replay_buffer.reset_max_priority()
         
@@ -730,6 +861,10 @@ class Agent(object):
             if self.aux_enabled and aux_logs:
                 for _k, _v in aux_logs.items():
                     self.writer.add_scalar(_k, float(_v), self.training_steps)
+            # PHASE2: log the Action-Risk Head's supervised loss when active.
+            if self.action_risk_enabled and action_risk_logs:
+                for _k, _v in action_risk_logs.items():
+                    self.writer.add_scalar(_k, float(_v), self.training_steps)
 
         # === JSON 동시 기록 ===
         self._json_log(
@@ -742,7 +877,9 @@ class Agent(object):
                 **({"values/ent_coef": float(ent_coef.item()),
                     "loss/ent_coef":   float(ent_coef_loss.item())} if self.ent_coef_auto else {}),
                 # AUX_PRED: persist auxiliary metrics to the JSONL log too.
-                **(aux_logs if (self.aux_enabled and aux_logs) else {})
+                **(aux_logs if (self.aux_enabled and aux_logs) else {}),
+                # PHASE2: persist the Action-Risk Head's loss too.
+                **(action_risk_logs if (self.action_risk_enabled and action_risk_logs) else {}),
             }
         )
     

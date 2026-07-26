@@ -52,6 +52,32 @@ class EnvInterface(Node):
         self._rl_state_dim = None      # cached by get_dimensions()
         self.last_aux_label = None     # set on every reset()/step() (label only)
         self.last_aux_meta = None      # parsed geometry header (or None)
+        # PHASE2: Action-Risk Head env-side supervision target, set on every
+        # reset()/step() -- (risk_dir, min_dist_dir) for the action that just
+        # produced this response, or None (disabled / reset / no sentinel found).
+        self.last_action_risk_target = None
+
+    def _strip_action_risk_target(self, state):
+        """PHASE2: split the optional action-risk-head wire block off the FRONT
+        of any appended tail (BEFORE the aux label tail, see
+        aux_prediction_labels.strip_action_risk_wire). Sets
+        self.last_action_risk_target and returns `state` with that block (only)
+        removed -- the (optional) aux tail, if any, is left for
+        _strip_aux_label to parse exactly as before. Passes the original object
+        through untouched when there is nothing to strip."""
+        if self._rl_state_dim is None:
+            self.last_action_risk_target = None
+            return state
+        arr = np.asarray(state, dtype=np.float32).ravel()
+        if arr.shape[0] <= self._rl_state_dim:
+            self.last_action_risk_target = None
+            return state
+        tail = arr[self._rl_state_dim:]
+        target, remainder = _aux_labels.strip_action_risk_wire(tail)
+        self.last_action_risk_target = target
+        if target is None:
+            return state
+        return np.concatenate([arr[: self._rl_state_dim], remainder])
 
     def _strip_aux_label(self, state):
         """AUX_PRED: split any appended auxiliary wire-tail off the env state.
@@ -143,8 +169,11 @@ class EnvInterface(Node):
     def reset(self):
         """Resets the environment to its initial state using /reset service"""
         result = self._call_service(self.reset_client, Reset.Request(), "reset")
+        # PHASE2: strip the action-risk block first (no-op — env never emits it
+        # on /reset, no action has been taken yet), THEN the aux label tail.
+        state = self._strip_action_risk_target(result.state)
         # AUX_PRED: strip the appended label (no-op when aux disabled).
-        return self._strip_aux_label(result.state)
+        return self._strip_aux_label(state)
 
     def step(self, action):
         """Takes a step in the environment with the given action and the observed state"""
@@ -153,8 +182,11 @@ class EnvInterface(Node):
         # the action contract and advertises its current width via get_dimensions().
         request.action = np.asarray(action, dtype=np.float32).reshape(-1).tolist()
         response = self._call_service(self.step_client, request, "step")
+        # PHASE2: strip the action-risk block first (no-op when disabled), THEN
+        # the aux label tail (order matters -- see _strip_action_risk_target).
+        state = self._strip_action_risk_target(response.state)
         # AUX_PRED: strip the appended label (no-op when aux disabled).
-        state = self._strip_aux_label(response.state)
+        state = self._strip_aux_label(state)
         return state, response.reward, response.done, response.target
 
     def get_dimensions(self):
