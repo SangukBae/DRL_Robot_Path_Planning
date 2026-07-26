@@ -1,0 +1,254 @@
+<mxfile host="app.diagrams.net" agent="claude-code" version="24.0.0">
+  <diagram id="drl_training_framework" name="DRL Training Framework">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1500" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ===================== CONTAINERS (drawn first = behind) ===================== -->
+        <mxCell id="cG" value="GAZEBO SIMULATION  —  hunter_se_gazebo / simulate_hunter_se_ignition.launch.py" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eaf2fb;strokeColor=#6c8ebf;verticalAlign=top;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="40" width="1420" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="cB" value="ROS2 &#8596; GAZEBO BRIDGES &amp; SENSOR/COMMAND PIPELINE (launch file nodes)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#eafaf0;strokeColor=#82b366;verticalAlign=top;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="250" width="1420" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="cE" value="ENVIRONMENT NODE  —  gym_node  (environment_curriculum.py : EnvironmentCurriculum  extends Environment)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff3e6;strokeColor=#d79b00;verticalAlign=top;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="440" width="1420" height="300" as="geometry" />
+        </mxCell>
+        <mxCell id="cT" value="TRAINER PROCESS  —  train_tqc_curriculum_agent.py : TrainTQCCurriculum  (extends TrainTQCBase + Eval/Aux mixins)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f3eefb;strokeColor=#9673a6;verticalAlign=top;fontStyle=1;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="40" y="770" width="1420" height="520" as="geometry" />
+        </mxCell>
+        <mxCell id="cA" value="TQC AGENT  (rl_agent : tqc_agent.Agent)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fcf6e3;strokeColor=#d6b656;verticalAlign=top;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="470" y="980" width="600" height="290" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== GAZEBO LAYER ===================== -->
+        <mxCell id="gz" value="Gazebo Sim (gz_sim.launch.py)&#10;-r -v1 &lt;world&gt;&#10;on_exit_shutdown" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="70" y="100" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="world" value="World&#10;drl_arena (25x25, walls +/-12.5)&#10;or hospital  (name=default)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="310" y="100" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="rgl" value="RGL GPU LiDAR plugin&#10;(IGN_GAZEBO_SYSTEM_PLUGIN_PATH)&#10;-&gt; /ouster/points (PointCloud2)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="560" y="100" width="260" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="drlpose" value="DrlModelPosePlugin&#10;obstacle / human pose I/O&#10;(drl_obstacle_assets lib)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="840" y="100" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="hunter" value="Hunter SE model&#10;spawn @ x=4.5 (5s delay)&#10;Ackermann + joint states" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="1080" y="100" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="optnodes" value="(optional) RViz2 / teleop_key&#10;rviz:= , teleop:=" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1320" y="100" width="120" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== BRIDGE / PIPELINE LAYER ===================== -->
+        <mxCell id="brt" value="ros_gz_bridge (topics)&#10;/cmd_vel_filtered -&gt; cmd_vel&#10;odometry, tf, joint_states" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="70" y="310" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="brs" value="ros_gz_service_bridge&#10;/world/default/control,&#10;set_pose, create, remove" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="320" y="310" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="pc2l" value="pointcloud_to_laserscan&#10;/ouster/points -&gt; /scan&#10;z in [-0.455,0.25], 360 deg" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="570" y="310" width="240" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="pref" value="hunter_se_cmd_prefilter&#10;/cmd_vel -&gt; /cmd_vel_filtered&#10;throttle/steer shaping @50Hz" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="830" y="310" width="240" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="rsp" value="robot_state_publisher&#10;URDF -&gt; TF" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="1090" y="310" width="210" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== ENVIRONMENT NODE ===================== -->
+        <mxCell id="svc" value="ROS2 Services (gym_node)&#10;/reset  /step&#10;/get_dimensions&#10;/seed  /action_space_sample" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="70" y="490" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="par" value="ROS2 Parameters&#10;curriculum_stage (RW)&#10;curriculum_num_stages (RO)&#10;current_map_type, eval_mode" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="340" y="490" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="stage" value="_apply_curriculum_stage(idx)&#10;base(YAML) + per-stage override:&#10;- active static/humans (+by_map)&#10;- map types / static groups&#10;- loc &amp; proprio noise profile&#10;- human motion / mode mix&#10;- STOP/YIELD contract (stage 0-2 off, 3+ on)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="610" y="490" width="320" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="sbuild" value="State builder (state_dim, stacked)&#10;80 LiDAR bins + goal dist/heading&#10;+ prev action + proprio (87D frame)&#10;observation_time_context (frame stack)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="950" y="490" width="340" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="pp" value="Pure Pursuit local controller&#10;action(r, theta) -&gt; /cmd_vel&#10;stop-off / stop-on per stage" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="70" y="610" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="rew" value="Reward / termination&#10;goal (0.42m) / collision (safety rect)&#10;timeout (-20), step penalty&#10;human-risk + yield shaping" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="340" y="610" width="250" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="aux" value="AUX label generator (privileged)&#10;future risk map (16 sectors x 3 horizons)&#10;min-distance / TTC / hazard&#10;appended to state -&gt; sliced by trainer" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="610" y="610" width="320" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="rst" value="reset_callback / episode reset&#10;map sampling, start/goal poses&#10;SetEntityPose (robot + pool)&#10;pedestrian pool activate" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="950" y="610" width="340" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== TRAINER PROCESS ===================== -->
+        <mxCell id="loop" value="train_online() rollout loop&#10;1) warmup (timesteps_before_training, random a)&#10;2) a = select_action(s) / sample&#10;3) s',r,done,info = env.step(a)&#10;4) buffer.add(s,a,s',r,done, aux_label)&#10;5) if train_ready: agent.train()&#10;6) every eval_freq: evaluate" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="810" width="330" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="promo" value="Curriculum advancement&#10;_check_stage_advance (gates:&#10; sr / cr / spl / clearance / psc / h_coll)&#10;consec passes -&gt; set_curriculum_stage&#10;FAIL-FAST on set failure&#10;buffer.reset()+re-warmup @ stage in {3}" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="980" width="330" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="state_io" value="Resume / persistence&#10;curriculum_state.json&#10;rng_state.pkl / rng_torch.pt&#10;_rewarmup_until_t persisted" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="70" y="1160" width="330" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="buf" value="Replay Buffer (LAP)&#10;s, a, s', r, not_done,&#10;aux_target, traj_end&#10;batch=256, size=1e6&#10;reset() on contract change" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="470" y="810" width="280" height="120" as="geometry" />
+        </mxCell>
+
+        <!-- Agent internals -->
+        <mxCell id="enc" value="TemporalFusionEncoder&#10;cur 87 -&gt; MLP z_cur&#10;scan history -&gt; Conv1D z_temporal&#10;fuse -&gt; latent 128 (stage-gated)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1010" width="270" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="act" value="Actor (MLP 256, relu)&#10;z.detach() -&gt; a(r,theta)&#10;tanh squash, log_std" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1010" width="270" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="cri" value="Critic - TQC (MLP 256, elu)&#10;5 critics x 25 quantiles&#10;drop top 2/net -&gt; truncated target" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1110" width="270" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="auxh" value="AuxHead (train-only)&#10;action-cond GRU + attention&#10;risk / min-dist / TTC / hazard" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="780" y="1110" width="270" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="opt" value="Optimizers (Adam, 3e-4)&#10;actor  |  critic (+) encoder (+) aux  |  alpha (auto entropy, target=-2)&#10;Polyak targets (tau=0.005)   [no grad-clip; alpha unbounded]" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="490" y="1200" width="560" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Right column: param client, eval, logs -->
+        <mxCell id="gpc" value="GymParameterClient&#10;set/get ROS2 params&#10;set_curriculum_stage&#10;get_num_stages / map_type / eval_mode" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="810" width="330" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="evalm" value="CurriculumEval / Aux mixins&#10;eval episodes (eval_freq=12k, 10 eps)&#10;success/collision/spl + aux metrics" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="920" width="330" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="logb" value="Logging / artifacts&#10;episode &amp; curriculum CSV&#10;paper metrics CSV, per-map CSV&#10;TensorBoard, run_manifest.json&#10;model checkpoints (.pth)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;align=left;spacingLeft=6;" vertex="1" parent="1">
+          <mxGeometry x="1100" y="1030" width="330" height="120" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== LEGEND ===================== -->
+        <mxCell id="leg" value="Legend:   solid = ROS2 topic / dataflow      dashed = ROS2 service or parameter      ROS2 boundary between processes (Gazebo | gym_node | trainer)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#999999;align=left;spacingLeft=8;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1300" width="900" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- ===================== EDGES ===================== -->
+        <!-- Command path: agent -> env PP -> /cmd_vel -> prefilter -> filtered -> bridge -> gazebo -->
+        <mxCell id="e1" value="/cmd_vel" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="pp" target="pref">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="/cmd_vel_filtered" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="pref" target="brt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" value="cmd_vel -&gt; Gazebo" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="brt" target="gz">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Sensor path: gazebo -> ouster -> pc2l -> /scan -> state builder -->
+        <mxCell id="e4" value="/ouster/points" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="rgl" target="pc2l">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="/scan" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="pc2l" target="sbuild">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="odometry / joint_states / tf" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="gz" target="brt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" value="/odometry, /joint_states" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="brt" target="sbuild">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- World reset services: env -> service bridge -> gazebo -->
+        <mxCell id="e8" value="SetEntityPose / create / remove" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="rst" target="brs">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="/world/default/*" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="brs" target="gz">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Env internal flow -->
+        <mxCell id="e10" value="apply before reset" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="par" target="stage">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" value="stage -&gt; counts/contract" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="stage" target="rst">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" value="state + aux label" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="sbuild" target="svc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" value="reward" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="rew" target="svc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" value="aux label" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="aux" target="sbuild">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" value="action -&gt; controller" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="svc" target="pp">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Trainer <-> Env via services / params -->
+        <mxCell id="e16" value="/step /reset (request: action)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="loop" target="svc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" value="response: state, reward, done, aux" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="svc" target="loop">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e18" value="set_curriculum_stage / get params" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="gpc" target="par">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Trainer internal -->
+        <mxCell id="e19" value="add transition" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="loop" target="buf">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" value="sample batch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="buf" target="enc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e21" value="select_action(s)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="act" target="loop">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e22" value="eval results" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="evalm" target="promo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e23" value="promote" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="promo" target="gpc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e24" value="reset()+rewarmup" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="promo" target="buf">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e25" value="run eval" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="loop" target="evalm">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e26" value="logs / metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="loop" target="logb">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e27" value="save / resume" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=none;dashed=1;" edge="1" parent="1" source="loop" target="state_io">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Agent gradient/dataflow internals -->
+        <mxCell id="e28" value="z.detach()" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="enc" target="act">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e29" value="z" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="enc" target="cri">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e30" value="z" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="enc" target="auxh">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e31" value="critic+aux loss -&gt; enc" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="cri" target="opt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e32" value="aux loss" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="auxh" target="opt">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e33" value="set_curriculum_stage (gain/aux gating)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="promo" target="enc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
