@@ -480,6 +480,8 @@ class Environment(
             self.environment_config.get("human_goal_span_multiplier", 2.0))
         self.human_goal_min_span_m = float(           # [m] min distance for a new goal
             self.environment_config.get("human_goal_min_span_m", 4.0))
+        self.human_static_obstacle_clearance = float( # [m] extra keep-out for kinematic humans
+            self.environment_config.get("human_static_obstacle_clearance", 0.35))
         # Weak human-human local avoidance (lightweight, NOT full ORCA; robot is
         # ignored). Nearby humans nudge each other's desired heading by a small,
         # capped amount so they overlap less without sharp turns.

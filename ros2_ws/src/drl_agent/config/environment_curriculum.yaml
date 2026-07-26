@@ -185,6 +185,7 @@ environment:
   human_local_step_m: 2.0           # m  local step length toward the goal
   human_goal_span_multiplier: 2.0   # goal distance = (mode wp_dist_max) * this
   human_goal_min_span_m: 4.0        # m  floor on a newly sampled goal distance
+  human_static_obstacle_clearance: 0.35 # m  keep kinematic humans off static obstacle footprints
   # Weak human-human local avoidance (lightweight, robot ignored). A capped
   # heading nudge away from nearby humans -> less overlap, no sharp turns.
   human_social_avoid_enabled: true

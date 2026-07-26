@@ -129,6 +129,7 @@ class EnvironmentCurriculum(Environment):
         "human_local_step_m",
         "human_goal_span_multiplier",
         "human_goal_min_span_m",
+        "human_static_obstacle_clearance",
         "human_social_avoid_radius",
         "human_social_avoid_strength",
     )

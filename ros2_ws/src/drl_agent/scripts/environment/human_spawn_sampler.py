@@ -226,6 +226,10 @@ class HumanSpawnMixin:
                     # Goal must be off internal walls AND inside the reachable
                     # navigable region (lane/arm) — not across a wall.
                     and not self._point_in_walls(gx, gy, self.human_target_wall_clearance)
+                    and not self._point_in_static_obstacle_for_human(
+                        gx, gy, self.human_target_wall_clearance)
+                    and not self._segment_hits_static_obstacle_for_human(
+                        cx, cy, gx, gy, self.human_segment_wall_clearance)
                     and self._point_in_human_regions(gx, gy)):
                 return gx, gy
         # Recovery: any free pose in the arena (wider search than the mode cone).
@@ -237,6 +241,10 @@ class HumanSpawnMixin:
                         gx, gy, use_cross_mask=False,
                         lower_bound=lower, upper_bound=upper)
                     and not self._point_in_walls(gx, gy, self.human_target_wall_clearance)
+                    and not self._point_in_static_obstacle_for_human(
+                        gx, gy, self.human_target_wall_clearance)
+                    and not self._segment_hits_static_obstacle_for_human(
+                        cx, cy, gx, gy, self.human_segment_wall_clearance)
                     and self._point_in_human_regions(gx, gy)):
                 return gx, gy
         return float(cx), float(cy)   # arena fully blocked -> hold (very rare)
@@ -285,7 +293,11 @@ class HumanSpawnMixin:
                 if (not self.check_dead_zone(x, y, use_cross_mask=False,
                                              lower_bound=lower, upper_bound=upper)
                         and not self._point_in_walls(x, y, self.human_target_wall_clearance)
+                        and not self._point_in_static_obstacle_for_human(
+                            x, y, self.human_target_wall_clearance)
                         and not self._segment_hits_wall(
+                            cx, cy, x, y, self.human_segment_wall_clearance)
+                        and not self._segment_hits_static_obstacle_for_human(
                             cx, cy, x, y, self.human_segment_wall_clearance)):
                     return x, y
             return float(cx), float(cy)   # boxed in -> hold (caller resamples goal)
@@ -323,7 +335,11 @@ class HumanSpawnMixin:
                 y = self._human_np_rng.uniform(lower, upper)
             if (not self.check_dead_zone(x, y, use_cross_mask=False,
                                          lower_bound=lower, upper_bound=upper)
-                    and not self._point_in_walls(x, y, self.human_target_wall_clearance)):
+                    and not self._point_in_walls(x, y, self.human_target_wall_clearance)
+                    and not self._point_in_static_obstacle_for_human(
+                        x, y, self.human_target_wall_clearance)
+                    and (cx is None or cy is None
+                         or not self._segment_hits_static_obstacle_for_human(
+                             cx, cy, x, y, self.human_segment_wall_clearance))):
                 return x, y
         return (float(cx), float(cy)) if (mode_bounded or bounded) else (0.0, 0.0)
-

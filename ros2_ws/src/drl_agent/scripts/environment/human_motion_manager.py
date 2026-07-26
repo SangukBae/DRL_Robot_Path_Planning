@@ -282,6 +282,69 @@ class HumanMotionMixin:
             return x, ny, False          # slide along y (wall blocks x motion)
         return x, y, True                # fully blocked → hold + retarget
 
+    def _iter_static_obstacle_records_for_humans(self):
+        """Yield active static-obstacle footprints for kinematic human avoidance.
+
+        spawned_obstacle_records intentionally contains both static obstacles and
+        the current proxy torso for each active pedestrian.  Human-vs-human
+        spacing is handled separately by the social-avoidance term, so this helper
+        filters out active human records and returns only static objects.
+        """
+        human_keys = set(getattr(self, "human_states", {}).keys())
+        for name, rec in getattr(self, "spawned_obstacle_records", {}).items():
+            if name in human_keys:
+                continue
+            try:
+                ox, oy, radius = rec
+            except Exception:
+                continue
+            yield float(ox), float(oy), float(radius)
+
+    def _point_in_static_obstacle_for_human(self, x, y, r):
+        margin = float(getattr(self, "human_static_obstacle_clearance", 0.35))
+        for ox, oy, rr in self._iter_static_obstacle_records_for_humans():
+            if math.hypot(x - ox, y - oy) < (float(r) + rr + margin):
+                return True
+        return False
+
+    def _segment_hits_static_obstacle_for_human(self, x0, y0, x1, y1, r):
+        margin = float(getattr(self, "human_static_obstacle_clearance", 0.35))
+        vx, vy = x1 - x0, y1 - y0
+        denom = vx * vx + vy * vy
+        for ox, oy, rr in self._iter_static_obstacle_records_for_humans():
+            if denom <= 1e-12:
+                d = math.hypot(x0 - ox, y0 - oy)
+            else:
+                t = ((ox - x0) * vx + (oy - y0) * vy) / denom
+                t = max(0.0, min(1.0, t))
+                px, py = x0 + t * vx, y0 + t * vy
+                d = math.hypot(px - ox, py - oy)
+            if d < (float(r) + rr + margin):
+                return True
+        return False
+
+    def _resolve_human_static_obstacle_collision(self, x, y, nx, ny, r):
+        """Keep kinematic pedestrians from passing through static obstacles.
+
+        Gazebo physics cannot stop these pedestrians because their parts are
+        position-published.  We therefore apply the same cheap kinematic guard as
+        internal walls: accept the candidate if clear, slide along one axis if
+        possible, otherwise hold and let the caller retarget.
+        """
+        if not self._point_in_static_obstacle_for_human(nx, ny, r):
+            return nx, ny, False
+        # If a pose already starts overlapped due to a reset/catalog edge case,
+        # allow motion that may take it out instead of trapping it forever.
+        if self._point_in_static_obstacle_for_human(x, y, r):
+            return nx, ny, False
+        if (abs(nx - x) > 1e-9
+                and not self._point_in_static_obstacle_for_human(nx, y, r)):
+            return nx, y, False
+        if (abs(ny - y) > 1e-9
+                and not self._point_in_static_obstacle_for_human(x, ny, r)):
+            return x, ny, False
+        return x, y, True
+
     def _update_humans_kinematic(self, dt: float, pose_batch: list):
         """Kinematic pedestrian motion with acceleration limits, smooth stop/resume, and gait.
 
@@ -357,6 +420,11 @@ class HumanMotionMixin:
                 new_y = max(arena_lower, min(arena_upper, y + v * math.sin(yaw) * dt))
                 # Don't decelerate THROUGH an internal wall (slide / hold).
                 new_x, new_y, _ = self._resolve_human_wall_collision(
+                    x, y, new_x, new_y, state["radius"])
+                # These pedestrians are kinematic pose updates, so Gazebo physics
+                # will not stop them at static obstacles. Keep the same footprint
+                # clear here as well.
+                new_x, new_y, _ = self._resolve_human_static_obstacle_collision(
                     x, y, new_x, new_y, state["radius"])
 
                 state["x"]   = new_x
@@ -505,7 +573,9 @@ class HumanMotionMixin:
             # instead of pressing into the wall).
             new_x, new_y, wall_blocked = self._resolve_human_wall_collision(
                 x, y, new_x, new_y, state["radius"])
-            if wall_blocked:
+            new_x, new_y, static_blocked = self._resolve_human_static_obstacle_collision(
+                x, y, new_x, new_y, state["radius"])
+            if wall_blocked or static_blocked:
                 # Force next-tick retarget (dist_to_target==0 < 0.5 triggers it),
                 # which re-routes via the wall-aware waypoint/goal sampler.
                 state["target_x"], state["target_y"] = new_x, new_y
@@ -523,4 +593,3 @@ class HumanMotionMixin:
 
             self._collect_human_part_poses(state, pose_batch)
             self.spawned_obstacle_records[_key] = (new_x, new_y, state["radius"])
-

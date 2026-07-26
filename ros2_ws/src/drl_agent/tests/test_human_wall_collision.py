@@ -55,6 +55,9 @@ import map_layout_registry as reg        # noqa: E402  (build real layouts)
 class _Node(hmm.HumanMotionMixin, mlr.MapLayoutMixin):
     def __init__(self, walls):
         self.current_layout_spec = {"walls": walls} if walls is not None else None
+        self.human_states = {}
+        self.spawned_obstacle_records = {}
+        self.human_static_obstacle_clearance = 0.2
 
 
 class _RegionNode(hss.HumanSpawnMixin):
@@ -113,6 +116,34 @@ def test_free_step_unchanged():
     node = _Node(_H_WALL)
     out = node._resolve_human_wall_collision(-3.0, -2.0, -3.0, -1.5, R)
     assert out == (-3.0, -1.5, False)     # nowhere near the wall → passthrough
+
+
+def test_step_into_static_obstacle_is_not_penetrated():
+    node = _Node([])
+    node.spawned_obstacle_records = {"rl_sta_001": (0.0, 0.0, 0.5)}
+    rx, ry, blocked = node._resolve_human_static_obstacle_collision(
+        -1.2, 0.0, -0.6, 0.0, R)
+    assert not node._point_in_static_obstacle_for_human(rx, ry, R)
+    assert rx == pytest.approx(-1.2)
+    assert ry == pytest.approx(0.0)
+    assert blocked is True
+
+
+def test_static_obstacle_guard_ignores_other_human_records():
+    node = _Node([])
+    node.human_states = {"human_a": {}, "human_b": {}}
+    node.spawned_obstacle_records = {
+        "human_a": (0.0, 0.0, 0.3),
+        "human_b": (1.0, 0.0, 0.3),
+    }
+    assert node._point_in_static_obstacle_for_human(0.0, 0.0, R) is False
+
+
+def test_segment_hits_static_obstacle_for_human():
+    node = _Node([])
+    node.spawned_obstacle_records = {"rl_sta_001": (0.0, 0.0, 0.5)}
+    assert node._segment_hits_static_obstacle_for_human(-2.0, 0.0, 2.0, 0.0, R)
+    assert not node._segment_hits_static_obstacle_for_human(-2.0, 2.0, 2.0, 2.0, R)
 
 
 def test_already_inside_wall_can_escape():
