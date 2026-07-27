@@ -1,6 +1,6 @@
-"""td7 agent (canonical home of the flat legacy `td7_agent` module).
+"""td7 agent.
 
-`Agent` is exported lazily (torch required). Legacy bare-name shim: `td7_agent`.
+`Agent` is exported lazily (torch required).
 """
 
 

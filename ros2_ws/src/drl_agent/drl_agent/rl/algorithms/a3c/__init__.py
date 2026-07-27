@@ -1,6 +1,6 @@
-"""a3c agent (canonical home of the flat legacy `a3c_agent` module).
+"""a3c agent.
 
-`Agent` is exported lazily (torch required). Legacy bare-name shim: `a3c_agent`.
+`Agent` is exported lazily (torch required).
 """
 
 

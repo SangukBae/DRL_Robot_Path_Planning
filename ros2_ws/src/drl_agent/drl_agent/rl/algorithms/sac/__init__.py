@@ -1,6 +1,6 @@
-"""sac agent (canonical home of the flat legacy `sac_agent` module).
+"""sac agent.
 
-`Agent` is exported lazily (torch required). Legacy bare-name shim: `sac_agent`.
+`Agent` is exported lazily (torch required).
 """
 
 

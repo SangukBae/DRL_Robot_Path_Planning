@@ -1,6 +1,6 @@
-"""tqc_ieqn agent (canonical home of the flat legacy `tqc_ieqn_agent` module).
+"""tqc_ieqn agent.
 
-`Agent` is exported lazily (torch required). Legacy bare-name shim: `tqc_ieqn_agent`.
+`Agent` is exported lazily (torch required).
 """
 
 

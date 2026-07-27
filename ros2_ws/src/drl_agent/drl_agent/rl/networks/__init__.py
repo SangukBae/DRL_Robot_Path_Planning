@@ -8,9 +8,6 @@ drl_agent.rl.networks`` and the config-only tooling never pull in torch):
   drl_agent.rl.networks.aux_prediction   AUX_PRED shared encoder + aux heads
   drl_agent.rl.networks.aux_losses       AUX_PRED loss functions
   drl_agent.rl.networks.aux_temporal     AUX_PRED temporal context / fusion encoders
-
-Legacy bare-name shims: ``tqc_networks``, ``action_risk_head``,
-``aux_prediction``, ``aux_prediction_losses``, ``aux_prediction_temporal``.
 """
 
 # PEP 562 lazy attribute access: `from drl_agent.rl.networks import Actor`

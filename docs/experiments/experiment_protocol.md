@@ -25,7 +25,7 @@ success/collision 게이트와 **Stage 5 계약 변경 처리는 6개 baseline �
 off-contract transition이 critic을 오염시키지 않게 한다.
 
 > **TQC 전용(미이식):** SPL 품질 게이트 `pass_eval_spl=[0.55,0.55,0.54,0.50,0.50,0.48,0.47,0.45,0.44]`는
-> 현재 `train_tqc_curriculum_agent.py`만 읽는다. 다른 baseline은 success/collision 게이트만 사용한다.
+> 현재 `train_tqc_curriculum.py`만 읽는다. 다른 baseline은 success/collision 게이트만 사용한다.
 
 비교군(curriculum trainer): **TQC, TQC+IEQN, SAC, TD7, SB3-SAC, SB3-TD3**.
 필수 baseline은 SAC/TD3/TQC, 권장 추가는 TQC+IEQN/TD7.
@@ -77,11 +77,14 @@ config를 수정하지 않고 실행 시점에 seed를 override 한다. 우선�
 ```bash
 # 예: TQC를 seed 0,1,2로 sweep (각 실행 전 environment_curriculum.py 가동 필요)
 for s in 0 1 2; do
-  ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p seed:=$s
+  ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=$s
 done
 
 # 환경변수 방식도 동일
-DRL_AGENT_SEED=1 ros2 run drl_agent train_sac_curriculum_agent.py
+DRL_AGENT_SEED=1 ros2 run drl_agent sac_curriculum.py
+
+# 또는 registry 경유 (모든 baseline 공통 진입점):
+DRL_AGENT_SEED=1 ros2 run drl_agent train_rl.py --ros-args -p rl_model:=sac_curriculum
 ```
 
 각 seed는 자동으로 분리된 디렉토리에 저장된다:

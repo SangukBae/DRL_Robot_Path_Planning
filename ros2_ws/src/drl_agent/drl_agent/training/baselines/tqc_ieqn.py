@@ -241,7 +241,29 @@ class TrainTQC_IEQN(EnvInterface):
         """Create necessary directories safely"""
         for d in (self.run_dir, self.pytorch_models_dir, self.final_models_dir, self.results_dir, self.log_dir):
             os.makedirs(d, exist_ok=True)
-    
+
+    def _resolve_drl_agent_source_root(self):
+        """Resolve the source-package root even when this script is run from install/."""
+        here = os.path.abspath(__file__)
+        candidates = []
+
+        src_env = os.environ.get("DRL_AGENT_SRC_PATH", "").strip()
+        if src_env:
+            src_env = os.path.expanduser(src_env)
+            candidates.extend([os.path.join(src_env, "drl_agent"), os.path.join(src_env, "src", "drl_agent"), src_env])
+
+        if "/install/" in here:
+            candidates.append(os.path.join(here.split("/install/")[0], "src", "drl_agent"))
+
+        cwd = os.path.abspath(os.getcwd())
+        candidates.extend([os.path.join(cwd, "src", "drl_agent"), os.path.normpath(os.path.join(os.path.dirname(here), "..", "..", ".."))])
+
+        for cand in candidates:
+            if os.path.isdir(cand) and os.path.basename(cand) == "drl_agent":
+                return os.path.normpath(cand)
+
+        return os.path.normpath(os.path.join(os.path.dirname(here), "..", "..", ".."))
+
     def log_training_setting_data(self):
         """Log training configuration"""
         self.get_logger().info("=" * 50)

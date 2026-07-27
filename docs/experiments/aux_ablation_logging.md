@@ -47,11 +47,11 @@ aux off/on으로 seed를 바꿔가며 동일 학습을 돌린다. aux는 `hyperp
 
 ```bash
 # aux OFF, seed 0,1,2  (양쪽 config에서 aux_prediction.enabled=false)
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p seed:=0
+ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
 # ... seed 1, 2
 
 # aux ON, seed 0,1,2   (양쪽 config에서 aux_prediction.enabled=true)
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p seed:=0
+ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
 # ... seed 1, 2
 ```
 

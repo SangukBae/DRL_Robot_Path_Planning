@@ -1,7 +1,6 @@
 """TQC (Truncated Quantile Critics) — primary algorithm.
 
-Canonical home of the flat legacy ``tqc_agent`` module. ``Agent`` is exported
-lazily (torch required). Legacy bare-name shim: ``tqc_agent``.
+``Agent`` is exported lazily (torch required).
 """
 
 

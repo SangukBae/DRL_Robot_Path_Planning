@@ -1,10 +1,8 @@
-"""Replay buffer (canonical home of the flat legacy ``buffer`` module).
+"""Replay buffer.
 
   drl_agent.rl.replay.buffer  LAP replay buffer (requires torch; import lazily)
   drl_agent.rl.replay.schema  per-transition field / npz checkpoint contract
                               (pure numpy — importable without torch)
-
-Legacy bare-name shim: ``buffer``.
 """
 
 

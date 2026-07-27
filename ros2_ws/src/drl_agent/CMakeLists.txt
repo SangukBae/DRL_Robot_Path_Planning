@@ -113,8 +113,10 @@ install(
     drl_agent/evaluation/analysis/sim_validation_summary.py
     # Paper comparison/ablation baselines — SAC, TD7, A3C, TQC+IEQn, and the
     # Stable-Baselines3 SAC/TD3/PPO wrappers — each with a curriculum variant
-    # where one exists (PPO has none). Reachable directly here AND via
-    # train_rl.py's MODEL_REGISTRY.
+    # where one exists (PPO has none). All are reachable directly here by
+    # their own executable name; ONLY the *_curriculum variants are ALSO
+    # registered in train_rl.py's MODEL_REGISTRY (--list-models) — the
+    # non-curriculum base trainers and sb3_ppo are ros2-run-only.
     drl_agent/training/baselines/sac.py
     drl_agent/training/baselines/sac_curriculum.py
     drl_agent/training/baselines/td7.py
