@@ -178,7 +178,7 @@ class ActorCriticNetwork(nn.Module):
 
 class Agent(object):
     """A3C-LSTM based navigation agent (TD7 compatible interface)"""
-    
+
     def __init__(self, state_dim, action_dim, max_action, hp, log_dir=None):
         # Store dimensions
         self.state_dim = state_dim
@@ -252,7 +252,7 @@ class Agent(object):
                        list(self.actor_critic.actor_fc.parameters()) + \
                        list(self.actor_critic.actor_mu.parameters()) + \
                        [self.actor_critic.actor_log_std]
-                       
+
         critic_params = list(self.actor_critic.critic_fc.parameters()) + \
                         list(self.actor_critic.critic_out.parameters())
 
@@ -298,7 +298,7 @@ class Agent(object):
         # Logging
         self.log_dir = log_dir
         self.writer = SummaryWriter(log_dir=self.log_dir) if log_dir else None
-        
+
     @staticmethod
     def prep_hyperparameters(hyperparameters):
         """Process hyperparameters with defaults and required casts"""
@@ -340,7 +340,7 @@ class Agent(object):
         hyperparameters["target_update_rate"] = int(hyperparameters["target_update_rate"])
         return hyperparameters
 
-    
+
     def reset_hidden_states(self, batch_size=1):
         """Reset LSTM hidden states"""
         self.hidden_state = (
@@ -470,7 +470,7 @@ class Agent(object):
         torch.nn.utils.clip_grad_norm_(self.actor_critic.parameters(), self.max_grad_norm)
         self.policy_optimizer.step()
         # ==========================
-        
+
         # 로깅 (total_loss 변수만 맞춰줌)
         total_loss = actor_total_loss + self.value_loss_coef * value_loss
 
@@ -485,7 +485,7 @@ class Agent(object):
         # 클리어 & 카운터
         self.rollout.clear()
         self.training_steps += 1
-    
+
     def mask_hidden(self, hidden, done):
         """done==1인 배치의 hidden을 0으로 마스킹"""
         if hidden is None:
@@ -493,7 +493,7 @@ class Agent(object):
         h, c = hidden
         m = (1.0 - done.float()).view(1, -1, 1)  # shape (1,B,1)
         return (h * m, c * m)
-    
+
     def train(self):
         """외부에 노출되는 공용 train(). 모드에 따라 분기."""
         if getattr(self, "use_on_policy", False):
@@ -583,7 +583,7 @@ class Agent(object):
             self.writer.add_scalar("loss/entropy", entropy_loss.item(),self.training_steps)
             self.writer.add_scalar("values/mean",  values.mean().item(), self.training_steps)
             self.writer.add_scalar("values/std",   values.std().item(),  self.training_steps)
-            
+
     def train_and_checkpoint(self, ep_timesteps, ep_return):
         """Checkpointing logic (TD7 compatible)"""
         # 온폴리시 또는 체크포인트 비활성: 조용히 빠져나가기
@@ -606,7 +606,7 @@ class Agent(object):
                 self.checkpoint_network.load_state_dict(self.actor_critic.state_dict())
                 self.checkpoint_hidden_state = self.hidden_state
             self.train_and_reset()
-    
+
     def train_and_reset(self):
         """Batch training and reset"""
         # 온폴리시: timesteps_since_update 길이에 비례해 update 호출(대충 1회 이상)
@@ -624,22 +624,22 @@ class Agent(object):
 
         # Reset LSTM hidden states
         self.reset_hidden_states(1)
-    
+
     def save(self, directory, filename):
         """Save model (온/오프폴리시 모두 지원)"""
         # 메인 네트워크는 항상 저장
-        torch.save(self.actor_critic.state_dict(), 
+        torch.save(self.actor_critic.state_dict(),
                   f"{directory}/{filename}_actor_critic.pth")
-        
+
         # 온폴리시 모드가 아닐 때만 타겟/체크포인트 네트워크 저장
         if not getattr(self, "use_on_policy", False):
             if self.actor_critic_target is not None:
-                torch.save(self.actor_critic_target.state_dict(), 
+                torch.save(self.actor_critic_target.state_dict(),
                           f"{directory}/{filename}_actor_critic_target.pth")
             if self.checkpoint_network is not None:
-                torch.save(self.checkpoint_network.state_dict(), 
+                torch.save(self.checkpoint_network.state_dict(),
                           f"{directory}/{filename}_checkpoint.pth")
-        
+
         # 옵티마이저 저장 (분리된 경우와 통합된 경우 모두 처리)
         if hasattr(self, 'policy_optimizer') and hasattr(self, 'value_optimizer'):
             # 온폴리시: Actor/Critic 분리 옵티마이저
@@ -649,9 +649,9 @@ class Agent(object):
             }, f"{directory}/{filename}_optimizers.pth")
         elif hasattr(self, 'optimizer'):
             # 오프폴리시: 단일 옵티마이저
-            torch.save(self.optimizer.state_dict(), 
+            torch.save(self.optimizer.state_dict(),
                       f"{directory}/{filename}_optimizer.pth")
-        
+
         # Hidden states 저장
         hidden_states_dict = {'hidden': self.hidden_state}
         if hasattr(self, 'target_hidden_state'):
@@ -659,7 +659,7 @@ class Agent(object):
         if hasattr(self, 'checkpoint_hidden_state'):
             hidden_states_dict['checkpoint_hidden'] = self.checkpoint_hidden_state
         torch.save(hidden_states_dict, f"{directory}/{filename}_hidden_states.pth")
-        
+
         # Training state 저장
         training_state_dict = {
             'training_steps': self.training_steps,
@@ -671,44 +671,44 @@ class Agent(object):
         # exploration_noise는 온폴리시에서 0이지만 저장은 함
         if hasattr(self, 'exploration_noise'):
             training_state_dict['exploration_noise'] = self.exploration_noise
-        
+
         torch.save(training_state_dict, f"{directory}/{filename}_training_state.pth")
-    
+
     def load(self, directory, filename):
         """Load model (온/오프폴리시 모두 지원)"""
         # 메인 네트워크는 항상 로드
         self.actor_critic.load_state_dict(
             torch.load(f"{directory}/{filename}_actor_critic.pth", map_location=self.device)
         )
-        
+
         # 온폴리시가 아닐 때만 타겟/체크포인트 네트워크 로드 시도
         if not getattr(self, "use_on_policy", False):
             # 타겟 네트워크 로드
             if self.actor_critic_target is not None:
                 try:
                     self.actor_critic_target.load_state_dict(
-                        torch.load(f"{directory}/{filename}_actor_critic_target.pth", 
+                        torch.load(f"{directory}/{filename}_actor_critic_target.pth",
                                   map_location=self.device)
                     )
                 except FileNotFoundError:
                     print(f"Warning: Target network file not found, using main network weights")
                     self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
-            
+
             # 체크포인트 네트워크 로드
             if self.checkpoint_network is not None:
                 try:
                     self.checkpoint_network.load_state_dict(
-                        torch.load(f"{directory}/{filename}_checkpoint.pth", 
+                        torch.load(f"{directory}/{filename}_checkpoint.pth",
                                   map_location=self.device)
                     )
                 except FileNotFoundError:
                     print(f"Warning: Checkpoint network file not found, using main network weights")
                     self.checkpoint_network.load_state_dict(self.actor_critic.state_dict())
-        
+
         # 옵티마이저 로드 (분리/통합 모두 시도)
         try:
             # 먼저 분리 옵티마이저 시도 (온폴리시)
-            opt_dict = torch.load(f"{directory}/{filename}_optimizers.pth", 
+            opt_dict = torch.load(f"{directory}/{filename}_optimizers.pth",
                                  map_location=self.device)
             if hasattr(self, 'policy_optimizer') and hasattr(self, 'value_optimizer'):
                 self.policy_optimizer.load_state_dict(opt_dict['policy'])
@@ -718,32 +718,32 @@ class Agent(object):
             try:
                 if hasattr(self, 'optimizer'):
                     self.optimizer.load_state_dict(
-                        torch.load(f"{directory}/{filename}_optimizer.pth", 
+                        torch.load(f"{directory}/{filename}_optimizer.pth",
                                   map_location=self.device)
                     )
             except FileNotFoundError:
                 print("Warning: Optimizer file not found, using fresh optimizer")
-        
+
         # Hidden states 로드
         try:
-            hidden_states = torch.load(f"{directory}/{filename}_hidden_states.pth", 
+            hidden_states = torch.load(f"{directory}/{filename}_hidden_states.pth",
                                        map_location=self.device)
             self.hidden_state = hidden_states.get('hidden', None)
             if hasattr(self, 'target_hidden_state'):
                 self.target_hidden_state = hidden_states.get('target_hidden', None)
             if hasattr(self, 'checkpoint_hidden_state'):
                 self.checkpoint_hidden_state = hidden_states.get('checkpoint_hidden', None)
-            
+
             # None이면 리셋
             if self.hidden_state is None:
                 self.reset_hidden_states(1)
         except FileNotFoundError:
             print("Warning: Hidden states file not found, initializing fresh")
             self.reset_hidden_states(1)
-        
+
         # Training state 로드
         try:
-            training_state = torch.load(f"{directory}/{filename}_training_state.pth", 
+            training_state = torch.load(f"{directory}/{filename}_training_state.pth",
                                         map_location=self.device)
             self.training_steps = training_state.get('training_steps', 0)
             self.eps_since_update = training_state.get('eps_since_update', 0)
@@ -751,8 +751,7 @@ class Agent(object):
             self.min_return = training_state.get('min_return', 1e8)
             self.best_min_return = training_state.get('best_min_return', -1e8)
             if hasattr(self, 'exploration_noise'):
-                self.exploration_noise = training_state.get('exploration_noise', 
+                self.exploration_noise = training_state.get('exploration_noise',
                                                             self.exploration_noise)
         except FileNotFoundError:
             print("Warning: Training state file not found, using default values")
-    

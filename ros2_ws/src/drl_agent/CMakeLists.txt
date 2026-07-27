@@ -43,6 +43,12 @@ if(BUILD_TESTING)
   ament_add_pytest_test(drl_agent_pytests tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     TIMEOUT 600
+    # Collection imports every module under scripts/ + drl_agent/ (via the
+    # bare-name shims and canonical package alike); without this, running
+    # the suite against a bind-mounted / shared-ownership source tree (e.g.
+    # the docker dev container) leaves root-owned __pycache__/*.pyc behind
+    # that a later host-side `compileall` or `git clean` chokes on.
+    ENV PYTHONDONTWRITEBYTECODE=1
   )
 endif()
 

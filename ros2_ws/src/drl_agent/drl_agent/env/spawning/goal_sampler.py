@@ -211,4 +211,3 @@ class GoalSamplerMixin:
             "region (grid + random net exhausted; likely near-degenerate) — "
             "using region centre as a last-ditch best-effort")
         return cx, cy
-

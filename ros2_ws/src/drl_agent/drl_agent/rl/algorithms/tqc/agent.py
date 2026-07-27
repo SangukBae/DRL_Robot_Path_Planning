@@ -411,7 +411,7 @@ class Agent(object):
             os.makedirs(base_dir, exist_ok=True)
         except Exception:
             pass
-        
+
         # 기본 경로: <log_dir>/tqc_metrics.jsonl
         self.json_log_path = os.path.join(base_dir, "tqc_metrics.json")
 
@@ -420,7 +420,7 @@ class Agent(object):
         path = getattr(self, "json_log_path", None)
         if not path:
             return
-    
+
         rec = {"step": int(step), "time": float(time.time())}
         # AUX_ABLATION: stamp run identity on every record so tqc_metrics.json can
         # be grouped by seed / aux on-off without a separate join.  aux_enabled /
@@ -436,11 +436,11 @@ class Agent(object):
                     rec[k] = val
             except Exception:
                 continue
-            
+
         dirpath = os.path.dirname(path)
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
-    
+
         with open(path, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
@@ -564,7 +564,7 @@ class Agent(object):
     def select_action(self, state, use_checkpoint=False, use_exploration=True):
         """상태로부터 정규화 action [-1, 1] 선택"""
         with torch.no_grad():
-            
+
             state_np = np.asarray(state, dtype=np.float32).reshape(1, -1)
             state_t  = torch.from_numpy(state_np).to(self.device)
 
@@ -674,7 +674,7 @@ class Agent(object):
     def train(self):
         """Train the agent for one step"""
         self.training_steps += 1
-        
+
         # Sample batch from replay buffer
         state, action, next_state, reward, not_done = self.replay_buffer.sample()
         # AUX_PRED: matching auxiliary targets for this batch (None if disabled).
@@ -692,16 +692,16 @@ class Agent(object):
         if self.ent_coef_auto:
             with torch.no_grad():
                 _, log_prob = self.actor.action_log_prob(z_actor)
-            
+
             ent_coef = torch.exp(self.log_ent_coef.detach())
             ent_coef_loss = -(self.log_ent_coef * (log_prob + self.target_entropy).detach()).mean()
-            
+
             self.ent_coef_optimizer.zero_grad()
             ent_coef_loss.backward()
             self.ent_coef_optimizer.step()
         else:
             ent_coef = self.ent_coef_tensor
-        
+
         """******************************************
         ** Critic Update
         ******************************************"""
@@ -734,17 +734,17 @@ class Agent(object):
             batch_size = state.shape[0]
             next_quantiles_flat = next_quantiles.reshape(batch_size, -1)
             next_quantiles_sorted, _ = torch.sort(next_quantiles_flat, dim=1)
-            
+
             # Drop top quantiles
             n_target_quantiles = self.n_critics * self.n_quantiles - self.top_quantiles_to_drop_per_net * self.n_critics
             next_quantiles_truncated = next_quantiles_sorted[:, :n_target_quantiles]
-            
+
             # Compute target with entropy term
             target_quantiles = reward + not_done * self.discount * (
                 next_quantiles_truncated - ent_coef * next_log_prob.view(-1, 1)
             )
             target_quantiles = target_quantiles.unsqueeze(1)  # [B, 1, n_target_quantiles]
-        
+
         # PHASE2: Action-Risk Head prediction for the STORED (z, action) pair.
         # Computed once (with graph) and reused: `.detach()` for the critic's
         # `extra` input (critic loss must never backprop into this head -- see
@@ -874,25 +874,25 @@ class Agent(object):
         qf_pi = self.critic(z_actor, actions_pi, extra=extra_pi)
         # Average over quantiles and critics
         qf_pi = qf_pi.mean(dim=2).mean(dim=1, keepdim=True)
-        
+
         # Actor loss
         actor_loss = (ent_coef * log_prob - qf_pi).mean()
-        
+
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
         self.actor_optimizer.step()
-        
+
         """******************************************
         ** Update Priority (if using prioritized replay)
         ******************************************"""
         if self.prioritized:
             with torch.no_grad():
                 # Use mean absolute TD error for priority
-                td_errors = (current_quantiles.mean(dim=[1, 2], keepdim=True) - 
+                td_errors = (current_quantiles.mean(dim=[1, 2], keepdim=True) -
                             target_quantiles.mean(dim=[1, 2], keepdim=True)).abs()
                 priority = td_errors.squeeze().clamp(min=self.min_priority).pow(self.alpha)
                 self.replay_buffer.update_priority(priority)
-        
+
         """******************************************
         ** Target Network Update
         ******************************************"""
@@ -919,7 +919,7 @@ class Agent(object):
 
             if self.prioritized:
                 self.replay_buffer.reset_max_priority()
-        
+
         """******************************************
         ** Logging
         ******************************************"""
@@ -956,18 +956,18 @@ class Agent(object):
                 **(action_risk_logs if (self.action_risk_enabled and action_risk_logs) else {}),
             }
         )
-    
+
     def train_and_checkpoint(self, ep_timesteps, ep_return):
         """Train and potentially update checkpoint"""
         self.eps_since_update += 1
         self.timesteps_since_update += ep_timesteps
-        
+
         self.min_return = min(self.min_return, ep_return)
-        
+
         # End evaluation of current policy early
         if self.min_return < self.best_min_return:
             self.train_and_reset()
-        
+
         # Update checkpoint
         elif self.eps_since_update == self.max_eps_before_update:
             self.best_min_return = self.min_return
@@ -976,20 +976,20 @@ class Agent(object):
             self.checkpoint_actor.load_state_dict(self.actor.state_dict())
             # AUX_PRED: the checkpoint policy reads through its own encoder copy.
             self.checkpoint_encoder.load_state_dict(self.encoder.state_dict())
-    
+
     def train_and_reset(self):
         """Batch training and reset counters"""
         for _ in range(self.timesteps_since_update):
             if self.training_steps == self.steps_before_checkpointing:
                 self.best_min_return *= self.reset_weight
                 self.max_eps_before_update = self.max_eps_when_checkpointing
-            
+
             self.train()
-        
+
         self.eps_since_update = 0
         self.timesteps_since_update = 0
         self.min_return = 1e8
-    
+
     def save(self, directory, filename):
         """Save model parameters (delegates to tqc_io.save)."""
         tqc_io.save(self, directory, filename)

@@ -124,13 +124,13 @@ class Environment(
         # Load environment config file (robust)
         self.declare_parameter("config_file", "")
         cfg_param = self.get_parameter("config_file").get_parameter_value().string_value.strip()
-        
+
         env_config_file_name = "environment.yaml"
         start_goal_pairs_file = "test_config.yaml"
-        
+
         candidates = []
         tried = []
-        
+
         # 1) 사용자 파라미터(전체 경로) 우선
         if cfg_param:
             p = os.path.expanduser(cfg_param)
@@ -139,7 +139,7 @@ class Environment(
                 env_config_file_path = p
             else:
                 tried.append(p)
-        
+
         # 2) 설치된 share 경로
         if "cfg_dir" not in locals():
             try:
@@ -148,7 +148,7 @@ class Environment(
                 candidates.append(share_dir)
             except Exception:
                 pass
-            
+
         # 3) 환경변수: DRL_AGENT_CONFIG (전체 파일 경로)
         if "cfg_dir" not in locals():
             env_full = os.environ.get("DRL_AGENT_CONFIG", "")
@@ -159,7 +159,7 @@ class Environment(
                     env_config_file_path = env_full
                 else:
                     tried.append(env_full)
-        
+
         # 4) 환경변수: DRL_AGENT_SRC_PATH 기반 후보들
         if "cfg_dir" not in locals():
             drl_agent_src_path = os.environ.get("DRL_AGENT_SRC_PATH", "")
@@ -170,21 +170,21 @@ class Environment(
                     os.path.join(drl_agent_src_path, "src", "drl_agent", "src", "drl_agent", "config"),
                     os.path.join(drl_agent_src_path, "config"),
                 ]
-        
+
             # 5) 소스 트리 상대 경로(개발 중 편의)
             # this file: <pkg_root>/drl_agent/env/simulation/environment.py
             here = os.path.dirname(os.path.abspath(__file__))
             candidates += [
                 os.path.normpath(os.path.join(here, "..", "..", "..", "config")),  # <pkg_root>/config
             ]
-        
+
             for d in candidates:
                 p = os.path.join(d, env_config_file_name)
                 if os.path.isfile(p):
                     cfg_dir = d
                     break
                 tried.append(p)
-        
+
         if "cfg_dir" not in locals():
             self.get_logger().error(
                 "Could not find '{}'. Tried:\n  {}".format(
@@ -192,7 +192,7 @@ class Environment(
                 )
             )
             sys.exit(-1)
-        
+
         if "env_config_file_path" not in locals():
             env_config_file_path = os.path.join(cfg_dir, env_config_file_name)
         start_goal_pairs_file_path = os.path.join(cfg_dir, start_goal_pairs_file)
@@ -1136,7 +1136,7 @@ class Environment(
         self.preserve_hunav_on_reset = bool(
             self.get_parameter("preserve_hunav_on_reset").get_parameter_value().bool_value
         )
-        
+
         # self.velocity_publisher = self.create_publisher(Twist, "/cmd_vel", 10)
         self.velocity_publisher = self.create_publisher(Twist, cmd_vel_topic, 10)
         self.goal_point_marker_pub = self.create_publisher(
@@ -1637,7 +1637,7 @@ class Environment(
             self.controller_speed_steer_factor,
             low_speed_distance_m=self.controller_low_speed_distance_m,
         )
-    
+
     def terminate_session(self):
         """Destroy the node and shut down rclpy when done"""
         self.get_logger().info("gym_node shutting down...")
@@ -2016,7 +2016,7 @@ class Environment(
             self.robot_path.header.frame_id = odom.header.frame_id or "odom"
             self.robot_path.poses.append(pose_stamped)
             self.robot_path_pub.publish(self.robot_path)
-        
+
     # ----------------------------------------------------------------------------------------------
     # ====================================Ignition Start============================================
     # ----------------------------------------------------------------------------------------------
@@ -2543,7 +2543,7 @@ class Environment(
         # comparison (None on episode start / when risk_map_reward is off and
         # action_risk_head didn't compute it either).
         self._prev_risk_dir = action_risk_dir
-    
+
         # 9) 다음 스텝 대비 기록
         self._prev_goal_dist = curr_goal_dist
         self._prev_v, self._prev_w = v, w_reward

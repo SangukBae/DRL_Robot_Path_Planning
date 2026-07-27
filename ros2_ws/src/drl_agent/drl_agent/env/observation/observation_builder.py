@@ -215,4 +215,3 @@ class ObservationMixin:
                         obs[human_indices[drop]] = self.lidar_max_range
 
         return obs
-

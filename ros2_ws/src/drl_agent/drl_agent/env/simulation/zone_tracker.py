@@ -95,7 +95,7 @@ class ZoneMixin:
                     vals.append(min(r, self.lidar_max_range))
             zmins.append(min(vals) if vals else float('inf'))
         self._zone_mins = zmins
-    
+
     def _update_zone_mins_from_env_state(self):
         """
         환경 상태 벡터(self.environment_state)를 기반으로 존별 최소거리(self._zone_mins)를 계산.
@@ -133,4 +133,3 @@ class ZoneMixin:
         # env_state 기준으로 존 인덱스/최소값 다시 계산
         self._zone_indices = None  # 강제로 재계산
         self._update_zone_mins_simple(fake_scan)
-

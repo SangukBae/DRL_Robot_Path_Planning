@@ -209,52 +209,52 @@ class Agent(object):
     def train(self):
         """SAC training step"""
         self.training_steps += 1
-    
+
         state, action, next_state, reward, not_done = self.replay_buffer.sample()
-    
+
         # -------- Critic update --------
         with torch.no_grad():
             next_action, next_log_prob, _ = self.actor.sample(next_state)
             target_q_all = self.critic_target(next_state, next_action)      # [B,2]
             target_q_min = torch.min(target_q_all[:, 0:1], target_q_all[:, 1:2])
             target_q = reward + not_done * self.discount * (target_q_min - self.alpha * next_log_prob)
-    
+
             # tracking only
             self.max = max(self.max, float(target_q.max()))
             self.min = min(self.min, float(target_q.min()))
-    
+
         current_q_all = self.critic(state, action)                          # [B,2]
         critic_loss = (
             F.mse_loss(current_q_all[:, 0:1], target_q)
             + F.mse_loss(current_q_all[:, 1:2], target_q)
         )
-    
+
         # TD abs for PER
         td_abs = (current_q_all - target_q).abs().detach()
-    
+
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         self.critic_optimizer.step()
-    
+
         # -------- PER priority update --------
         min_pri = self.hyperparameters.get("min_priority", 1.0)
         pri_alpha = self.hyperparameters.get("priority_alpha", 0.6)
         priority = td_abs.max(1)[0].clamp(min=min_pri).pow(pri_alpha)
         self.replay_buffer.update_priority(priority)
-    
+
         # -------- Actor + Alpha update --------
         actor_loss = None
         if self.training_steps % self.policy_freq == 0:
             new_action, log_prob, _ = self.actor.sample(state)
             q_new_all = self.critic(state, new_action)
             q_new = torch.min(q_new_all[:, 0:1], q_new_all[:, 1:2])         # min(Q1,Q2)
-    
+
             actor_loss = (self.alpha * log_prob - q_new).mean()
-    
+
             self.actor_optimizer.zero_grad()
             actor_loss.backward()
             self.actor_optimizer.step()
-    
+
             if self.autotune_entropy:
                 # 표준 SAC: log_alpha에 대한 손실
                 alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
@@ -262,17 +262,17 @@ class Agent(object):
                 alpha_loss.backward()
                 self.alpha_optimizer.step()
                 self.alpha = float(self.log_alpha.exp().item())
-    
+
         # -------- Target soft-update (Polyak) --------
         # SAC 기본: 매 스텝 소프트업데이트. (원하면 target_update_rate로 간헐적 실행 가능)
         # if (self.target_update_rate is None) or (self.training_steps % int(self.target_update_rate) == 0):
         #     self.soft_update(self.critic_target, self.critic, self.tau)
         self.soft_update(self.critic_target, self.critic, self.tau)
-    
+
         # PER max priority 주기 리셋(옵션)
         if self.training_steps % 1000 == 0:
             self.replay_buffer.reset_max_priority()
-    
+
         # -------- Logging --------
         if self.training_steps % 100 == 0:
             self.writer.add_scalar("loss/critic", critic_loss.item(), self.training_steps)

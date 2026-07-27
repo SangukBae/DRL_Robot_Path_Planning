@@ -373,4 +373,3 @@ class StartSamplerMixin:
             ):
                 return x, y
         return None
-

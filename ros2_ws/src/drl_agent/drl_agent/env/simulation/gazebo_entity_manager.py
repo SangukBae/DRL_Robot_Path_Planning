@@ -277,4 +277,3 @@ class GazeboEntityMixin:
             elif pref not in surviving_human_prefixes:
                 self.spawned_obstacle_records.pop(pref + "_p_torso", None)
             # else: a part of this human is still present -> keep the footprint.
-

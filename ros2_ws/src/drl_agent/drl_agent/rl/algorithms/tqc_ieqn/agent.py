@@ -17,29 +17,29 @@ def quantile_huber_loss(current_quantiles, target_quantiles, sum_over_quantiles=
     """
     batch_size, n_critics, n_quantiles = current_quantiles.shape
     n_target_quantiles = target_quantiles.shape[-1]
-    
+
     # Expand quantiles for pairwise TD errors
     current_quantiles = current_quantiles.unsqueeze(-1)  # (batch, n_critics, n_quantiles, 1)
     target_quantiles = target_quantiles.unsqueeze(2)  # (batch, 1, 1, n_target_quantiles)
-    
+
     # Compute TD errors
     td_errors = target_quantiles - current_quantiles  # (batch, n_critics, n_quantiles, n_target_quantiles)
-    
+
     # Compute quantile weights (tau)
     tau = torch.arange(n_quantiles, device=current_quantiles.device, dtype=torch.float32)
     tau = (tau + 0.5) / n_quantiles
     tau = tau.view(1, 1, n_quantiles, 1)
-    
+
     # Huber loss
     huber_loss = torch.where(
         td_errors.abs() <= kappa,
         0.5 * td_errors.pow(2),
         kappa * (td_errors.abs() - 0.5 * kappa)
     )
-    
+
     # Quantile regression loss
     quantile_loss = (tau - (td_errors < 0).float()).abs() * huber_loss
-    
+
     if sum_over_quantiles:
         return quantile_loss.sum(dim=2).mean()
     else:
@@ -50,29 +50,29 @@ class Actor(nn.Module):
     """Actor network with Gaussian policy for TQC"""
     def __init__(self, state_dim, action_dim, hdim=256, activ=F.relu, log_std_min=-20, log_std_max=2):
         super(Actor, self).__init__()
-        
+
         self.activ = activ
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
-        
+
         # Network layers
         self.l1 = nn.Linear(state_dim, hdim)
         self.l2 = nn.Linear(hdim, hdim)
         self.l3 = nn.Linear(hdim, hdim)
-        
+
         # Mean and log_std heads
         self.mean = nn.Linear(hdim, action_dim)
         self.log_std = nn.Linear(hdim, action_dim)
-    
+
     def forward(self, state, deterministic=False):
         a = self.activ(self.l1(state))
         a = self.activ(self.l2(a))
         a = self.activ(self.l3(a))
-        
+
         mean = self.mean(a)
         log_std = self.log_std(a)
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        
+
         if deterministic:
             return torch.tanh(mean)
         else:
@@ -82,26 +82,26 @@ class Actor(nn.Module):
             x = normal.rsample()
             action = torch.tanh(x)
             return action
-    
+
     def action_log_prob(self, state):
         """Get action and log probability"""
         a = self.activ(self.l1(state))
         a = self.activ(self.l2(a))
         a = self.activ(self.l3(a))
-        
+
         mean = self.mean(a)
         log_std = self.log_std(a)
         log_std = torch.clamp(log_std, self.log_std_min, self.log_std_max)
-        
+
         std = log_std.exp()
         normal = torch.distributions.Normal(mean, std)
         x = normal.rsample()
         action = torch.tanh(x)
-        
+
         # Compute log probability with tanh correction
         log_prob = normal.log_prob(x).sum(1, keepdim=True)
         log_prob -= (2 * (np.log(2) - x - F.softplus(-2 * x))).sum(1, keepdim=True)
-        
+
         return action, log_prob
 
 class Critic(nn.Module):
@@ -126,15 +126,15 @@ class Critic(nn.Module):
                 ActivMod(),
                 nn.Linear(hdim, n_quantiles),
             ))
-    
+
     def forward(self, state, action):
         sa = torch.cat([state, action], 1)
-        
+
         quantiles_list = []
         for critic in self.critics:
             q = critic(sa)  # (batch_size, n_quantiles)
             quantiles_list.append(q)
-        
+
         # Stack to (batch_size, n_critics, n_quantiles)
         quantiles = torch.stack(quantiles_list, dim=1)
         return quantiles
@@ -150,7 +150,7 @@ class Mapper(nn.Module):
         delta = torch.tanh(self.mlp(x))
         alpha = x + delta
         return alpha.reshape_as(tau).clamp(0.0+1e-6, 1.0-1e-6)
-    
+
 class CriticIEQN(nn.Module):
     def __init__(self, state_dim, action_dim, hdim=256, activ=F.elu, n_critics=2, n_basis=64):
         super().__init__()
@@ -383,7 +383,7 @@ class Agent(object):
     def select_action(self, state, use_checkpoint=False, use_exploration=True):
         """상태로부터 행동 선택 (tanh 스쿼시 → max_action 스케일)"""
         with torch.no_grad():
-            
+
             state_np = np.asarray(state, dtype=np.float32).reshape(1, -1)
             state_t  = torch.from_numpy(state_np).to(self.device)
 
@@ -393,7 +393,7 @@ class Agent(object):
             # [-1,1] 클램프 후 환경 스케일로 변환
             action = action.clamp(-1, 1)
             return (action.cpu().numpy().flatten() * self.max_action)
-    
+
     def train(self):
         """Train the agent for one step"""
         self.training_steps += 1
@@ -618,38 +618,38 @@ class Agent(object):
             if self.ent_coef_auto:
                 self.writer.add_scalar("values/ent_coef", float(ent_coef.item()), self.training_steps)
                 self.writer.add_scalar("loss/ent_coef", float(ent_coef_loss.item()), self.training_steps)
-    
+
     def train_and_checkpoint(self, ep_timesteps, ep_return):
         """Train and potentially update checkpoint"""
         self.eps_since_update += 1
         self.timesteps_since_update += ep_timesteps
-        
+
         self.min_return = min(self.min_return, ep_return)
-        
+
         # End evaluation of current policy early
         if self.min_return < self.best_min_return:
             self.train_and_reset()
-        
+
         # Update checkpoint
         elif self.eps_since_update == self.max_eps_before_update:
             self.best_min_return = self.min_return
             self.checkpoint_actor.load_state_dict(self.actor.state_dict())
-            
+
             self.train_and_reset()
-    
+
     def train_and_reset(self):
         """Batch training and reset counters"""
         for _ in range(self.timesteps_since_update):
             if self.training_steps == self.steps_before_checkpointing:
                 self.best_min_return *= self.reset_weight
                 self.max_eps_before_update = self.max_eps_when_checkpointing
-            
+
             self.train()
-        
+
         self.eps_since_update = 0
         self.timesteps_since_update = 0
         self.min_return = 1e8
-    
+
     def save(self, directory, filename):
         """Save model parameters"""
         import os
