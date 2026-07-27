@@ -196,6 +196,29 @@ def export_profile_manifest_env(spec, *, resume: bool, seed) -> None:
     os.environ[PROFILE_MANIFEST_ENV] = json.dumps(payload)
 
 
+def _format_ros_param_value(v) -> str:
+    """Render a Python value for ``-p key:=<value>`` the way ROS 2's own CLI
+    parser needs to see it, given as a literal argv token (no shell involved
+    — os.execv gets a list, so there is no shell-quoting step to rely on).
+
+    ROS 2 infers each override's YAML type from the raw token text: bare
+    ``true``/``false`` becomes a BOOL, bare digits become an INT, anything
+    else stays a STRING. Every override this codebase sends is declared on
+    the receiving node with a STRING default (``declare_parameter(name,
+    "")``) EXCEPT ``seed`` (``declare_parameter("seed", -1)``, an int) — so a
+    literal ``true``/``false`` value must be wrapped in embedded double
+    quotes to force STRING type, matching the string the receiver actually
+    expects to run through ``config_paths.parse_bool_override`` /
+    ``parse_bool_override``, while ``seed`` (and any other value that isn't a
+    bare true/false token) is passed through unquoted so it keeps inferring
+    as the type the receiver actually declared.
+    """
+    text = str(v)
+    if text.strip().lower() in ("true", "false"):
+        return f'"{text}"'
+    return text
+
+
 def exec_module(module_name: str, extra_ros_params: dict, passthrough) -> None:
     """Replace this process with ``python3 <resolved module file>``.
 
@@ -207,7 +230,7 @@ def exec_module(module_name: str, extra_ros_params: dict, passthrough) -> None:
     if extra_ros_params:
         argv.append("--ros-args")
         for k, v in extra_ros_params.items():
-            argv += ["-p", f"{k}:={v}"]
+            argv += ["-p", f"{k}:={_format_ros_param_value(v)}"]
     print(f"[profile] exec: {' '.join(argv[1:])}")
     sys.stdout.flush()
     os.execv(sys.executable, argv)

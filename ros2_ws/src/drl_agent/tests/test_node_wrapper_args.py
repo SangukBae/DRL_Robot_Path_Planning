@@ -9,8 +9,11 @@ would otherwise tack its own ``--ros-args`` section onto an already-empty
 one).
 """
 
-from drl_agent.nodes._node_common import (_strip_empty_ros_args_sections,
-                                           parse_wrapper_args)
+import yaml
+
+from drl_agent.nodes._node_common import (_format_ros_param_value,
+                                          _strip_empty_ros_args_sections,
+                                          parse_wrapper_args)
 
 
 def test_ros_style_profile_resume_are_stripped():
@@ -73,3 +76,38 @@ def test_strip_empty_ros_args_sections_directly():
         ["-p", "a:=1", "--ros-args"]) == ["-p", "a:=1"]
     assert _strip_empty_ros_args_sections(
         ["--ros-args", "-p", "a:=1"]) == ["--ros-args", "-p", "a:=1"]
+
+
+# --------------------------------------------------------------------------- #
+# _format_ros_param_value — regression coverage for the reported bug:
+# `-p risk_map_reward_enabled:=true` (unquoted) made ROS 2's own CLI parser
+# infer BOOL and raise InvalidParameterTypeException, because the receiving
+# node declares that parameter (and action_risk_head_enabled, load_model)
+# with a STRING default (`declare_parameter(name, "")`) — the empty-string-
+# means-"no override" contract documented in CLAUDE.md. `seed`, by contrast,
+# is declared with an int default (`declare_parameter("seed", -1)`) and must
+# stay unquoted so ROS still infers INT. These tests exercise the actual
+# contract (via yaml.safe_load, mirroring ROS 2's own override-type
+# inference) rather than just the string shape.
+# --------------------------------------------------------------------------- #
+def test_format_ros_param_value_quotes_boolean_flags_as_yaml_string():
+    for raw in ("true", "True", "TRUE", "false", "False"):
+        formatted = _format_ros_param_value(raw)
+        assert formatted == f'"{raw}"'
+        # This is exactly what ROS 2's CLI parameter parser does with the
+        # token after `key:=`; must come back as a str, not a bool.
+        parsed = yaml.safe_load(formatted)
+        assert isinstance(parsed, str) and parsed == raw
+
+
+def test_format_ros_param_value_leaves_int_unquoted():
+    formatted = _format_ros_param_value(0)
+    assert formatted == "0"
+    parsed = yaml.safe_load(formatted)
+    assert isinstance(parsed, int) and parsed == 0
+
+
+def test_format_ros_param_value_leaves_plain_strings_unquoted():
+    path = "/root/DRL_Robot_Path_Planning/ros2_ws/src/drl_experiments/profiles/phase2/both"
+    assert _format_ros_param_value(path) == path
+    assert yaml.safe_load(path) == path
