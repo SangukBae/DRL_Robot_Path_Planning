@@ -26,6 +26,7 @@ DRL 로봇 경로계획 시스템 문서 인덱스. **무엇부터 읽을지**�
 | [system_overview](overview/system_overview.md) | 시스템이 무엇인지 한 장 요약 |
 | [training_pipeline](overview/training_pipeline.md) | 학습 루프 데이터 흐름 |
 | [repository_map](overview/repository_map.md) | 패키지/폴더/알고리즘 지도 |
+| [package_structure](overview/package_structure.md) | 새 패키지 구조 + profile 기반 실험 실행 (2026-07 개편) |
 
 ### 가이드 (guides/)
 | 문서 | 내용 |

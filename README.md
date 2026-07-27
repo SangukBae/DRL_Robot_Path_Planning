@@ -81,52 +81,35 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
 ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   -p run_dir:=<경로> -p train_config_file:=<경로> -p updates_per_env_step:=4
 
-# 5) PHASE2 후보(candidate1=risk_map_reward, candidate2=action_risk_head)
-#    yaml 세트를 디렉터리 단위로 맞춰 실행한다.
-#    train_config_file은 임의 yaml 파일명이 아니라 아래 config 디렉터리를 넘기는 것이 안전하다.
+# 5) PHASE2 실험 (candidate1=risk_map_reward, candidate2=action_risk_head)
+#    — profile 기반 실행 (권장). profile은 config 4종 + 플래그 선언을 한 폴더로 묶고
+#    실행 전 ConfigValidator가 env/agent 플래그 일치, base_file_name 일관성,
+#    resume 가능 여부를 강하게 검증한다.
+#    profile 위치: ros2_ws/src/drl_experiments/profiles/phase2/<variant>/
 #
 #    모드별 의미:
-#      baseline              : candidate1 OFF, candidate2 OFF
-#      reward_shaping_only   : candidate1 ON,  candidate2 OFF
-#      action_risk_head_only : candidate1 OFF, candidate2 ON
-#      both                  : candidate1 ON,  candidate2 ON
+#      phase2/baseline              : candidate1 OFF, candidate2 OFF
+#      phase2/reward_shaping_only   : candidate1 ON,  candidate2 OFF
+#      phase2/action_risk_head_only : candidate1 OFF, candidate2 ON
+#      phase2/both                  : candidate1 ON,  candidate2 ON
 #
-#    [터미널 2] 환경 노드 예시: MODE만 위 4개 중 하나로 선택
-MODE=both
-CFG=src/drl_agent/runtime/phase2_configs/${MODE}
-ros2 run drl_agent environment_curriculum.py --ros-args \
-  -p config_file:=${CFG}/environment_curriculum.yaml
+#    [터미널 2] 환경 노드 / [터미널 3] 학습 노드 — 같은 profile 사용:
+ros2 run drl_agent environment_curriculum_node.py --ros-args -p profile:=phase2/both
+ros2 run drl_agent train_node.py --ros-args -p profile:=phase2/both -p seed:=0
 
-#    [터미널 3] 학습 노드 예시: 터미널 2와 같은 MODE 사용
-MODE=both
-CFG=src/drl_agent/runtime/phase2_configs/${MODE}
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
-  -p train_config_file:=${CFG} -p seed:=0
+#    profile 기반 재개 (checkpoint/replay/curriculum_state 존재를 사전 검증):
+ros2 run drl_agent train_node.py --ros-args -p profile:=phase2/both -p seed:=0 -p resume:=true
 
-#    4조합을 명시적으로 실행하려면 아래처럼 MODE만 바꾼다.
-#    candidate1 OFF + candidate2 OFF
-MODE=baseline
-CFG=src/drl_agent/runtime/phase2_configs/${MODE}
-ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
+#    config-only 사전 검증 (ROS/Gazebo 불필요):
+python3 ros2_ws/src/drl_experiments/scripts/run_profile.py phase2/both --validate-only
+python3 ros2_ws/src/drl_experiments/scripts/run_profile.py --list        # profile 목록
+python3 ros2_ws/src/drl_experiments/scripts/run_profile.py \
+  --sweep ros2_ws/src/drl_experiments/sweeps/phase2_seeds.yaml           # seed sweep 명령 출력
 
-#    candidate1 ON + candidate2 OFF
-MODE=reward_shaping_only
-CFG=src/drl_agent/runtime/phase2_configs/${MODE}
-ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
-
-#    candidate1 OFF + candidate2 ON
-MODE=action_risk_head_only
-CFG=src/drl_agent/runtime/phase2_configs/${MODE}
-ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
-
-#    candidate1 ON + candidate2 ON (both)
-MODE=both
-CFG=src/drl_agent/runtime/phase2_configs/${MODE}
-ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
+#    (legacy 호환) 기존 방식도 그대로 동작한다:
+#      ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=<dir>/environment_curriculum.yaml
+#      ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=<dir> -p seed:=0
+#    (runtime/phase2_configs/<MODE>/ 디렉터리도 보존됨 — profiles/phase2/가 canonical)
 
 # 동일 프로토콜로 다른 baseline도 비교 가능:
 #   train_sac_curriculum_agent.py / train_td7_curriculum_agent.py
@@ -146,6 +129,12 @@ tensorboard --logdir <run_dir>/logs
 # 다중 seed 결과 집계 (eval_metrics_*.csv → mean±std 표 / 학습곡선 / sample efficiency)
 python3 ros2_ws/src/drl_agent/scripts/utils/aggregate_results.py \
   --runtime-root ros2_ws/src/drl_agent/runtime
+# (동일 기능, runtime-root 자동 지정): python3 ros2_ws/src/drl_experiments/scripts/aggregate.py
+# (manifest 기반 그룹 표):            python3 ros2_ws/src/drl_experiments/scripts/export_tables.py --help
+
+# profile 기반 일반화 평가 (아래 generalization_eval 파라미터 그대로 통과):
+ros2 run drl_agent eval_node.py --ros-args -p profile:=phase2/both \
+  -p weight_prefix:=<model_prefix> -p world:=aws_hospital
 
 # 일반화 평가 (학습된 모델을 stage/world 별로 재학습 없이 평가) — 현재 TQC 전용
 #   weights_dir 는 기본적으로 해당 run 의 pytorch_models/ 를 보지만,
@@ -167,6 +156,7 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 |------|------|
 | [Documentation Hub](docs/README.md) | 문서 인덱스 + 독자별 추천 읽기 순서 |
 | [System Overview](docs/overview/system_overview.md) | 시스템 전체가 무엇인지 (처음 보는 사람용) |
+| [Package Structure](docs/overview/package_structure.md) | 새 패키지 구조 + profile 기반 실험 실행 |
 | [Training Pipeline](docs/overview/training_pipeline.md) | reset→state→action→step→train→eval 흐름 |
 | [Paper Preparation Guide](docs/experiments/paper_preparation_guide.md) | 논문 방향, 수정 포인트, 평가 지표 다섯 축 정리 |
 | [Experiment Protocol](docs/experiments/experiment_protocol.md) | baseline 비교 프로토콜, 다중 seed, 지표/CSV 스키마, 집계·일반화 |
@@ -206,6 +196,10 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 /
 ├── ros2_ws/src/
 │   ├── drl_agent/                          # DRL 환경/정책/학습 스크립트
+│   │   ├── drl_agent/                      #   importable Python package (config loader/validator,
+│   │   │                                   #   trainer registry, run/checkpoint manager, node wrappers)
+│   │   └── scripts/                        #   legacy flat 모듈 + ROS 엔트리포인트 (점진 이관 중)
+│   ├── drl_experiments/                    # 실험 정의: profiles/ sweeps/ scripts/ outputs(gitignored)
 │   ├── drl_agent_interfaces/               # ROS2 srv/action 정의
 │   ├── hunter_se_gazebo/                   # Hunter SE URDF, Gazebo launch, worlds
 │   ├── drl_obstacle_assets/                # Gazebo 장애물 모델 라이브러리 (38종)
