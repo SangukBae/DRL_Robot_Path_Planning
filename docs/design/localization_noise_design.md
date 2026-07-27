@@ -33,7 +33,7 @@
 `sigma_xy_m`, `sigma_yaw_rad`, `drift_xy_mps`, `drift_yaw_radps`, `bias_xy_m`, `bias_yaw_rad`, `jump_prob`, `jump_xy_m`, `jump_yaw_rad`, `delay_steps` — 실로봇 로그(LIO-SAM/AMCL/odom)와 1:1 대응.
 
 ## Where in code
-- 주입/모델: `environment/environment.py` (`_loc_emulator_step`, `_reset_localization`, `_loc_map_multiplier`, proprio: `_proprio_emulator_step`)
-- stage별 프로파일 선택: `environment/environment_curriculum.py::_resolve_noise_override`
+- 주입/모델: `env/simulation/environment.py` (`_loc_emulator_step`, `_reset_localization`, `_loc_map_multiplier`, proprio: `_proprio_emulator_step`)
+- stage별 프로파일 선택: `env/curriculum/environment_curriculum.py::_resolve_noise_override`
 - 프로파일/파라미터: `config/environment_curriculum.yaml` (`localization`, `localization_profiles`, `proprio_noise*`)
 - 실로봇 배포·검증: [../guides/real_robot_deployment.md](../guides/real_robot_deployment.md), [../experiments/simulation_validation.md](../experiments/simulation_validation.md)

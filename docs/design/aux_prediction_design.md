@@ -96,7 +96,8 @@ action 시퀀스는 replay buffer의 `traj_end`(episode 경계) 플래그를 이
 학습을 교란하지 않게 한다. distributional risk는 대체로 MSE를 되풀이해 가치가 낮아 기본 off.
 
 ### Resume / ablation 호환성
-aux head·temporal encoder는 **학습 전용**이며, checkpoint 구조가 현재 config와 안 맞으면 `tqc_agent.load()`가
+aux head·temporal encoder는 **학습 전용**이며, checkpoint 구조가 현재 config와 안 맞으면
+`rl/algorithms/tqc/agent.py`의 `Agent.load()`(구현은 `rl/checkpointing/tqc_io.py`)가
 그 부분만 새로 초기화(경고 로그)하고 encoder/actor/critic은 깨끗이 resume한다. replay buffer는 옛 buffer가
 episode 경계를 가졌을 때만 이월되고, 아니면 fresh buffer로 degrade(warmup이 다시 채움). config가 맞으면
 이전과 동일하게 로드된다.
@@ -104,14 +105,14 @@ episode 경계를 가졌을 때만 이월되고, 아니면 fresh buffer로 degra
 ## 4. 파일 구조
 
 신규(모두 `AUX_PRED` 태그):
-- `policy/aux_prediction.py` — `SharedEncoder`, `AuxiliaryHead`, `ActionConditionedAuxHead`
-- `policy/aux_prediction_losses.py` — `compute_aux_loss`
-- `policy/aux_prediction_temporal.py` — `TemporalContextEncoder`
-- `environment/aux_prediction_labels.py` — privileged label 생성 + wire header
+- `rl/networks/aux_prediction.py` — `SharedEncoder`, `AuxiliaryHead`, `ActionConditionedAuxHead`
+- `rl/networks/aux_losses.py` — `compute_aux_loss`
+- `rl/networks/aux_temporal.py` — `TemporalContextEncoder`
+- `env/observation/aux_prediction_labels.py` — privileged label 생성 + wire header
 
-최소 수정: `policy/tqc_agent.py`(encoder + aux loss + save/load), `utils/buffer.py`(aux target 저장 +
-boundary-safe walk), `policy/tqc_io.py`(temporal encoder save/load), `environment/environment_interface.py`
-(모든 클라이언트에서 label 분리), `train_tqc_curriculum_agent.py`, `environment.py`, 관련 config.
+최소 수정: `rl/algorithms/tqc/agent.py`(encoder + aux loss + save/load), `rl/replay/buffer.py`(aux target 저장 +
+boundary-safe walk), `rl/checkpointing/tqc_io.py`(temporal encoder save/load), `env/environment_interface.py`
+(모든 클라이언트에서 label 분리), `training/train_tqc_curriculum.py`, `env/simulation/environment.py`, 관련 config.
 
 ## 5. 학습 데이터 흐름
 
@@ -151,6 +152,6 @@ v2 add-on(부분집합 가능): `min_distance_loss_weight > 0`, `use_distributio
   `[VERSION, num_sectors, num_horizons, horizons...]` **wire header**를 붙인다. 첫 reset에서 trainer가 이를
   agent config와 필드별로 비교해, version/sector/horizon 값·개수·label 길이 중 하나라도 다르면 raise한다.
   "총 길이는 같지만 구조가 다른" 경우까지 잡고, env가 실제로 내보낸 wire를 기준으로 하므로 권위 있다.
-- **Non-curriculum 차단.** aux는 `train_tqc_curriculum_agent.py`에만 연결된다. 지원하지 않는 TQC trainer가
+- **Non-curriculum 차단.** aux는 `training/train_tqc_curriculum.py`에만 연결된다. 지원하지 않는 TQC trainer가
   aux-enabled agent를 만들면 `__init__`에서 즉시 raise(`AUX_SUPPORTED` 플래그). IEQN trainer는 aux 없는 별도
   agent라 영향 없다.

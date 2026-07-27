@@ -23,6 +23,6 @@
 corridor는 길이방향 위치추정이 가장 부정확하므로, localization noise의 `map_type_multipliers`가 corridor에서 sigma/drift를 증폭(이방성). → [localization_noise_design](localization_noise_design.md)
 
 ## Where in code
-- 맵 레이아웃/벽/배치: `environment/environment.py` (`_build_map_layouts`, `_select_episode_layout`, `_sample_goal_layout`, 장애물 풀 커버리지)
+- 맵 레이아웃/벽/배치: `env/simulation/environment.py` (`_build_map_layouts`, `_select_episode_layout`, `_sample_goal_layout`, 장애물 풀 커버리지)
 - stage별 허용 맵/그룹: `config/environment_curriculum.yaml` (`map_layout_*`, stage의 `allowed_map_types`/`allowed_static_groups`)
 - 상세 설계/검증: [../experiments/map_curriculum_plan.md](../experiments/map_curriculum_plan.md)

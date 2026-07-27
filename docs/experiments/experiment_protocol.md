@@ -33,13 +33,13 @@ off-contract transition이 critic을 오염시키지 않게 한다.
 ## 2. 평가 / 로그 스키마
 
 `evaluate_and_print()` 반환 dict와 **논문 핵심 지표 CSV(§2.1: `eval_metrics_*` / `episode_metrics_*`)**
-는 6개 비교군에서 동일 스키마다 — 공유 모듈 `utils/episode_metrics.py`가 계산하고 모든
+는 6개 비교군에서 동일 스키마다 — 공유 모듈 `training/episode_metrics.py`가 계산하고 모든
 curriculum trainer가 기록한다. 다만 **보조 CSV(§2.2)는 완전 동일하지 않다**: TQC만 per-run
 CSV에 aux 메타·stage-aware cmd/motion 컬럼을 더 붙인다(§2.2 주석 참고).
 
 ### 2.1 논문 핵심 지표 CSV (신규)
 
-공유 모듈 `utils/episode_metrics.py`가 `(state, action)` 스트림에서 안전/네비/제어 지표를
+공유 모듈 `training/episode_metrics.py`가 `(state, action)` 스트림에서 안전/네비/제어 지표를
 계산한다 (ROS·env·TQC 변경 없음). path length는 속도 적분, CTE는 odom dead-reckoning 추정.
 
 - **`eval_metrics_*.csv`** (19컬럼, **논문 표의 1순위 소스** — 결정론적 eval):

@@ -49,7 +49,7 @@ Gazebo Ouster RGL → /hunter_se/pointcloud/points → ros_gz_bridge
 | `/odometry` | ~50 |
 
 ## Where in code
-- 환경 서비스: `environment/environment.py`
-- 서비스 클라이언트(에이전트): `environment/environment_interface.py`
+- 환경 서비스: `env/simulation/environment.py`
+- 서비스 클라이언트(에이전트): `env/environment_interface.py`
 - 프리필터: `hunter_se_gazebo/scripts/hunter_se_cmd_prefilter.py`
 - launch: `hunter_se_gazebo/launch/simulate_hunter_se_ignition.launch.py`

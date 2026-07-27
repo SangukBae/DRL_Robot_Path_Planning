@@ -24,7 +24,7 @@ for Dynamic Robot Path Planning*.
 
 ## 2. 수정 대상 코드 영역
 
-### 2.1 알고리즘 핵심 (`tqc_agent.py`, `tqc_ieqn_agent.py`)
+### 2.1 알고리즘 핵심 (`rl/algorithms/tqc/agent.py`, `rl/algorithms/tqc_ieqn/agent.py`)
 거의 표준형 TQC(고정 개수 top-quantile drop, actor는 평균 Q 최대화). 논문용 포인트:
 - **Adaptive truncation** — 위험도/proximity/quantile variance에 따라 drop 개수를 동적 조절.
 - **Risk-sensitive actor** — 평균 Q 대신 CVaR / lower-tail mean / worst-k quantile mean.
@@ -34,7 +34,7 @@ for Dynamic Robot Path Planning*.
 메시지: "평균 Q 기반 RL보다 distributional RL이 동적 환경에서 안전하고, 제안 방법은 그 안에서도 tail
 risk를 더 잘 제어한다."
 
-### 2.2 보상 함수 · 안전 cost (`environment.py`)
+### 2.2 보상 함수 · 안전 cost (`env/simulation/environment.py`, `env/rewards/reward_calculator.py`)
 현재 reward = 진행 + heading + obstacle penalty + time penalty, terminal goal `+20`/collision `-30`.
 논문용 포인트:
 - near-collision penalty(clearance 기반 연속 벌점), time-to-collision/predicted safety margin(상대 속도
@@ -43,7 +43,7 @@ risk를 더 잘 제어한다."
   반복될 때만 progress reward·step penalty·동적 proximity penalty를 최소 조정. 보상만 계속 만지면
   "reward engineering" 논문처럼 보이므로 알고리즘 수정의 보조 수단으로 둔다.
 
-### 2.3 Curriculum (`environment_curriculum.py`, `train_tqc_curriculum_agent.py`, 관련 config)
+### 2.3 Curriculum (`env/curriculum/environment_curriculum.py`, `training/train_tqc_curriculum.py`, 관련 config)
 현재 고정 순서 + success/collision 임계값 승급. 논문용 포인트:
 - **Adaptive curriculum** — uncertainty를 TQC quantile로 명시 정의(예 `U_spread = Q_0.9 − Q_0.1`),
   승급/유지/강등 조건에 반영, EMA + 히스테리시스로 진동 방지.
@@ -51,19 +51,19 @@ risk를 더 잘 제어한다."
   hard-case replay(실패한 start-goal 재노출), domain randomization 세분화.
 - baseline = 고정 단계, 제안 = quantile-spread aware adaptive curriculum.
 
-### 2.4 Replay buffer (`buffer.py`, `tqc_agent.py`)
+### 2.4 Replay buffer (`rl/replay/buffer.py`, `rl/algorithms/tqc/agent.py`)
 현재 prioritized replay는 옵션, priority는 mean TD, IS weight 없음. 논문용: tail-TD priority,
 uncertainty priority, importance sampling 보정, collision-aware stratified replay. 가장 현실적 구현은
 **tail-TD priority + importance sampling**.
 
-### 2.5 관측 상태 (`environment.py` + config)
+### 2.5 관측 상태 (`env/simulation/environment.py` + config)
 현재 전방 180° LiDAR 요약 + goal/state scalar, 동적 장애물 속도는 직접 관측 안 됨. 논문용:
 - **1차: frame stacking 또는 scan difference**(motion cue), safety feature(front clearance, 좌우
   비대칭, predicted margin). **2차: recurrent encoder.**
 - 동적 환경 논문에서 상태 표현을 그대로 두고 알고리즘만 바꾸면 설득력이 약하므로 시간성 도입은 중요하다.
   (단, 1차에서 RNN까지 동시에 넣으면 기여가 섞이므로 frame stacking부터.)
 
-### 2.6 로깅 인프라 (`train_tqc_base.py`, `train_tqc_curriculum_agent.py`)
+### 2.6 로깅 인프라 (`training/train_tqc_base.py`, `training/train_tqc_curriculum.py`)
 알고리즘을 바꾸기 전에 로깅부터 보강. 역할 분리:
 - **TensorBoard**(고주파 내부 상태): Q mean/max/min, discounted return, `Q_est − G_true` bias, entropy,
   alpha, critic loss/TD error, quantile spread, action jerk.
@@ -135,7 +135,7 @@ uncertainty priority, importance sampling 보정, collision-aware stratified rep
 ## 6. 1차 구현 목표 & 피해야 할 것
 
 **1차(시스템 구축)**: `environment.py`(frame stacking/scan diff + clearance 로깅, 필요 시 near-collision
-penalty), `train_tqc_base.py`(TensorBoard 확장), `train_tqc_curriculum_agent.py`(episode-level 지표 +
+penalty), `train_tqc_base.py`(TensorBoard 확장), `train_tqc_curriculum.py`(episode-level 지표 +
 SPL/heading/CTE + stage별 기록), `train_tqc_config.yaml`(스위치 정리), 실험군 SAC/TD3/TQC/TQC+IEQN/Proposed.
 → 목적: 동일 조건 baseline 비교, 안전·효율·가치추정 지표 저장, 병목 정량화, 후속 알고리즘 수정의 기준 확보.
 

@@ -58,8 +58,8 @@ yield 축(`action[2]`)은 **Stage 0–4 봉인**(`yield_reward.action_enabled=fa
 - "어떤 stage에서 어떤 프로파일을 쓰나"(커리큘럼)와 "무엇을/어떤 noise로 평가하나"(run-level 설정)는 분리돼 있다.
 
 ## Where in code
-- stage 적용: `environment/environment_curriculum.py::_apply_curriculum_stage`, `_parse_active_by_map`, `_resolve_noise_override`, `_deep_merge`
-- 맵별 활성 개수 결정: `environment/environment.py::_apply_episode_active_counts` (reset 중 map_type 확정 직후) + ROS-free `environment/map_catalog.py::resolve_active_count`, `clamp_active_by_map`
+- stage 적용: `env/curriculum/environment_curriculum.py::_apply_curriculum_stage`, `_parse_active_by_map`, `_resolve_noise_override`, `_deep_merge`
+- 맵별 활성 개수 결정: `env/simulation/environment.py::_apply_episode_active_counts` (reset 중 map_type 확정 직후) + ROS-free `env/simulation/map_catalog.py::resolve_active_count`, `clamp_active_by_map`
 - 진급 판정: `training/train_tqc_curriculum.py::_check_stage_advance`, `evaluate_and_print`
 - stage 정의: `config/environment_curriculum.yaml` (`curriculum.stages`)
 - 진급 파라미터: `config/train_tqc_curriculum_config.yaml` → [config_reference](../reference/config_reference.md)

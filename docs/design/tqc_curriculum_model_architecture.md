@@ -12,8 +12,9 @@ Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으�
   shaping**에 있다.
 - 관련 코드 태그: `AUX_PRED`(aux), `TEMPORAL_ACTOR`(temporal fusion), 실험 플래그 `A1~A4`.
 
-관련 모듈: `tqc_agent.py`, `tqc_networks.py`, `aux_prediction.py`, `aux_prediction_temporal.py`,
-`aux_prediction_losses.py`, `buffer.py`(LAP), `environment_interface.py`.
+관련 모듈: `rl/algorithms/tqc/agent.py`, `rl/networks/tqc.py`, `rl/networks/aux_prediction.py`,
+`rl/networks/aux_temporal.py`, `rl/networks/aux_losses.py`, `rl/replay/buffer.py`(LAP),
+`env/environment_interface.py`.
 
 ---
 

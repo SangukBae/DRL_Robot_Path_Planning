@@ -9,7 +9,7 @@
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(14.4 1113.4)">
 <title>TrainTQCCurriculumFramework</title>
 <polygon fill="white" stroke="transparent" points="-14.4,14.4 -14.4,-1113.4 1861.9,-1113.4 1861.9,14.4 -14.4,14.4"/>
-<text text-anchor="middle" x="923.75" y="-1083.8" font-family="Helvetica,sans-Serif" font-size="14.00">train_tqc_curriculum_agent.py Training Framework</text>
+<text text-anchor="middle" x="923.75" y="-1083.8" font-family="Helvetica,sans-Serif" font-size="14.00">train_tqc_curriculum.py Training Framework</text>
 <g id="clust1" class="cluster">
 <title>cluster_sim</title>
 <path fill="white" stroke="#67e8f9" stroke-width="1.5" d="M26.5,-562C26.5,-562 445.5,-562 445.5,-562 451.5,-562 457.5,-568 457.5,-574 457.5,-574 457.5,-1021 457.5,-1021 457.5,-1027 451.5,-1033 445.5,-1033 445.5,-1033 26.5,-1033 26.5,-1033 20.5,-1033 14.5,-1027 14.5,-1021 14.5,-1021 14.5,-574 14.5,-574 14.5,-568 20.5,-562 26.5,-562"/>
@@ -18,7 +18,7 @@
 <g id="clust3" class="cluster">
 <title>cluster_loop</title>
 <path fill="white" stroke="#cbd5e1" stroke-width="1.4" d="M358.5,-19C358.5,-19 836,-19 836,-19 842,-19 848,-25 848,-31 848,-31 848,-542 848,-542 848,-548 842,-554 836,-554 836,-554 358.5,-554 358.5,-554 352.5,-554 346.5,-548 346.5,-542 346.5,-542 346.5,-31 346.5,-31 346.5,-25 352.5,-19 358.5,-19"/>
-<text text-anchor="middle" x="597.25" y="-538.8" font-family="Helvetica,sans-Serif" font-size="14.00">train_tqc_curriculum_agent.py Main Loop</text>
+<text text-anchor="middle" x="597.25" y="-538.8" font-family="Helvetica,sans-Serif" font-size="14.00">train_tqc_curriculum.py Main Loop</text>
 </g>
 <g id="clust5" class="cluster">
 <title>cluster_tqc</title>

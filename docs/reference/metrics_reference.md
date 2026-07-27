@@ -14,7 +14,7 @@ aux 전용 컬럼은 aux가 꺼져 있으면 빈 칸이다.
 T:{t} | Ep:{ep} | Steps:{n} | Reward:{r:.3f} | {GOAL/COLLISION/TIMEOUT/EVAL_CUT} | Stage:{s} | SPL:{..} | STL:{..} | PSC:{../n/a} | H-Coll:{0/1/n/a}
 ```
 
-- `SPL/STL`은 `EpisodeMetrics`(utils/episode_metrics.py)에서 나온다.
+- `SPL/STL`은 `EpisodeMetrics`(training/episode_metrics.py)에서 나온다.
 - `PSC`(실제 human Personal-Space Compliance)와 `H-Coll`은 **label 기반**(privileged
   human-distance label)으로, trainer의 `_LabelProximity`가 계산한다. 이 둘은 **env가 label을
   내보내는지**(`aux_prediction.enabled`, env 측)에만 의존하고 agent의 aux head와는 무관하다 —
@@ -30,7 +30,7 @@ T:{t} | Ep:{ep} | Steps:{n} | Reward:{r:.3f} | {GOAL/COLLISION/TIMEOUT/EVAL_CUT}
   (reward/result/stage/map_type).
 
 ### B. Aux 자기학습 (gradient 스텝마다, TensorBoard + tqc_metrics.json)
-`tqc_agent.train()`(`aux_prediction_losses.compute_aux_loss`)에서 생성, 변경 없음:
+`rl/algorithms/tqc/agent.py`의 `Agent.train()`(`rl/networks/aux_losses.compute_aux_loss`)에서 생성, 변경 없음:
 `aux/loss`, `aux/risk_mse`, `aux/min_dist_mse`(v2), `aux/risk_quantile`(distributional 전용),
 `aux/valid_len_mean`(action-conditioned 전용). aux-off이면 이 키들은 단순히 존재하지 않는다.
 
@@ -41,7 +41,7 @@ T:{t} | Ep:{ep} | Steps:{n} | Reward:{r:.3f} | {GOAL/COLLISION/TIMEOUT/EVAL_CUT}
 (`curriculum_eval_per_map_*.csv`). `eval_metrics_*.csv`(논문)와 `eval_summary_*.csv`에 집계.
 
 ### B. 정식 aux 지표 (eval 콘솔 라인, **aux on일 때만**)
-`utils/aux_eval_metrics.py`가 모든 eval 스텝에 대해 계산(single-step: `z_t`; action-conditioned:
+`training/aux_eval_metrics.py`가 모든 eval 스텝에 대해 계산(single-step: `z_t`; action-conditioned:
 `z_t` + boundary-safe `[a_t..a_{t+K-1}]`, 학습과 동일 정렬로 episode 경계를 넘지 않음):
 
 | 지표 | 의미 |
@@ -81,7 +81,7 @@ Eval(aux) | AuxLossEval(RiskRMSE) {..} | MinDistMAE(m) {..} | PeakAcc {..} | Eve
   때에 한해** aux-OFF agent에서도 동작하고, 안 내보내면 빈 칸이다. `lidar_clearance_rate`는 별도의
   state-stream clearance proxy(human vs static 구분 못 함)로, Falcon/DiPCAN의 PSC와 직접 비교 불가라
   이름을 달리했다.
-- `AuxEvalAccumulator`(utils/aux_eval_metrics.py)는 ESR / AD / ALV / encounter-count의 확장 지점이다.
+- `AuxEvalAccumulator`(training/aux_eval_metrics.py)는 ESR / AD / ALV / encounter-count의 확장 지점이다.
   거기에 per-episode 배열을 추가로 모으고 `finalize()`를 확장하면 된다 — trainer 루프 변경 불필요.
 - **여기서 실행하지 않음:** offline 검증 시 ROS/Gazebo 런타임 + torch를 쓸 수 없어, aux-head forward
   shape와 전체 eval 흐름은 live run이 아니라 contract/단위 테스트로 검증했다.

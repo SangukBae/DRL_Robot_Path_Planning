@@ -87,7 +87,7 @@ ros2 run drl_agent real_policy_runner.py --ros-args \
 
 > LiDAR → `/scan` 파이프라인(height filter, 360°, resolution)은 학습(`environment.yaml`)과
 > **반드시 일치**해야 한다. 아니면 80-bin 관측이 정책과 맞지 않는다. 이 노드는 학습과 동일한 전방
-> 180° binning과 공유 `utils/pure_pursuit.py`의 action→cmd 규약을 그대로 재사용한다.
+> 180° binning과 공유 `common/pure_pursuit.py`의 action→cmd 규약을 그대로 재사용한다.
 
 ---
 

@@ -40,8 +40,8 @@
 - **state (87D)**: 전방 180° LiDAR 80빈 + 목표거리/방향 + 이전 action(r,θ) + 실제 속도/요레이트/조향. → [state 구조](../reference/state_action_reference.md)
 - **action (3D, 하이브리드 stop/yield)**: 전진 **waypoint**(거리 r, 각도 θ) + **yield 축**. yield 축이 임계값을 넘으면 감속/정지(YIELD 모드), 아니면 주행(MOVE 모드). 정책은 `[-1,1]`로 내고, 환경이 물리 단위로 바꿔 Pure Pursuit로 추종한다.
 - **step**: action 실행 → 0.1초 시뮬레이션 → 다음 state·보상·done.
-- **replay buffer**: 경험 `(s,a,s',r,done)`을 저장. off-policy 학습이라 과거 경험을 재사용한다. (`utils/buffer.py`, LAP 우선순위)
-- **train**: 버퍼에서 미니배치를 뽑아 actor/critic(+aux head)을 1회 업데이트. (`tqc_agent.py::train`)
+- **replay buffer**: 경험 `(s,a,s',r,done)`을 저장. off-policy 학습이라 과거 경험을 재사용한다. (`rl/replay/buffer.py`, LAP 우선순위)
+- **train**: 버퍼에서 미니배치를 뽑아 actor/critic(+aux head)을 1회 업데이트. (`rl/algorithms/tqc/agent.py::train`)
 - **eval**: 학습을 멈추고 결정론적으로 평가. 지표가 기준을 넘으면 stage 진급.
 
 ## 어디에 무엇이 끼어드나
@@ -50,7 +50,7 @@
 - **aux prediction**: `train` 시점에 공유 인코더가 "미래 위험"을 같이 예측하도록 보조 손실을 추가한다. state 차원은 안 바뀐다. → [aux_prediction_design](../design/aux_prediction_design.md)
 
 ## Where in code
-- 학습 루프: `policy/train_tqc_curriculum_agent.py::train_online`
-- reset/step 서비스 클라이언트: `environment/environment_interface.py`
-- 신경망 업데이트: `policy/tqc_agent.py::train`
-- 환경 step/reset: `environment/environment.py::step_callback`, `reset_callback`
+- 학습 루프: `training/train_tqc_curriculum.py::train_online`
+- reset/step 서비스 클라이언트: `env/environment_interface.py`
+- 신경망 업데이트: `rl/algorithms/tqc/agent.py::train`
+- 환경 step/reset: `env/simulation/environment.py::step_callback`, `reset_callback`

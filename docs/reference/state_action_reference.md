@@ -45,6 +45,6 @@ state가 `80×N + 7`이 된다(기본 N=4 → **327D**). 현재 87D 프레임이
 aux prediction이 켜지면 env가 state 뒤에 **미래 위험 라벨**을 임시로 덧붙여 보내고, trainer가 떼어내 보조 손실에 쓴다. **정책 입력 87D는 그대로**다. → [../design/aux_prediction_design.md](../design/aux_prediction_design.md)
 
 ## Where in code
-- state 조립: `environment/observation_builder.py`(obs_state 360°/180°), `environment/environment.py`(`_rebuild_agent_state`, `step_callback`), `environment/obs_time_context.py`(프레임 스택)
-- action→waypoint→cmd: `environment/environment.py::_map_action_to_waypoint` + `utils/pure_pursuit.py`(`action_to_waypoint`, `hybrid_action_to_command`)
+- state 조립: `env/observation/observation_builder.py`(obs_state 360°/180°), `env/simulation/environment.py`(`_rebuild_agent_state`, `step_callback`), `env/observation/obs_time_context.py`(프레임 스택)
+- action→waypoint→cmd: `env/simulation/environment.py::_map_action_to_waypoint` + `common/pure_pursuit.py`(`action_to_waypoint`, `hybrid_action_to_command`)
 - 차원/범위 설정: `config/environment.yaml`(2D baseline), `config/environment_curriculum.yaml`(3D 하이브리드)

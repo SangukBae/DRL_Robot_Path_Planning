@@ -12,7 +12,7 @@
         <mxCell id="M" value="Recommended Auxiliary Prediction Insertion (proposed)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;dashed=1;verticalAlign=top;fontSize=14;fontStyle=1;arcSize=3;spacingTop=8;" vertex="1" parent="1">
           <mxGeometry x="440" y="80" width="300" height="990" as="geometry"/>
         </mxCell>
-        <mxCell id="R" value="TQC Reinforcement Learning Model&#10;(train_tqc_curriculum_agent.py + tqc_agent.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontSize=15;fontStyle=1;arcSize=2;spacingTop=6;" vertex="1" parent="1">
+        <mxCell id="R" value="TQC Reinforcement Learning Model&#10;(train_tqc_curriculum.py + tqc/agent.py)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;verticalAlign=top;fontSize=15;fontStyle=1;arcSize=2;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="840" y="80" width="590" height="990" as="geometry"/>
         </mxCell>
 

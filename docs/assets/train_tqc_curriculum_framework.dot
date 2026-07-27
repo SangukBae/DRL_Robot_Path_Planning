@@ -8,7 +8,7 @@ digraph TrainTQCCurriculumFramework {
   pad=0.2;
   bgcolor="white";
   labelloc="t";
-  label="train_tqc_curriculum_agent.py Training Framework";
+  label="train_tqc_curriculum.py Training Framework";
   fontname="Helvetica";
 
   graph [fontname="Helvetica"];
@@ -92,7 +92,7 @@ digraph TrainTQCCurriculumFramework {
   }
 
   subgraph cluster_loop {
-    label="train_tqc_curriculum_agent.py Main Loop";
+    label="train_tqc_curriculum.py Main Loop";
     color="#cbd5e1";
     style="rounded";
     penwidth=1.4;
