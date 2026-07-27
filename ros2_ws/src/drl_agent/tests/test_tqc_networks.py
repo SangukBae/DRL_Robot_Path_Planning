@@ -59,12 +59,55 @@ def test_critic_output_shape():
     assert q.shape == (BATCH, n_critics, n_quantiles)
 
 
-def test_quantile_huber_loss_nonnegative_and_zero_at_match():
+def test_quantile_huber_loss_nonnegative():
     cur = torch.randn(BATCH, 2, 25)
     tgt = torch.randn(BATCH, 1, 25)
-    loss = net.quantile_huber_loss(cur, tgt)
-    assert loss.item() >= 0.0
-    # Perfectly matching quantiles → zero loss.
-    same = torch.randn(BATCH, 1, 25)
-    loss0 = net.quantile_huber_loss(same.expand(BATCH, 2, 25).contiguous(), same)
-    assert loss0.item() == pytest.approx(0.0, abs=1e-6)
+    assert net.quantile_huber_loss(cur, tgt).item() >= 0.0
+
+
+def test_quantile_huber_loss_zero_for_degenerate_equal_distribution():
+    # quantile_huber_loss compares EVERY current-quantile index against EVERY
+    # target-quantile index (td_errors = target.unsqueeze(2) - current.unsqueeze(-1)
+    # is the full (n_quantiles, n_target_quantiles) cross product, not an
+    # index-matched diff) -- the standard QR-DQN/TQC pairwise objective, used
+    # because a network's quantile atoms have no a-priori correspondence to the
+    # target's. So "current == target" only forces the DIAGONAL pairs (i == j)
+    # to zero; loss is fully zero only in the degenerate case where the
+    # off-diagonal pairs are ALSO zero, i.e. every quantile value is identical
+    # (a constant distribution) -- not merely "the same 25 arbitrary values".
+    same = torch.full((BATCH, 1, 25), 0.7)
+    cur = same.expand(BATCH, 2, 25).contiguous()
+    assert net.quantile_huber_loss(cur, same).item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_quantile_huber_loss_zero_for_single_quantile_match():
+    # With n_quantiles == n_target_quantiles == 1 there is only the (0, 0)
+    # pair -- no off-diagonal terms exist, so a match IS exactly zero
+    # regardless of the (arbitrary, non-constant) quantile value.
+    same = torch.randn(BATCH, 1, 1)
+    cur = same.expand(BATCH, 2, 1).contiguous()
+    assert net.quantile_huber_loss(cur, same).item() == pytest.approx(0.0, abs=1e-6)
+
+
+def test_quantile_huber_loss_matches_manual_pairwise_computation():
+    # Independent (non-vectorised, spec-derived) re-implementation on a small
+    # hand-sized case, to pin down the exact pairwise cross-product + Huber +
+    # asymmetric quantile-weight formula the implementation must follow.
+    kappa = 1.0
+    current = torch.tensor([[[0.0, 1.0]]])   # (batch=1, n_critics=1, n_quantiles=2)
+    target = torch.tensor([[[0.5, -1.0]]])   # (batch=1, 1, n_target_quantiles=2)
+
+    n_quantiles = current.shape[-1]
+    taus = [(i + 0.5) / n_quantiles for i in range(n_quantiles)]
+    total = 0.0
+    count = 0
+    for i, tau in enumerate(taus):
+        for j in range(target.shape[-1]):
+            u = target[0, 0, j].item() - current[0, 0, i].item()
+            huber = 0.5 * u ** 2 if abs(u) <= kappa else kappa * (abs(u) - 0.5 * kappa)
+            total += abs(tau - float(u < 0)) * huber
+            count += 1
+    expected = total / count  # quantile_huber_loss(..., sum_over_quantiles=False) == .mean()
+
+    loss = net.quantile_huber_loss(current, target, sum_over_quantiles=False, kappa=kappa)
+    assert loss.item() == pytest.approx(expected, abs=1e-6)
