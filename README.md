@@ -81,6 +81,53 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
 ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   -p run_dir:=<경로> -p train_config_file:=<경로> -p updates_per_env_step:=4
 
+# 5) PHASE2 후보(candidate1=risk_map_reward, candidate2=action_risk_head)
+#    yaml 세트를 디렉터리 단위로 맞춰 실행한다.
+#    train_config_file은 임의 yaml 파일명이 아니라 아래 config 디렉터리를 넘기는 것이 안전하다.
+#
+#    모드별 의미:
+#      baseline              : candidate1 OFF, candidate2 OFF
+#      reward_shaping_only   : candidate1 ON,  candidate2 OFF
+#      action_risk_head_only : candidate1 OFF, candidate2 ON
+#      both                  : candidate1 ON,  candidate2 ON
+#
+#    [터미널 2] 환경 노드 예시: MODE만 위 4개 중 하나로 선택
+MODE=both
+CFG=src/drl_agent/runtime/phase2_configs/${MODE}
+ros2 run drl_agent environment_curriculum.py --ros-args \
+  -p config_file:=${CFG}/environment_curriculum.yaml
+
+#    [터미널 3] 학습 노드 예시: 터미널 2와 같은 MODE 사용
+MODE=both
+CFG=src/drl_agent/runtime/phase2_configs/${MODE}
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+  -p train_config_file:=${CFG} -p seed:=0
+
+#    4조합을 명시적으로 실행하려면 아래처럼 MODE만 바꾼다.
+#    candidate1 OFF + candidate2 OFF
+MODE=baseline
+CFG=src/drl_agent/runtime/phase2_configs/${MODE}
+ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
+
+#    candidate1 ON + candidate2 OFF
+MODE=reward_shaping_only
+CFG=src/drl_agent/runtime/phase2_configs/${MODE}
+ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
+
+#    candidate1 OFF + candidate2 ON
+MODE=action_risk_head_only
+CFG=src/drl_agent/runtime/phase2_configs/${MODE}
+ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
+
+#    candidate1 ON + candidate2 ON (both)
+MODE=both
+CFG=src/drl_agent/runtime/phase2_configs/${MODE}
+ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=${CFG}/environment_curriculum.yaml
+ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=${CFG} -p seed:=0
+
 # 동일 프로토콜로 다른 baseline도 비교 가능:
 #   train_sac_curriculum_agent.py / train_td7_curriculum_agent.py
 #   train_sb3_sac_curriculum_agent.py / train_sb3_td3_curriculum_agent.py
