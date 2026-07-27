@@ -14,6 +14,8 @@
   <!-- Test dependencies -->
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
+  <!-- Runs the ROS-free functional pytest suite (tests/) under `colcon test` -->
+  <test_depend>ament_cmake_pytest</test_depend>
   
   <!-- Runtime / build dependencies -->
   <depend>rclpy</depend>

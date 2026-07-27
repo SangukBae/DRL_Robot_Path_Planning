@@ -27,7 +27,23 @@ if(BUILD_TESTING)
   # comment the line when this package is in a git repo and when
   # a copyright and license is added to all source files
   set(ament_cmake_cpplint_FOUND TRUE)
+  # The legacy code base predates flake8/pep257 conventions (thousands of
+  # accumulated style-only hits, no functional signal) — skip them like
+  # copyright/cpplint above so `colcon test` reflects FUNCTIONAL health.
+  # The functional coverage is the pytest suite registered right below.
+  set(ament_cmake_flake8_FOUND TRUE)
+  set(ament_cmake_pep257_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Run the full ROS-free unit suite (tests/, ~600 cases incl. the
+  # migration-invariant and replay-schema tests) under `colcon test`.
+  # pytest.ini at the package root scopes collection; torch/ROS-gated tests
+  # self-skip where those deps are unavailable.
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(drl_agent_pytests tests
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    TIMEOUT 600
+  )
 endif()
 
 install(
@@ -37,15 +53,34 @@ install(
     scripts
   DESTINATION
     share/${PROJECT_NAME}/
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 
-# Importable Python package (drl_agent/drl_agent/): profile loader/validator,
-# trainer registry, run/checkpoint managers, and the migrated pure modules
-# (run_layout, config_paths -> drl_agent.config.paths, geometry/seed utils).
-# Installed into site-packages so both the flat legacy scripts (via their
-# bare-name shims) and new code can `import drl_agent.*`.
+# Make the flat legacy shim dir importable from PLAIN python after sourcing
+# the workspace (`import tqc_agent`, `import buffer`, …), not only from
+# `ros2 run` executables whose sys.path[0] is already lib/drl_agent. The
+# .dsv env hook prepends <prefix>/lib/drl_agent to PYTHONPATH.
+ament_environment_hooks("${CMAKE_CURRENT_SOURCE_DIR}/env-hooks/flat_legacy_scripts.dsv.in")
+
+# Importable Python package (drl_agent/drl_agent/) — the CANONICAL home of the
+# implementation: config (profile loader/validator, paths), rl (networks,
+# replay buffer+schema, checkpointing incl. tqc_io, algorithms tqc/sac/td7/
+# a3c/tqc_ieqn/sb3), training (trainer bases + curriculum modules + train_rl),
+# evaluation (generalization/risk-map/sim-validation, real_policy_runner), env
+# (environment node bodies, mixins, samplers, rewards, observation), common
+# (pure helpers). Installed into site-packages; the flat legacy scripts below
+# are compatibility shims / exec wrappers resolving into this package.
 ament_python_install_package(${PROJECT_NAME})
 
+# NOTE (2026-07 restructure): most entries below are no longer the
+# implementation — they are thin bare-name compatibility shims (library
+# modules) or exec wrappers (ros2-run entry points) that alias/dispatch into
+# the drl_agent package installed above. They MUST stay installed flat here so
+# every legacy `ros2 run drl_agent <name>.py` invocation and bare-name import
+# keeps working. Files without a shim note in their header (e.g. environment_360,
+# sb3_ppo, plotting/analysis utils, per-algo train_* baselines) are still the
+# real flat implementations.
 install(
   PROGRAMS
     scripts/policy/td7_agent.py

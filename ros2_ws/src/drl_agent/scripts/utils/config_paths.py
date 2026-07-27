@@ -10,9 +10,15 @@ import sys
 
 try:
     import drl_agent.config.paths as _impl
-except ImportError:
-    # Source-tree / flat-install execution without the built package on
-    # sys.path: the ROS package root is two levels up from scripts/utils/.
+except ModuleNotFoundError as _e:
+    # Retry ONLY when the drl_agent package itself is unresolvable
+    # (source-tree / flat-install execution without the built package on
+    # sys.path: the ROS package root is two levels up from this file).
+    # A missing third-party dep (e.g. torch) must propagate untouched —
+    # purging drl_agent.* for it would break the identity of modules other
+    # shims already aliased.
+    if not (_e.name or "").startswith("drl_agent"):
+        raise
     # Purge any partially-resolved namespace package before retrying.
     for _m in [m for m in list(sys.modules)
                if m == "drl_agent" or m.startswith("drl_agent.")]:

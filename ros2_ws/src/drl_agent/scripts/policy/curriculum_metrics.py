@@ -1,61 +1,33 @@
-"""Curriculum evaluation metric accumulators (pure, ROS/torch-free).
+#!/usr/bin/env python3
+"""Compatibility shim — canonical module moved to drl_agent/training/curriculum/metrics.py.
 
-Extracted from ``train_tqc_curriculum_agent.py``. Holds the per-episode
-human-proximity tracker used to derive H-Coll and the TRUE (human) Personal-Space
-Compliance from the env's privileged human-distance labels. Pure Python (only
-``math``), so it is unit-testable in isolation; the trainer imports
-``_LabelProximity`` from here.
+Legacy flat bare-name imports (``import curriculum_metrics``) keep working: this file
+aliases itself to the package module. New code should import
+``drl_agent.training.curriculum.metrics`` directly.
 """
+import os
+import sys
 
-import math
+try:
+    import drl_agent.training.curriculum.metrics as _impl
+except ModuleNotFoundError as _e:
+    # Retry ONLY when the drl_agent package itself is unresolvable
+    # (source-tree / flat-install execution without the built package on
+    # sys.path: the ROS package root is two levels up from this file).
+    # A missing third-party dep (e.g. torch) must propagate untouched —
+    # purging drl_agent.* for it would break the identity of modules other
+    # shims already aliased.
+    if not (_e.name or "").startswith("drl_agent"):
+        raise
+    # Purge any partially-resolved namespace package before retrying.
+    for _m in [m for m in list(sys.modules)
+               if m == "drl_agent" or m.startswith("drl_agent.")]:
+        del sys.modules[_m]
+    _pkg_root = os.path.normpath(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+    if os.path.isfile(os.path.join(_pkg_root, "drl_agent", "__init__.py")):
+        if _pkg_root not in sys.path:
+            sys.path.insert(0, _pkg_root)
+    import drl_agent.training.curriculum.metrics as _impl
 
-
-class _LabelProximity:
-    """Per-episode human-proximity tracker from privileged aux labels.
-
-    H-Coll and the TRUE (human) PSC are derived from the env's privileged
-    human-distance labels, NOT from the agent's aux head.  So they are available
-    for an aux-OFF agent baseline too, as long as the ENV emits labels
-    (aux_prediction.enabled on the env side).  When the env emits no labels both
-    metrics are reported BLANK (None) — never a misleading 0.
-    """
-
-    def __init__(self, personal_space_m: float, h_coll_radius_m: float):
-        self.ps = float(personal_space_m)
-        self.hcr = float(h_coll_radius_m)
-        self.reset()
-
-    def reset(self):
-        self.min_m = float("inf")
-        self.steps = 0
-        self.intrusions = 0
-
-    def add_dist(self, dist_m):
-        """Fold one step's nearest-human distance [m] (ignored if not finite)."""
-        if dist_m is None or not math.isfinite(dist_m):
-            return
-        self.steps += 1
-        if dist_m < self.min_m:
-            self.min_m = dist_m
-        if dist_m < self.ps:
-            self.intrusions += 1
-
-    @property
-    def available(self) -> bool:
-        return self.steps > 0
-
-    def psc(self):
-        """Fraction of label-available steps that respected personal space.
-        None when no label was seen (env labels off)."""
-        return (1.0 - self.intrusions / self.steps) if self.steps > 0 else None
-
-    def h_coll(self, collision: bool):
-        """1 if a collision episode ended with a human inside h_coll_radius.
-        None when no label was seen (env labels off)."""
-        if self.steps == 0:
-            return None
-        return int(bool(collision) and self.min_m < self.hcr)
-
-
-# Public alias (the underscore name is kept for the trainer's existing call sites).
-LabelProximity = _LabelProximity
+sys.modules[__name__] = _impl

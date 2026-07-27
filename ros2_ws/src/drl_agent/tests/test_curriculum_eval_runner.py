@@ -21,14 +21,20 @@ def _load_curriculum_eval_runner(monkeypatch):
 
     env_mod.EnvServiceError = _EnvServiceError
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
+    # The canonical module imports EnvServiceError from the package path
+    # (drl_agent.env.environment_interface); the bare name stays stubbed too
+    # for anything that still resolves through the legacy shim.
     monkeypatch.setitem(sys.modules, "environment_interface", env_mod)
+    monkeypatch.setitem(
+        sys.modules, "drl_agent.env.environment_interface", env_mod)
 
     path = os.path.join(
         os.path.dirname(__file__),
         "..",
-        "scripts",
-        "policy",
-        "curriculum_eval_runner.py",
+        "drl_agent",
+        "training",
+        "curriculum",
+        "eval_runner.py",
     )
     spec = importlib.util.spec_from_file_location(
         "curriculum_eval_runner_testisolated", os.path.normpath(path)

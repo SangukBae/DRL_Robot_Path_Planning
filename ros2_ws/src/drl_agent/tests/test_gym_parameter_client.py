@@ -25,13 +25,28 @@ class _EnvServiceError(Exception):
 
 
 def _install_stubs():
-    if "environment_interface" not in sys.modules:
-        m = types.ModuleType("environment_interface")
-        m.EnvServiceError = _EnvServiceError
-        sys.modules["environment_interface"] = m
+    # The client now lives at drl_agent.training.gym_parameter_client and
+    # imports EnvServiceError from the CANONICAL module path
+    # drl_agent.env.environment_interface (the bare ``environment_interface``
+    # name is a compatibility shim aliasing the same module). Stub BOTH names
+    # with ONE module object so the exception class is a single identity; on a
+    # ROS box where the real module imports, reuse it for both names instead.
+    _CANON = "drl_agent.env.environment_interface"
+    if _CANON in sys.modules:
+        real = sys.modules[_CANON]
+        globals()["_EnvServiceError"] = real.EnvServiceError
+        sys.modules.setdefault("environment_interface", real)
     else:
-        # Real module present (ROS box): reuse its EnvServiceError.
-        globals()["_EnvServiceError"] = sys.modules["environment_interface"].EnvServiceError
+        try:
+            import importlib
+            real = importlib.import_module(_CANON)
+            globals()["_EnvServiceError"] = real.EnvServiceError
+            sys.modules.setdefault("environment_interface", real)
+        except Exception:
+            m = types.ModuleType(_CANON)
+            m.EnvServiceError = _EnvServiceError
+            sys.modules[_CANON] = m
+            sys.modules["environment_interface"] = m
 
     if "rcl_interfaces.srv" not in sys.modules:
         srv = types.ModuleType("rcl_interfaces.srv")

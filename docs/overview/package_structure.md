@@ -7,16 +7,35 @@
 ```
 ros2_ws/src/
 ├── drl_agent/                     # ROS 패키지 (ament_cmake)
-│   ├── drl_agent/                 # importable Python package (신규 코드의 canonical 위치)
-│   │   ├── config/                #   schema.py / loader.py / validation.py / paths.py(←config_paths)
-│   │   ├── training/              #   registry.py / run_manager.py / run_layout.py(←이동)
+│   ├── drl_agent/                 # importable Python package — 구현의 canonical 위치
+│   │   ├── config/                #   schema/loader/validation + paths.py(←config_paths)
+│   │   ├── training/              #   registry/run_manager/run_layout + train_tqc_base.py,
+│   │   │   │                      #   train_tqc_curriculum.py(←train_tqc_curriculum_agent),
+│   │   │   │                      #   train_rl.py, gym_parameter_client.py, episode_metrics.py,
+│   │   │   │                      #   aux_ablation_logging.py / aux_eval_metrics.py / dynamic_avoidance_log.py
+│   │   │   └── curriculum/        #   stage_logic / metrics / state_io / eval_runner / aux_eval (←curriculum_*)
 │   │   ├── rl/
-│   │   │   ├── checkpointing/     #   manager.py (checkpoint/replay/state 탐색·resume 검증)
-│   │   │   ├── algorithms/ networks/ replay/   # 새 모듈 추가 위치 (이관 진행 중)
-│   │   ├── env/                   #   env-side 모듈 이관 위치
-│   │   ├── common/                #   compat.py / geometry_utils.py / seed_utils.py(←이동)
+│   │   │   ├── networks/          #   tqc.py(←tqc_networks) / action_risk_head / aux_prediction /
+│   │   │   │                      #   aux_losses(←aux_prediction_losses) / aux_temporal(←aux_prediction_temporal)
+│   │   │   ├── replay/            #   buffer.py(←buffer, LAP) + schema.py (npz 필드 계약)
+│   │   │   ├── checkpointing/     #   manager.py (탐색·검증) + tqc_io.py (실제 save/load)
+│   │   │   └── algorithms/        #   tqc/ sac/ td7/ a3c/ tqc_ieqn/ (각 agent.py) + sb3/{sac,td3}.py
+│   │   ├── evaluation/            #   generalization_eval / risk_map_eval / real_policy_runner /
+│   │   │                          #   sim_validation / risk_map_dump
+│   │   ├── env/                   #   environment_interface.py +
+│   │   │   ├── simulation/        #   environment.py(본체) / gazebo_* / map_* / zone_tracker /
+│   │   │   │                      #   collision_checker / localization_noise
+│   │   │   ├── curriculum/        #   environment_curriculum.py(본체)
+│   │   │   ├── observation/       #   observation_builder / obs_time_context / aux_prediction_labels
+│   │   │   ├── rewards/           #   reward_calculator
+│   │   │   ├── spawning/          #   start_sampler / goal_sampler / obstacle_catalog_spawner
+│   │   │   └── humans/            #   human_spawn_sampler / human_motion_manager / dynamic_avoidance_telemetry
+│   │   ├── common/                #   compat / geometry_utils / seed_utils / file_manager /
+│   │   │                          #   pure_pursuit / point_cloud2
 │   │   └── nodes/                 #   train_node.py / environment_curriculum_node.py / eval_node.py / real_policy_node.py
-│   ├── scripts/                   # legacy flat 모듈 + ROS 엔트리포인트 (전부 그대로 동작)
+│   ├── scripts/                   # 이관된 모듈은 bare-name shim / exec wrapper만 잔존.
+│   │                              # 실제 구현이 남은 것: environment_360, sb3_ppo, per-algo
+│   │                              # train_* baseline 스크립트, plotting/분석 유틸, test_*_agent
 │   ├── config/                    # legacy 기본 config (보존)
 │   └── runtime/                   # 학습 산출물 (gitignored, 보존)
 └── drl_experiments/               # 실험 정의 패키지
@@ -27,11 +46,19 @@ ros2_ws/src/
     └── outputs/                   # gitignored 결과물 공간
 ```
 
-**마이그레이션 규칙**: legacy flat 모듈(`scripts/*/*.py`, bare-name import)은 한 파일씩
-`drl_agent/` 패키지로 이동하고, 옛 경로에는 자기 자신을 패키지 모듈로 aliasing하는
-shim을 남긴다(`sys.modules[__name__] = _impl`). 이동 완료: `run_layout`,
-`config_paths`(→`drl_agent.config.paths`), `geometry_utils`, `seed_utils`.
+**마이그레이션 규칙**: legacy flat 모듈(`scripts/*/*.py`, bare-name import)은
+`drl_agent/` 패키지로 이동했고, 옛 경로에는 자기 자신을 패키지 모듈로 aliasing하는
+shim(`sys.modules[__name__] = _impl`)이나 — ros2 run 엔트리포인트의 경우 —
+`_impl.main()`을 호출하는 exec wrapper가 남아 있다. 따라서 bare-name import와
+기존 `ros2 run drl_agent <name>.py` 실행 경로는 전부 그대로 동작한다.
+핵심 RL/트레이너/환경 코드는 위 트리에 표시된 canonical 위치가 실제 구현이다
+(마이그레이션 불변식 테스트: `tests/test_package_migration.py`).
 새 모듈은 처음부터 패키지 위치에 작성한다 (예: `drl_agent/rl/networks/<new>.py`).
+남은 legacy 구현: `environment_360.py`(classic Gazebo), `sb3_ppo_agent.py` +
+`train_sb3_ppo_agent.py`, per-algo `train_{sac,td7,a3c,tqc_ieqn,sb3_*}[_curriculum]_agent.py`
+baseline 트레이너, `test_{tqc,td7}_agent.py`(live-sim run 스크립트),
+plotting/분석 유틸(`plot_*`, `aggregate_results`, `analyze_*`, `aux_ablation_summary`,
+`sim_validation_summary`, `check_reproducibility`)과 `sim_validation_runner.py`.
 
 ## Profile 시스템
 
@@ -91,7 +118,7 @@ tensorboard --logdir <run_dir>/logs
 | `-p train_config_file:=<file 또는 dir>` / `-p config_file:=...` | 그대로 동작 |
 | `runtime/phase2_configs/<MODE>/` | 보존 (canonical은 `profiles/phase2/` — 내용 동일 복사본) |
 | `runtime/experiments/`, `runtime/tqc/seed_N/` 기존 run/checkpoint | 보존 — resume 우선순위 로직 불변 (`run_layout.py`) |
-| `import config_paths` 등 bare-name import | shim으로 유지 |
+| `import config_paths` 등 bare-name import | shim으로 유지 — 설치 환경에서도 env hook(`env-hooks/flat_legacy_scripts.dsv.in`)이 `lib/drl_agent`를 PYTHONPATH에 추가하므로 `source install/setup.bash` 후 일반 python에서도 동작 (검증: `tests/test_installed_bare_imports.py`) |
 
 주의: `runtime/phase2_configs/`와 `profiles/phase2/`는 별도 파일이므로 config를
 수정할 땐 `profiles/phase2/`(canonical)를 수정할 것.

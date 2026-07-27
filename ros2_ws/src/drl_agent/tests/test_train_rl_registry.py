@@ -148,16 +148,20 @@ def test_registry_entries_only_reference_real_scripts_on_disk():
     """'실제 repo에 존재하지 않는 모델은 억지로 만들지 말고' — every non-local
     registry entry must name a module whose .py file genuinely exists under
     scripts/policy/."""
+    # train_rl now lives in the drl_agent package (drl_agent/training/) while
+    # the lazily-imported baseline trainers stay flat under scripts/policy/, so
+    # "same directory as train_rl" no longer holds. The real contract is that
+    # every registered module RESOLVES (train_rl's import puts the flat script
+    # dirs on sys.path via ensure_flat_scripts_on_path) to a real file.
     proc = _run_snippet(
-        "import os, train_rl\n"
-        "policy_dir = os.path.dirname(os.path.abspath(train_rl.__file__))\n"
+        "import importlib.util, train_rl\n"
         "missing = []\n"
         "for name, entry in train_rl.MODEL_REGISTRY.items():\n"
         "    if entry['module'] is None:\n"
         "        continue\n"
-        "    p = os.path.join(policy_dir, entry['module'] + '.py')\n"
-        "    if not os.path.isfile(p):\n"
-        "        missing.append((name, p))\n"
+        "    spec = importlib.util.find_spec(entry['module'])\n"
+        "    if spec is None or not (spec.origin and spec.origin.endswith('.py')):\n"
+        "        missing.append((name, entry['module']))\n"
         "assert not missing, missing\n"
         "print('OK')\n"
     )

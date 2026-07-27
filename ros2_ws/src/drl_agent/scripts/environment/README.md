@@ -1,5 +1,11 @@
 # `environment/` — DRL 환경 노드
 
+> **2026-07 구조 개편**: 이 폴더의 구현 대부분은 `drl_agent/` 패키지로 이관되었고
+> (`drl_agent/env/{simulation,curriculum,observation,rewards,spawning,humans}/`),
+> 여기 남은 파일은 대부분 bare-name 호환 shim / `ros2 run` exec wrapper입니다
+> (`environment_360.py`만 실제 구현 잔존). 아래 표의 모듈 설명은 canonical 위치의
+> 코드에 그대로 적용됩니다 — 자세한 매핑은 `docs/overview/package_structure.md` 참조.
+
 강화학습 에이전트가 ROS2 서비스(`/reset`, `/step`, `/seed`, `/get_dimensions`,
 `/action_space_sample`)로 통신하는 Gazebo 시뮬레이션 환경(`gym_node`) 구현체와,
 거기서 분리해 낸 책임 단위 모듈들이 모여 있는 폴더입니다.

@@ -3,9 +3,9 @@
 Today it only *inspects* (locate the latest checkpoint prefix, replay buffer,
 curriculum/RNG state, across both the new ``runtime/experiments/<run_id>/`` and
 the legacy ``runtime/tqc/seed_<seed>/`` layouts) so resume decisions can be
-validated and logged BEFORE a trainer starts. Actual tensor save/load stays in
-``tqc_io.py`` / ``curriculum_state_io.py`` (imported by the trainers) — those
-migrate here incrementally.
+validated and logged BEFORE a trainer starts. Actual tensor save/load lives in
+the sibling ``tqc_io.py`` (this package) and in
+``drl_agent.training.curriculum.state_io`` — imported by the trainers.
 
 File conventions (source of truth: tqc_io.save / curriculum_state_io):
   models:     <models_dir>/<base>_seed_<seed>_<YYYYMMDD>_actor.pth (+ _critic,
