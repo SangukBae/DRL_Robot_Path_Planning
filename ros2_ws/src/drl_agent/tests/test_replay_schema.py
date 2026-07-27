@@ -72,11 +72,3 @@ def test_lap_save_matches_schema(tmp_path, aux_dim, track_traj, action_risk_dim)
     if track_traj:
         np.testing.assert_allclose(buf2.traj_end[:buf2.size],
                                    buf.traj_end[:buf.size])
-
-
-@pytest.mark.skipif(not _HAVE_TORCH, reason="torch not installed")
-def test_legacy_bare_name_shim_is_same_module():
-    import buffer as legacy
-    import drl_agent.rl.replay.buffer as canonical
-    assert legacy is canonical
-    assert legacy.LAP is canonical.LAP

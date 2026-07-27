@@ -25,9 +25,9 @@ try:
     import numpy as np
     import torch
 
-    from action_risk_head import ActionRiskConfig, ActionRiskHead
-    from tqc_networks import Critic
-    from tqc_agent import Agent
+    from drl_agent.rl.networks.action_risk_head import ActionRiskConfig, ActionRiskHead
+    from drl_agent.rl.networks.tqc import Critic
+    from drl_agent.rl.algorithms.tqc.agent import Agent
     _HAVE_TORCH = True
 except Exception:  # pragma: no cover
     _HAVE_TORCH = False

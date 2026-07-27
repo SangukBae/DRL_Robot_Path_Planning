@@ -30,8 +30,8 @@ from drl_agent.rl.networks.action_risk_head import ActionRiskConfig, ActionRiskH
 
 
 # Network definitions + TQC loss live in drl_agent.rl.networks.tqc; checkpoint
-# I/O in drl_agent.rl.checkpointing.tqc_io.  Re-imported here so
-# `from tqc_agent import Actor` etc. still works via the legacy shim.
+# I/O in drl_agent.rl.checkpointing.tqc_io. Re-imported here so callers of
+# this module can keep using `Actor`, `Critic`, `quantile_huber_loss` directly.
 from drl_agent.rl.networks.tqc import Actor, Critic, quantile_huber_loss
 import drl_agent.rl.checkpointing.tqc_io as tqc_io
 

@@ -136,7 +136,7 @@ lobby=주변부 짧은 벽, corridor=긴 평행 벽 2개, intersection=`+` 통�
 - `environment.py` — 맵 정책 상수, `_build_map_layouts`(벽/free/human region), 그룹-aware pool 커버리지,
   벽 box pool(startup spawn + set_pose), layout-aware 샘플링, read-only `current_map_type` 파라미터.
 - `environment_curriculum.py` — 맵 관련 값도 base snapshot/restore에 포함(stage 누수 방지).
-- `train_tqc_curriculum_agent.py` — `map_type` 로깅, per-map 평가 집계.
+- `train_tqc_curriculum.py` — `map_type` 로깅, per-map 평가 집계.
 
 **핵심 설계 결정:**
 - 25×25는 world 외벽 + `map_inner_*`만 바꾸면 되도록 모든 extent를 파생시킴.

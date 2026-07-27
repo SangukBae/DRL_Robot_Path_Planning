@@ -14,7 +14,7 @@ ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 ros2 run drl_agent environment_curriculum.py
 
 # [터미널 3] TQC 커리큘럼 학습
-ros2 run drl_agent train_tqc_curriculum_agent.py
+ros2 run drl_agent train_tqc_curriculum.py
 ```
 
 ### 출력 파일

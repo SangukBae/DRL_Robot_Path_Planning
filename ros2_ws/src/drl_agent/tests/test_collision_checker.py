@@ -9,7 +9,7 @@ import math
 import numpy as np
 import pytest
 
-from collision_checker import RectSafetyChecker
+from drl_agent.env.simulation.collision_checker import RectSafetyChecker
 
 
 def _make_bins(n):

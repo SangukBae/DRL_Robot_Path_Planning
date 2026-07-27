@@ -17,8 +17,9 @@
 
 ## 2. 다중 seed 결과 집계
 ```bash
-python3 ros2_ws/src/drl_agent/scripts/utils/aggregate_results.py \
+python3 -m drl_agent.evaluation.analysis.aggregate_results \
   --runtime-root ros2_ws/src/drl_agent/runtime
+# 또는: ros2 run drl_agent aggregate_results.py --runtime-root ros2_ws/src/drl_agent/runtime
 ```
 → seed별 `eval_metrics_*.csv`를 mean±std 표 / 학습곡선 / sample-efficiency로 정리.
 

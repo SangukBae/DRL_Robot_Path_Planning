@@ -1,6 +1,6 @@
 """ROS-free unit tests for curriculum_stage_logic.should_advance_stage."""
 
-import curriculum_stage_logic as csl
+import drl_agent.training.curriculum.stage_logic as csl
 
 
 def _base(**over):

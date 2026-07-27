@@ -1,4 +1,4 @@
-"""ROS-free regression tests for curriculum_eval_runner.py."""
+"""ROS-free regression tests for drl_agent.training.curriculum.eval_runner."""
 
 import csv
 import importlib.util
@@ -8,25 +8,21 @@ import types
 
 import numpy as np
 
-from episode_metrics import EpisodeMetrics
+from drl_agent.training.episode_metrics import EpisodeMetrics
 
 
 def _load_curriculum_eval_runner(monkeypatch):
-    """Import curriculum_eval_runner with test-local stubs only."""
+    """Import curriculum.eval_runner with test-local stubs only."""
     torch_stub = types.ModuleType("torch")
-    env_mod = types.ModuleType("environment_interface")
+    env_mod = types.ModuleType("drl_agent.env.environment_interface")
 
     class _EnvServiceError(RuntimeError):
         pass
 
     env_mod.EnvServiceError = _EnvServiceError
     monkeypatch.setitem(sys.modules, "torch", torch_stub)
-    # The canonical module imports EnvServiceError from the package path
-    # (drl_agent.env.environment_interface); the bare name stays stubbed too
-    # for anything that still resolves through the legacy shim.
-    monkeypatch.setitem(sys.modules, "environment_interface", env_mod)
-    monkeypatch.setitem(
-        sys.modules, "drl_agent.env.environment_interface", env_mod)
+    # The canonical module imports EnvServiceError from the package path.
+    monkeypatch.setitem(sys.modules, "drl_agent.env.environment_interface", env_mod)
 
     path = os.path.join(
         os.path.dirname(__file__),

@@ -46,10 +46,10 @@ def _install_ros_stubs():
 
 _install_ros_stubs()
 
-import human_motion_manager as hmm     # noqa: E402  (ROS deps now stubbed)
-import human_spawn_sampler as hss        # noqa: E402  (_point_in_human_regions source)
-import map_layout_runtime as mlr        # noqa: E402  (_point_in_walls source)
-import map_layout_registry as reg        # noqa: E402  (build real layouts)
+import drl_agent.env.humans.human_motion_manager as hmm  # noqa: E402  (ROS deps now stubbed)
+import drl_agent.env.humans.human_spawn_sampler as hss  # noqa: E402  (_point_in_human_regions source)
+import drl_agent.env.simulation.map_layout_runtime as mlr  # noqa: E402  (_point_in_walls source)
+import drl_agent.env.simulation.map_layout_registry as reg  # noqa: E402  (build real layouts)
 
 
 class _Node(hmm.HumanMotionMixin, mlr.MapLayoutMixin):

@@ -18,7 +18,7 @@ import pytest
 try:
     import numpy as np
     import torch
-    import buffer
+    import drl_agent.rl.replay.buffer as buffer
     _HAVE_TORCH = True
 except Exception:  # pragma: no cover
     _HAVE_TORCH = False

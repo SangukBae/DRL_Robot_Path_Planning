@@ -13,9 +13,9 @@ def generate_launch_description():
         parameters=[{"environment_mode": "test"}],
     )
 
-    test_td7_node = Node(
+    test_tqc_node = Node(
         package="drl_agent",
-        executable="test_tqc_agent.py",
+        executable="tqc_live_runner.py",
         name="test_tqc_node",
         output="screen",
         emulate_tty=True,

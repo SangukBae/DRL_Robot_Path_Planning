@@ -10,16 +10,9 @@ static-clutter vs. human-interaction split.
 import csv
 import math
 import os
-import sys
 
-# tests/ -> package root; add scripts/environment + scripts/utils to the path,
-# mirroring how the trainer imports these modules at runtime.
-_PKG = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(_PKG, "scripts", "environment"))
-sys.path.insert(0, os.path.join(_PKG, "scripts", "utils"))
-
-from dynamic_avoidance_telemetry import DynamicAvoidanceEpisodeDiag  # noqa: E402
-from dynamic_avoidance_log import (  # noqa: E402
+from drl_agent.env.humans.dynamic_avoidance_telemetry import DynamicAvoidanceEpisodeDiag
+from drl_agent.training.dynamic_avoidance_log import (
     DynamicAvoidanceCSV, DYN_AVOID_HEADER, driving_mean, low_obs_speed_frac,
 )
 

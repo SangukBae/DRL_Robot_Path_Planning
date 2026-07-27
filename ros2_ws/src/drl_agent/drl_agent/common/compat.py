@@ -1,19 +1,9 @@
-"""Bridge between the new ``drl_agent`` package and the legacy flat scripts.
-
-The historical code base imports its own modules by BARE name
-(``import config_paths``, ``from tqc_agent import Agent``): the files live in
-``scripts/{utils,environment,policy}`` in the source tree and are installed
-FLAT into ``lib/drl_agent``. New package code that needs a not-yet-migrated
-legacy module calls :func:`ensure_flat_scripts_on_path` first, then imports the
-bare name as usual.
+"""Source-root resolution for the ``drl_agent`` package.
 
 Pure stdlib — safe to import without ROS.
 """
 
 import os
-import sys
-
-_SUBDIRS = ("utils", "environment", "policy")
 
 
 def _is_drl_agent_pkg_dir(path: str) -> bool:
@@ -28,8 +18,8 @@ def package_source_root() -> str:
 
     Mirrors ``train_tqc_base.TrainTQCBase._resolve_drl_agent_source_root``'s
     precedence exactly, so a resume/run-dir decision made here (e.g.
-    CheckpointManager, ConfigValidator) and the one the legacy trainer itself
-    makes always agree — including in the INSTALLED case (``ros2 run drl_agent
+    CheckpointManager, ConfigValidator) and the one the trainer itself makes
+    always agree — including in the INSTALLED case (``ros2 run drl_agent
     train_node.py ... -p resume:=true``), where this file executes from
     site-packages and a naive "two dirs up" guess would land in site-packages,
     not the workspace's ``src/drl_agent``:
@@ -86,31 +76,3 @@ def package_source_root() -> str:
         if _is_drl_agent_pkg_dir(cand):
             return os.path.normpath(cand)
     return ""
-
-
-def _flat_script_dirs():
-    """Ordered candidate dirs holding the flat legacy modules."""
-    dirs = []
-    root = package_source_root()
-    if root:
-        for sub in _SUBDIRS:
-            dirs.append(os.path.join(root, "scripts", sub))
-    else:
-        # Installed case: scripts are flat in <prefix>/lib/drl_agent (and a
-        # share/ copy keeps the source layout). Prefer the flat install dir.
-        try:
-            from ament_index_python.packages import get_package_prefix
-            prefix = get_package_prefix("drl_agent")
-            dirs.append(os.path.join(prefix, "lib", "drl_agent"))
-            for sub in _SUBDIRS:
-                dirs.append(os.path.join(prefix, "share", "drl_agent", "scripts", sub))
-        except Exception:
-            pass
-    return [d for d in dirs if os.path.isdir(d)]
-
-
-def ensure_flat_scripts_on_path() -> None:
-    """Prepend the legacy flat-script dirs to ``sys.path`` (idempotent)."""
-    for d in reversed(_flat_script_dirs()):
-        if d not in sys.path:
-            sys.path.insert(0, d)

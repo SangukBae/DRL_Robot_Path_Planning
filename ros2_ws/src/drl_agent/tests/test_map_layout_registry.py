@@ -2,7 +2,7 @@
 
 import pytest
 
-import map_layout_registry as reg
+import drl_agent.env.simulation.map_layout_registry as reg
 
 
 def _layouts():

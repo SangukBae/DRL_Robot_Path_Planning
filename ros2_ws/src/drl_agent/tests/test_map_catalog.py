@@ -1,6 +1,6 @@
 """ROS-free unit tests for map_catalog (static-obstacle catalog policy)."""
 
-import map_catalog as mc
+import drl_agent.env.simulation.map_catalog as mc
 
 
 def test_globally_banned_key_present():

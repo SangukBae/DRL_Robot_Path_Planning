@@ -15,7 +15,7 @@ def generate_launch_description():
 
     test_td7_node = Node(
         package="drl_agent",
-        executable="test_td7_agent.py",
+        executable="td7_live_runner.py",
         name="test_td7_node",
         output="screen",
         emulate_tty=True,

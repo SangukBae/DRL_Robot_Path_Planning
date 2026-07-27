@@ -17,7 +17,7 @@ ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 ros2 run drl_agent environment_curriculum.py
 
 # 3) TQC 커리큘럼 학습
-ros2 run drl_agent train_tqc_curriculum_agent.py
+ros2 run drl_agent train_tqc_curriculum.py
 
 # 4) TQC 테스트 (launch 파일)
 ros2 launch drl_agent test_tqc.launch.py
@@ -91,17 +91,18 @@ cd ros2_ws/src/drl_agent
 pytest            # tests/ 디렉터리만 수집 (pytest.ini의 testpaths=tests)
 ```
 
-- `tests/test_geometry_utils.py` — `scripts/utils/geometry_utils.py` (wrap_to_pi, heading_error, goal_distance_and_heading 등)
-- `tests/test_seed_utils.py` — `scripts/utils/seed_utils.py` (random/numpy 재현성, resume-seed 파생)
-- `tests/test_config_paths.py` — `scripts/utils/config_paths.py` (config 파일 탐색)
+- `tests/test_geometry_utils.py` — `drl_agent/common/geometry_utils.py` (wrap_to_pi, heading_error, goal_distance_and_heading 등)
+- `tests/test_seed_utils.py` — `drl_agent/common/seed_utils.py` (random/numpy 재현성, resume-seed 파생)
+- `tests/test_config_paths.py` — `drl_agent/config/paths.py` (config 파일 탐색)
 
-> **`test_tqc_agent.py` / `test_td7_agent.py` 는 pytest 단위 테스트가 아니라**
+> **`tqc_live_runner.py` / `td7_live_runner.py` 는 pytest 단위 테스트가 아니라**
 > ROS2 + Gazebo + 체크포인트가 필요한 **실행/평가 스크립트**입니다
-> (`ros2 run drl_agent test_tqc_agent.py ...`). 그래서 `pytest`는 이들을 수집하지
-> 않습니다. 체크포인트 경로는 하드코딩 기본값을 제거했으므로 파라미터로 넘기세요:
+> (`ros2 run drl_agent tqc_live_runner.py ...`), 그래서 `test_` 접두어 없이
+> canonical 이름으로 설치되어 있고 `pytest`는 이들을 수집하지 않습니다.
+> 체크포인트 경로는 하드코딩 기본값을 제거했으므로 파라미터로 넘기세요:
 > `-p checkpoint_actor_file:=<run_dir>/final_models/<prefix>_actor.pth`
 
-### 분리된 공통 유틸 (`scripts/utils/`)
+### 분리된 공통 유틸 (`drl_agent/common/`)
 
 `environment.py` 등에 흩어져 있던 순수 함수를 점진적으로 추출한 모듈 (동작 동일):
 
@@ -122,6 +123,6 @@ pytest            # tests/ 디렉터리만 수집 (pytest.ini의 testpaths=tests
 
 ## 이 README에서 다루지 않음
 
-- 알고리즘 상세 구현: `scripts/policy/*.py` 소스 코드 참고
+- 알고리즘 상세 구현: `drl_agent/rl/algorithms/*/agent.py`, `drl_agent/training/{train_tqc_base,train_tqc_curriculum,baselines/*}.py` 소스 코드 참고
 - Gazebo 시뮬레이션 설정: `hunter_se_gazebo` 패키지 및 저장소 최상위 README 참고
 - 서비스 메시지 정의: `drl_agent_interfaces` 패키지 README 참고

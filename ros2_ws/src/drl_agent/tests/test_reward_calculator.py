@@ -9,7 +9,7 @@ import math
 import numpy as np
 import pytest
 
-import reward_calculator as rc
+import drl_agent.env.rewards.reward_calculator as rc
 
 
 def test_terminal_goal_short_circuits():

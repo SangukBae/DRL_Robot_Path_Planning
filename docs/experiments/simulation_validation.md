@@ -27,8 +27,9 @@ ros2 run drl_agent sim_validation_runner.py --ros-args -p episodes:=5 -p max_ste
 ros2 run drl_agent sim_validation_runner.py --ros-args -p episodes:=3 -p stages:="[0,2,4]"
 
 # 4) 요약 (콘솔 + JSON)
-python3 ros2_ws/src/drl_agent/scripts/utils/sim_validation_summary.py \
+python3 -m drl_agent.evaluation.analysis.sim_validation_summary \
   --log-dir <run_dir>/logs
+#   또는: ros2 run drl_agent sim_validation_summary.py --log-dir <run_dir>/logs
 ```
 
 ### 시나리오 → 설정 방법
@@ -77,8 +78,8 @@ python3 ros2_ws/src/drl_agent/scripts/utils/sim_validation_summary.py \
 ## §6 검증 기능 제거
 모든 검증 코드는 `SIM_VALIDATION` / `VALIDATION_ONLY` 태그가 붙어 있고
 `enable_sim_validation_logging`(기본 false)로 gating된다. 제거하려면:
-- `scripts/utils/sim_validation.py`, `scripts/utils/sim_validation_summary.py`,
-  `scripts/policy/sim_validation_runner.py`, 이 문서를 삭제;
+- `drl_agent/evaluation/sim_validation.py`, `drl_agent/evaluation/analysis/sim_validation_summary.py`,
+  `drl_agent/evaluation/sim_validation_runner.py`, 이 문서를 삭제;
 - `grep -rn SIM_VALIDATION ros2_ws/src/drl_agent` → `environment.py`의 guard된 hook 3개
   (param declare + logger init, `step_callback`의 `log_step`, `reset_callback`의 `note_reset`)와
   CMakeLists install 라인 제거.

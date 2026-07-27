@@ -13,7 +13,7 @@ Covers:
 
 import os
 
-import run_layout as rl
+import drl_agent.training.run_layout as rl
 
 
 def _touch_checkpoint(run_dir, subdir, base_file_name, seed, ts="20260701_000000"):

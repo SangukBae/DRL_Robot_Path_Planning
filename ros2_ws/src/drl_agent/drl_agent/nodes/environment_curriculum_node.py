@@ -6,12 +6,13 @@ Usage:
     ros2 run drl_agent environment_curriculum_node.py --ros-args \
         -p profile:=phase2/both
 
-Resolves the profile, validates it, then ``exec``s the unchanged legacy
-``environment_curriculum.py`` (or ``environment.py`` for a base-trainer
-profile) with ``config_file:=<profile's environment yaml>`` plus the profile's
-declared env-side flags (``risk_map_reward_enabled`` /
-``action_risk_head_enabled``). Without ``profile`` it is a pure passthrough to
-``environment_curriculum.py`` — identical to the legacy invocation.
+Resolves the profile, validates it, then ``exec``s the canonical
+``drl_agent.env.curriculum.environment_curriculum`` module (or
+``drl_agent.env.simulation.environment`` for a base-trainer profile) with
+``config_file:=<profile's environment yaml>`` plus the profile's declared
+env-side flags (``risk_map_reward_enabled`` / ``action_risk_head_enabled``).
+Without ``profile`` it is a pure passthrough to the curriculum environment
+module (same behaviour as launching it directly).
 """
 
 import os
@@ -30,8 +31,8 @@ def main():
     opts, passthrough = nc.parse_wrapper_args(sys.argv[1:])
 
     if not opts["profile"]:
-        # Legacy passthrough: behave exactly like environment_curriculum.py.
-        nc.exec_legacy("environment_curriculum.py", {}, passthrough)
+        # No profile: pure passthrough to the canonical curriculum env module.
+        nc.exec_module("drl_agent.env.curriculum.environment_curriculum", {}, passthrough)
         return
 
     spec, entry = nc.load_and_validate(opts["profile"], resume=False, seed=None)
@@ -44,7 +45,7 @@ def main():
         if flag in spec.overrides:
             params[flag] = str(spec.overrides[flag]).lower()
 
-    nc.exec_legacy(entry.env_exec, params, passthrough)
+    nc.exec_module(entry.env_module, params, passthrough)
 
 
 if __name__ == "__main__":

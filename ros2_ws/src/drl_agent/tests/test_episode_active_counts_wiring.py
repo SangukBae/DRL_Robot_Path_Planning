@@ -45,7 +45,7 @@ def _import_environment_with_temp_stubs():
                 mod = types.ModuleType(n)
                 mod.__getattr__ = lambda name: _Meta(name, (), {})  # noqa: B023
                 sys.modules[n] = mod
-        import environment as env_mod
+        import drl_agent.env.simulation.environment as env_mod
         return env_mod
     finally:
         for n, orig in saved.items():

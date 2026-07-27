@@ -8,7 +8,7 @@ RNG snapshot files are best-effort and not asserted here.
 import json
 import os
 
-import curriculum_state_io as cs
+import drl_agent.training.curriculum.state_io as cs
 
 
 class _Logger:

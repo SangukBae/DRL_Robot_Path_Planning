@@ -15,8 +15,8 @@ Covers:
 
 import math
 
-import aux_prediction_labels as al
-import reward_calculator as rc
+import drl_agent.env.observation.aux_prediction_labels as al
+import drl_agent.env.rewards.reward_calculator as rc
 
 
 # --------------------------------------------------------------------------- #

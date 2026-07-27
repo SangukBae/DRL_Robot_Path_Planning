@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-import geometry_utils as g
+import drl_agent.common.geometry_utils as g
 
 
 # Behaviour matches the codebase idiom exactly: the interval is [-pi, pi),

@@ -43,7 +43,7 @@ Gazebo Ouster(RGL) → /ouster/points → pointcloud_to_laserscan → /scan → 
 | `environment_360.py` | Classic Gazebo | `gazebo_msgs/SetEntityState` |
 
 ## Where in code
-- `ros2_ws/src/drl_agent/scripts/environment/environment.py` (step_callback, reset_callback, 보상, noise)
-- `ros2_ws/src/drl_agent/scripts/environment/environment_curriculum.py` (stage selector)
+- `ros2_ws/src/drl_agent/drl_agent/env/simulation/environment.py` (step_callback, reset_callback, 보상, noise)
+- `ros2_ws/src/drl_agent/drl_agent/env/curriculum/environment_curriculum.py` (stage selector)
 - 서비스/토픽 표: [../reference/ros_interface_reference.md](../reference/ros_interface_reference.md)
 - state/action 표: [../reference/state_action_reference.md](../reference/state_action_reference.md)

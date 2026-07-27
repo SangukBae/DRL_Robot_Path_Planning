@@ -111,7 +111,7 @@ per-seed 디렉토리 구조는 **기본 경로(`runtime/<algo>/`)에만** 적�
 seed별 `eval_metrics_*.csv`를 모아 mean±std 표 / 학습곡선 / sample-efficiency를 자동 생성:
 
 ```bash
-python3 ros2_ws/src/drl_agent/scripts/utils/aggregate_results.py \
+python3 -m drl_agent.evaluation.analysis.aggregate_results \
   --runtime-root ros2_ws/src/drl_agent/runtime \
   --algos tqc sac sb3_td3 td7 tqc_ieqn sb3_sac \
   --thresholds 0.5 0.7 0.8 0.9

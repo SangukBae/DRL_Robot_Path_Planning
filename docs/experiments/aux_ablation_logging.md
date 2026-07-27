@@ -63,24 +63,27 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p seed:=0
 **전체 aux config**로 그룹핑하고(서로 다른 aux 설정이 조용히 평균되지 않도록) mean/std를 보고한다.
 
 ```bash
-cd ros2_ws/src/drl_agent/scripts/utils
+cd ros2_ws/src/drl_agent
 
 # 기본: 전체 aux config signature로 그룹 (run_manifest.json 기준)
-python3 aux_ablation_summary.py /path/to/all_runs --out logs/aux_ablation_summary.csv
+python3 -m drl_agent.evaluation.analysis.aux_ablation_summary /path/to/all_runs --out logs/aux_ablation_summary.csv
 
 # loose: aux on/off로만 그룹, 나머지 config는 무시 (manifest 불필요)
-python3 aux_ablation_summary.py /path/to/all_runs --group-by aux_enabled \
+python3 -m drl_agent.evaluation.analysis.aux_ablation_summary /path/to/all_runs --group-by aux_enabled \
     --out logs/aux_ablation_summary_loose.csv
 
 # strict: 읽을 수 있는 manifest가 없는 run이 있으면 중단
-python3 aux_ablation_summary.py /path/to/all_runs --strict-manifest
+python3 -m drl_agent.evaluation.analysis.aux_ablation_summary /path/to/all_runs --strict-manifest
 
 # 동일 timestep 비교 (t=100000에 가장 가까운 eval):
-python3 aux_ablation_summary.py /path/to/all_runs --eval-step 100000 \
+python3 -m drl_agent.evaluation.analysis.aux_ablation_summary /path/to/all_runs --eval-step 100000 \
     --out logs/aux_ablation_summary_100k.csv
 
 # git commit으로도 그룹 분리:
-python3 aux_ablation_summary.py /path/to/all_runs --include-git
+python3 -m drl_agent.evaluation.analysis.aux_ablation_summary /path/to/all_runs --include-git
+
+# 또는 ros2 run 설치 실행 파일로 (동일 인자):
+ros2 run drl_agent aux_ablation_summary.py /path/to/all_runs --out logs/aux_ablation_summary.csv
 ```
 
 출력 `aux_ablation_summary.csv`:

@@ -1,4 +1,4 @@
-"""Unit tests for scripts/utils/risk_map_dump.py (Phase 1b).
+"""Unit tests for drl_agent.evaluation.risk_map_dump (Phase 1b).
 
 Pure-function / file-I/O tests, no ROS/torch -- follows the existing test
 convention (direct import, plain fake dicts, pytest's tmp_path fixture).
@@ -6,7 +6,7 @@ convention (direct import, plain fake dicts, pytest's tmp_path fixture).
 
 import math
 
-import risk_map_dump as rmd
+import drl_agent.evaluation.risk_map_dump as rmd
 
 
 def test_sector_index_for_theta_matches_aux_prediction_labels_convention():

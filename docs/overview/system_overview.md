@@ -37,7 +37,7 @@
 5. **localization noise**(실로봇 위치오차 모사): [../design/localization_noise_design.md](../design/localization_noise_design.md)
 
 ## Where in code
-- 환경: `ros2_ws/src/drl_agent/scripts/environment/environment.py`, `environment_curriculum.py`
-- 학습: `ros2_ws/src/drl_agent/scripts/policy/train_tqc_curriculum_agent.py`, `tqc_agent.py`
+- 환경: `ros2_ws/src/drl_agent/drl_agent/env/simulation/environment.py`, `env/curriculum/environment_curriculum.py`
+- 학습: `ros2_ws/src/drl_agent/drl_agent/training/train_tqc_curriculum.py`, `rl/algorithms/tqc/agent.py`
 - 설정: `ros2_ws/src/drl_agent/config/`
 - 로봇/시뮬: `ros2_ws/src/hunter_se_gazebo/`

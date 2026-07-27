@@ -3,8 +3,7 @@
 Makes the ``drl_agent`` Python package importable when running straight from
 the source tree (no colcon build needed): the sibling ROS package
 ``ros2_ws/src/drl_agent`` hosts it. After a build, site-packages provides it
-and this is a no-op. Also exposes the legacy flat-script dirs for wrappers
-that exec legacy analysis scripts.
+and this is a no-op.
 """
 
 import os
@@ -30,17 +29,15 @@ def ensure_drl_agent_importable() -> str:
     return ""
 
 
-def legacy_utils_script(name: str) -> str:
-    """Absolute path of a legacy ``drl_agent/scripts/utils/<name>`` script
-    (source tree first, then the flat install dir)."""
-    cand = os.path.join(_DRL_AGENT_PKG, "scripts", "utils", name)
-    if os.path.isfile(cand):
-        return cand
+def canonical_module_file(module_name: str) -> str:
+    """Absolute path of a canonical ``drl_agent.*`` module's own ``.py`` file
+    (works for both source-tree and installed execution — see
+    ``ensure_drl_agent_importable``, which must be called first)."""
+    import importlib.util
     try:
-        from ament_index_python.packages import get_package_prefix
-        cand = os.path.join(get_package_prefix("drl_agent"), "lib", "drl_agent", name)
-        if os.path.isfile(cand):
-            return cand
-    except Exception:
-        pass
+        spec = importlib.util.find_spec(module_name)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        spec = None
+    if spec is not None and spec.origin and os.path.isfile(spec.origin):
+        return spec.origin
     return ""

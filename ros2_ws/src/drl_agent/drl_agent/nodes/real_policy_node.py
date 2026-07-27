@@ -6,9 +6,10 @@ Usage:
     ros2 run drl_agent real_policy_node.py --ros-args \
         -p profile:=phase2/both -p actor_path:=<..._actor.pth>
 
-Resolves + validates the profile, then ``exec``s the unchanged
-``real_policy_runner.py`` with ``env_config`` / ``hparams_config`` pointing at
-the profile's yamls. Without ``profile`` it is a pure passthrough.
+Resolves + validates the profile, then ``exec``s the canonical
+``drl_agent.evaluation.real_policy_runner`` module with ``env_config`` /
+``hparams_config`` pointing at the profile's yamls. Without ``profile`` it is
+a pure passthrough.
 """
 
 import os
@@ -27,7 +28,7 @@ def main():
     opts, passthrough = nc.parse_wrapper_args(sys.argv[1:])
 
     if not opts["profile"]:
-        nc.exec_legacy("real_policy_runner.py", {}, passthrough)
+        nc.exec_module("drl_agent.evaluation.real_policy_runner", {}, passthrough)
         return
 
     spec, _entry = nc.load_and_validate(opts["profile"], resume=False, seed=None)
@@ -39,7 +40,7 @@ def main():
         "env_config": spec.environment_yaml,
         "hparams_config": spec.hparams_yaml,
     }
-    nc.exec_legacy("real_policy_runner.py", params, passthrough)
+    nc.exec_module("drl_agent.evaluation.real_policy_runner", params, passthrough)
 
 
 if __name__ == "__main__":

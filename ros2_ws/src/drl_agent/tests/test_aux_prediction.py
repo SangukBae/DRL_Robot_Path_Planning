@@ -22,9 +22,9 @@ try:
     import numpy as np
     import torch
 
-    import aux_prediction as ap
-    import aux_prediction_losses as apl
-    import aux_prediction_temporal as apt
+    import drl_agent.rl.networks.aux_prediction as ap
+    import drl_agent.rl.networks.aux_losses as apl
+    import drl_agent.rl.networks.aux_temporal as apt
     _HAVE_TORCH = True
 except Exception:  # pragma: no cover
     _HAVE_TORCH = False

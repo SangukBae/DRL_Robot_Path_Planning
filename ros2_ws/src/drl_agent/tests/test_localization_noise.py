@@ -10,7 +10,7 @@ import math
 import numpy as np
 import pytest
 
-from localization_noise import LocalizationNoiseModel, ProprioNoiseModel
+from drl_agent.env.simulation.localization_noise import LocalizationNoiseModel, ProprioNoiseModel
 
 
 def _loc_cfg(**over):

@@ -1,10 +1,11 @@
 """Neural-network definitions and loss for the TQC agent.
 
-Extracted verbatim from ``tqc_agent.py`` so the network architecture (Gaussian
-``Actor``, distributional ``Critic``) and the TQC ``quantile_huber_loss`` live in
-one place, separate from the agent's training / optimization / checkpoint logic.
-``tqc_agent.py`` re-imports these names, so ``from tqc_agent import Actor`` etc.
-still works and behaviour is unchanged.
+Extracted verbatim from the agent module so the network architecture
+(Gaussian ``Actor``, distributional ``Critic``) and the TQC
+``quantile_huber_loss`` live in one place, separate from the agent's training /
+optimization / checkpoint logic. ``drl_agent.rl.algorithms.tqc.agent``
+re-imports these names (``from drl_agent.rl.networks.tqc import Actor, Critic,
+quantile_huber_loss``), so behaviour is unchanged.
 """
 
 import numpy as np

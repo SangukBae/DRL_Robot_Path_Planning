@@ -1,4 +1,4 @@
-"""ROS-free unit tests for scripts/utils/aux_ablation_summary.py's CSV/manifest
+"""ROS-free unit tests for drl_agent.evaluation.analysis.aux_ablation_summary's CSV/manifest
 discovery -- specifically the RUN_LAYOUT dual-layout glob change (matching both
 the legacy ``eval_summary_<tag>.csv`` and the new plain ``eval_summary.csv``
 under ``runtime/experiments/<run_id>/logs/``).
@@ -6,7 +6,7 @@ under ``runtime/experiments/<run_id>/logs/``).
 
 import json
 
-import aux_ablation_summary as aas
+import drl_agent.evaluation.analysis.aux_ablation_summary as aas
 
 
 def test_find_csvs_matches_legacy_timestamped_filename(tmp_path):

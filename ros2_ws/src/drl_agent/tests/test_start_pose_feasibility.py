@@ -67,10 +67,10 @@ def _install_ros_stubs():
 
 _install_ros_stubs()
 
-import map_layout_registry as reg          # noqa: E402  (pure, ROS-free)
-import start_sampler                        # noqa: E402  (ROS deps now stubbed)
-import map_layout_runtime                   # noqa: E402  (helper mixin)
-import gazebo_entity_manager as gem         # noqa: E402  (record reconciliation)
+import drl_agent.env.simulation.map_layout_registry as reg  # noqa: E402  (pure, ROS-free)
+import drl_agent.env.spawning.start_sampler as start_sampler  # noqa: E402  (ROS deps now stubbed)
+import drl_agent.env.simulation.map_layout_runtime as map_layout_runtime  # noqa: E402  (helper mixin)
+import drl_agent.env.simulation.gazebo_entity_manager as gem  # noqa: E402  (record reconciliation)
 
 
 ROOT = Path(__file__).resolve().parents[1]

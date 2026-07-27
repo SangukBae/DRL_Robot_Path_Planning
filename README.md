@@ -63,22 +63,22 @@ ros2 run drl_agent environment_curriculum.py
 
 # [터미널 3] TQC 커리큘럼 학습 — 실행 모드별 명령어
 # 1) 새 학습 (다중 seed: -p seed:=N 또는 DRL_AGENT_SEED=N 환경변수로 sweep)
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p seed:=0
+ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
 
 # 2) 자동 재개 — train_tqc_config.yaml(커리큘럼 config 아님)의 train_settings에서
 #    load_model:true 설정 후 동일 명령 재실행. base_file_name+seed가 일치하는 최신
 #    체크포인트 + replay buffer (+ curriculum_state.json 있으면 스테이지/글로벌 스텝도) 복원.
 #    상세: docs/guides/training.md#학습-재개
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p seed:=0
+ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
 
 # 3) 특정 체크포인트에서 지정 스테이지로 재시작 — 모델 가중치만 로드하고
 #    replay buffer/optimizer/커리큘럼 진행도는 새로 시작 (A3/A4 fresh-run-only 아키텍처는 불가)
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p resume_weight_prefix:=<prefix> -p resume_stage:=<0-9> \
   -p resume_weights_dir:=<run_dir>/pytorch_models   # 생략 시 이번 run의 pytorch_models_dir
 
 # 4) run_dir / train config 커스터마이징 (예: A1-A4 스케일링 실험, UTD 비율 override)
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p run_dir:=<경로> -p train_config_file:=<경로> -p updates_per_env_step:=4
 
 # 5) PHASE2 실험 (candidate1=risk_map_reward, candidate2=action_risk_head)
@@ -106,16 +106,16 @@ python3 ros2_ws/src/drl_experiments/scripts/run_profile.py --list        # profi
 python3 ros2_ws/src/drl_experiments/scripts/run_profile.py \
   --sweep ros2_ws/src/drl_experiments/sweeps/phase2_seeds.yaml           # seed sweep 명령 출력
 
-#    (legacy 호환) 기존 방식도 그대로 동작한다:
+#    (profile 없이) 개별 config 경로를 직접 지정하는 방식도 그대로 동작한다:
 #      ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=<dir>/environment_curriculum.yaml
-#      ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args -p train_config_file:=<dir> -p seed:=0
+#      ros2 run drl_agent train_tqc_curriculum.py --ros-args -p train_config_file:=<dir> -p seed:=0
 #    (runtime/phase2_configs/<MODE>/ 디렉터리도 보존됨 — profiles/phase2/가 canonical)
 
-# 동일 프로토콜로 다른 baseline도 비교 가능:
-#   train_sac_curriculum_agent.py / train_td7_curriculum_agent.py
-#   train_sb3_sac_curriculum_agent.py / train_sb3_td3_curriculum_agent.py
-#   train_tqc_ieqn_curriculum_agent.py
-# 알고리즘을 파라미터 하나로 선택하려면 train_rl.py (레지스트리 방식, tqc_curriculum은 byte-identical):
+# 동일 프로토콜로 다른 baseline도 비교 가능 (모두 canonical 모듈, 자기 파일명으로 설치됨):
+#   sac_curriculum.py / td7_curriculum.py
+#   sb3_sac_curriculum.py / sb3_td3_curriculum.py
+#   tqc_ieqn_curriculum.py / a3c_curriculum.py
+# 알고리즘을 파라미터 하나로 선택하려면 train_rl.py (레지스트리 방식, tqc_curriculum은 content-identical):
 ros2 run drl_agent train_rl.py --ros-args -p rl_model:=tqc_curriculum
 ros2 run drl_agent train_rl.py --list-models   # 사용 가능한 알고리즘 목록 (Gazebo 불필요)
 
@@ -127,7 +127,7 @@ tensorboard --logdir <run_dir>/logs
 
 ```bash
 # 다중 seed 결과 집계 (eval_metrics_*.csv → mean±std 표 / 학습곡선 / sample efficiency)
-python3 ros2_ws/src/drl_agent/scripts/utils/aggregate_results.py \
+python3 -m drl_agent.evaluation.analysis.aggregate_results \
   --runtime-root ros2_ws/src/drl_agent/runtime
 # (동일 기능, runtime-root 자동 지정): python3 ros2_ws/src/drl_experiments/scripts/aggregate.py
 # (manifest 기반 그룹 표):            python3 ros2_ws/src/drl_experiments/scripts/export_tables.py --help

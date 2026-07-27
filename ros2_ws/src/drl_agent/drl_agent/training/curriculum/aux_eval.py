@@ -1,4 +1,4 @@
-"""AUX_PRED formal-evaluation helpers for the curriculum trainer.\n\nExtracted from train_tqc_curriculum_agent.py. Builds privileged nearest-human labels, action sequences and per-episode aux accumulation used by the eval loop. Mixed into TrainTQCCurriculum; references shared trainer state via self (aux on/off gating is explicit inside each method)."""
+"""AUX_PRED formal-evaluation helpers for the curriculum trainer.\n\nExtracted from drl_agent.training.train_tqc_curriculum. Builds privileged nearest-human labels, action sequences and per-episode aux accumulation used by the eval loop. Mixed into TrainTQCCurriculum; references shared trainer state via self (aux on/off gating is explicit inside each method)."""
 
 import os
 import sys

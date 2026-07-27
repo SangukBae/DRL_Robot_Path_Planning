@@ -1,13 +1,13 @@
-"""ROS-free unit tests for utils/config_paths.py.
+"""ROS-free unit tests for drl_agent.config.paths.
 
-These pin the exact semantics the trainers/test scripts rely on, so that wiring
-the helper into _find_config_file() cannot silently change behaviour — in
-particular the "file hint resolves against its DIRECTORY" rule.
+These pin the exact semantics the trainers rely on, so that wiring the helper
+into _find_config_file() cannot silently change behaviour — in particular the
+"file hint resolves against its DIRECTORY" rule.
 """
 
 import os
 
-import config_paths as cp
+import drl_agent.config.paths as cp
 
 
 def test_expand_user_path_handles_empty():
@@ -98,7 +98,7 @@ def test_source_package_candidates_from_install_share(tmp_path):
 
 def test_source_package_candidates_from_source_script_path(tmp_path):
     pkg = tmp_path / "src" / "drl_agent"
-    script = pkg / "scripts" / "policy" / "train_tqc_base.py"
+    script = pkg / "drl_agent" / "training" / "train_tqc_base.py"
     script.parent.mkdir(parents=True)
     script.write_text("# test\n")
     (pkg / "package.xml").write_text("<package/>")

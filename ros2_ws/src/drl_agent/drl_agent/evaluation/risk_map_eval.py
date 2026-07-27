@@ -6,8 +6,8 @@ rolls out N episodes under the curriculum env, dumping one JSONL record per
 step: robot GT pose, the selected waypoint (r, theta) + its risk-map sector
 index, the GT (label-side, privileged) risk_map/min_dist, the aux HEAD's
 PREDICTED risk_map/min_dist (kept separate from the GT fields), and a
-lightweight human-state summary. See scripts/utils/risk_map_dump.py for the
-record schema and scripts/utils/aux_eval_metrics.py for split_label().
+lightweight human-state summary. See drl_agent.evaluation.risk_map_dump for the
+record schema and drl_agent.training.aux_eval_metrics for split_label().
 
 This is the "risk map figure" data source for Slide 9's item (6) and the
 qualitative figure planned in Slide 15/16 (Directional Risk-map Reward

@@ -49,9 +49,9 @@ def _install_ros_stubs():
 
 _install_ros_stubs()
 
-import goal_sampler as gs               # noqa: E402
-import map_layout_runtime as mlr        # noqa: E402
-import map_layout_registry as reg       # noqa: E402
+import drl_agent.env.spawning.goal_sampler as gs  # noqa: E402
+import drl_agent.env.simulation.map_layout_runtime as mlr  # noqa: E402
+import drl_agent.env.simulation.map_layout_registry as reg  # noqa: E402
 
 
 _LAYOUTS = reg.build_map_layouts(

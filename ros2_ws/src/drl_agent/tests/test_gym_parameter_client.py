@@ -1,10 +1,11 @@
 """ROS-free unit tests for gym_parameter_client.GymParameterClient.
 
-``gym_parameter_client`` imports ``rcl_interfaces`` and ``environment_interface``
-(both ROS). To keep this test hermetic (runs on CI without a built workspace AND
-on the ROS box), we stub those modules in ``sys.modules`` BEFORE importing the
-client. The stubs mirror only the surface the client touches: request types,
-``Parameter`` / ``ParameterValue`` / ``ParameterType`` and ``EnvServiceError``.
+``gym_parameter_client`` imports ``rcl_interfaces`` and
+``drl_agent.env.environment_interface`` (both ROS). To keep this test hermetic
+(runs on CI without a built workspace AND on the ROS box), we stub those
+modules in ``sys.modules`` BEFORE importing the client. The stubs mirror only
+the surface the client touches: request types, ``Parameter`` /
+``ParameterValue`` / ``ParameterType`` and ``EnvServiceError``.
 
 A ``FakeNode`` supplies canned ``_call_service`` responses (or raises), so every
 branch — accept/reject, present/absent params, confirm path, fallback, type
@@ -25,28 +26,19 @@ class _EnvServiceError(Exception):
 
 
 def _install_stubs():
-    # The client now lives at drl_agent.training.gym_parameter_client and
-    # imports EnvServiceError from the CANONICAL module path
-    # drl_agent.env.environment_interface (the bare ``environment_interface``
-    # name is a compatibility shim aliasing the same module). Stub BOTH names
-    # with ONE module object so the exception class is a single identity; on a
-    # ROS box where the real module imports, reuse it for both names instead.
     _CANON = "drl_agent.env.environment_interface"
     if _CANON in sys.modules:
-        real = sys.modules[_CANON]
-        globals()["_EnvServiceError"] = real.EnvServiceError
-        sys.modules.setdefault("environment_interface", real)
+        # Real module already imported (ROS box): reuse its EnvServiceError.
+        globals()["_EnvServiceError"] = sys.modules[_CANON].EnvServiceError
     else:
         try:
             import importlib
             real = importlib.import_module(_CANON)
             globals()["_EnvServiceError"] = real.EnvServiceError
-            sys.modules.setdefault("environment_interface", real)
         except Exception:
             m = types.ModuleType(_CANON)
             m.EnvServiceError = _EnvServiceError
             sys.modules[_CANON] = m
-            sys.modules["environment_interface"] = m
 
     if "rcl_interfaces.srv" not in sys.modules:
         srv = types.ModuleType("rcl_interfaces.srv")
@@ -100,9 +92,9 @@ def _install_stubs():
 _install_stubs()
 
 from rcl_interfaces.msg import ParameterType  # noqa: E402
-from gym_parameter_client import GymParameterClient  # noqa: E402
+from drl_agent.training.gym_parameter_client import GymParameterClient  # noqa: E402
 
-EnvServiceError = sys.modules["environment_interface"].EnvServiceError
+EnvServiceError = sys.modules["drl_agent.env.environment_interface"].EnvServiceError
 
 
 # --------------------------------------------------------------------------- #

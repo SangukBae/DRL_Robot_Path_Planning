@@ -114,7 +114,8 @@ def main():
 
     env_cmd, train_cmd = _commands_for(spec, entry, args.seed, args.resume)
     if args.exec_trainer:
-        # Delegate to train_node (same validation path, then exec legacy trainer).
+        # Delegate to train_node (same validation path, then exec the resolved
+        # canonical trainer module).
         node = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "..", "drl_agent", "drl_agent", "nodes", "train_node.py")
         node = os.path.normpath(node)

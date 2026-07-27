@@ -12,7 +12,7 @@ import math
 
 import pytest
 
-import pure_pursuit as pp
+import drl_agent.common.pure_pursuit as pp
 
 # Hunter SE controller geometry used in the configs.
 WB = 0.547696

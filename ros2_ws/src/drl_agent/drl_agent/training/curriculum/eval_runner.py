@@ -1,4 +1,4 @@
-"""Curriculum evaluation episode loop + metric aggregation / reporting.\n\nExtracted from train_tqc_curriculum_agent.py. Runs the eval episodes (eval_mode toggling, reset/step rollout), aggregates success/collision/timeout/SPL/STL/clearance/PSC/H-Coll (incl. per-map breakdown and aux metrics) and prints / logs them. Mixed into TrainTQCCurriculum; the trainer keeps only the call, stage-advance decision and logging around it."""
+"""Curriculum evaluation episode loop + metric aggregation / reporting.\n\nExtracted from drl_agent.training.train_tqc_curriculum. Runs the eval episodes (eval_mode toggling, reset/step rollout), aggregates success/collision/timeout/SPL/STL/clearance/PSC/H-Coll (incl. per-map breakdown and aux metrics) and prints / logs them. Mixed into TrainTQCCurriculum; the trainer keeps only the call, stage-advance decision and logging around it."""
 
 import os
 import sys

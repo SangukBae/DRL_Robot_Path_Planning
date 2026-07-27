@@ -234,7 +234,7 @@ class TrainTQCBase(EnvInterface):
         if getattr(self.rl_agent, "aux_enabled", False) and not type(self).AUX_SUPPORTED:
             raise RuntimeError(
                 "aux_prediction.enabled=true is only supported by "
-                "train_tqc_curriculum_agent.py (and the aux-aware eval path). "
+                "drl_agent.training.train_tqc_curriculum (and the aux-aware eval path). "
                 "Set aux_prediction.enabled=false in hyperparameters_tqc.yaml for "
                 f"this trainer ({type(self).__name__})."
             )

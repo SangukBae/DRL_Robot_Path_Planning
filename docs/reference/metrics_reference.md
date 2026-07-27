@@ -88,17 +88,17 @@ Eval(aux) | AuxLossEval(RiskRMSE) {..} | MinDistMAE(m) {..} | PeakAcc {..} | Eve
 
 ## 6. 동적 장애물 회피 진단 로그 (`dynamic_avoidance_metrics_*.csv`) — DYN_AVOID
 
-`train_tqc_curriculum_agent.py`가 학습 중 자동 생성하는 **단일 파일** 진단 로그. 기존 CSV들에
+`train_tqc_curriculum.py`(TQC curriculum trainer)가 학습 중 자동 생성하는 **단일 파일** 진단 로그. 기존 CSV들에
 흩어져 있던 "동적(보행자) 장애물 회피" 관련 지표를 한 곳에 모으고(재노출), 환경이 계산한
 **privileged** human interaction / clutter / yield / near-event 지표를 추가한다. run tag 네이밍은
 다른 CSV와 동일(`dynamic_avoidance_metrics_<run_tag>.csv`), episode 단위 1행. eval-cut(부분) episode는
 paper CSV와 동일하게 건너뛴다.
 
 **데이터 흐름:** 환경(`environment.py`)이 매 `/step`마다 `DynamicAvoidanceEpisodeDiag`
-(`scripts/environment/dynamic_avoidance_telemetry.py`)에 privileged 로봇+보행자 ground truth를
+(`drl_agent/env/humans/dynamic_avoidance_telemetry.py`)에 privileged 로봇+보행자 ground truth를
 누적 → episode 진단 dict를 read-only 파라미터 `episode_dynamic_diag`(JSON)로 노출 → 트레이너가
 episode 종료 시(리셋 전, **eval 전**) `GetParameters`로 1회 읽어 `DynamicAvoidanceCSV`
-(`scripts/utils/dynamic_avoidance_log.py`)로 기록. aux label과 무관하므로 **aux-OFF 베이스라인**에서도
+(`drl_agent/training/dynamic_avoidance_log.py`)로 기록. aux label과 무관하므로 **aux-OFF 베이스라인**에서도
 보행자만 활성이면 동작한다.
 
 - **읽기 타이밍이 매 step 누적을 요구하는 이유:** env는 trainer가 episode를 언제 끝낼지(특히 timeout,

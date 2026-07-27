@@ -2,9 +2,9 @@
 
 The wrappers must (a) recognise both ROS-style ``-p key:=value`` and plain
 ``--key`` forms, (b) strip ONLY the wrapper-only tokens, (c) leave a
-ROS-style ``-p seed:=N`` in the passthrough (the legacy trainers consume it
+ROS-style ``-p seed:=N`` in the passthrough (the trainer node consumes it
 natively) while converting a plain ``--seed N``, and (d) never leave a
-dangling EMPTY ``--ros-args`` section behind after stripping (exec_legacy
+dangling EMPTY ``--ros-args`` section behind after stripping (exec_module
 would otherwise tack its own ``--ros-args`` section onto an already-empty
 one).
 """

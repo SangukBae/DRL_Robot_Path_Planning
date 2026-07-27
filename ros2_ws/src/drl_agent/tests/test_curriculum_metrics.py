@@ -2,7 +2,7 @@
 
 import math
 
-from curriculum_metrics import _LabelProximity, LabelProximity
+from drl_agent.training.curriculum.metrics import _LabelProximity, LabelProximity
 
 
 def test_alias_is_same_class():

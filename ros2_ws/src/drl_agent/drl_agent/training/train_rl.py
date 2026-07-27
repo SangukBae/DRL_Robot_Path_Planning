@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """Unified DRL trainer launcher — select a registered model/trainer by name.
 
-Started as a copy of train_tqc_curriculum_agent.py (that file is untouched
-and keeps working exactly as before). The TrainTQCCurriculum class body below
-is IDENTICAL to that file, so selecting "tqc_curriculum" (the default) behaves
-exactly like running train_tqc_curriculum_agent.py directly.
+The TrainTQCCurriculum class body below is a separate, content-identical copy
+of the class in ``drl_agent.training.train_tqc_curriculum`` (the primary TQC
+curriculum trainer module) — so selecting "tqc_curriculum" (the default)
+behaves exactly like running that module directly, without importing it.
 
-What this file ADDS on top of the copy (see MODEL_REGISTRY near the bottom
+What this file ADDS on top of that (see MODEL_REGISTRY near the bottom
 of the imports, and the entry point at the end of the file):
   - A model-name registry (MODEL_REGISTRY). "tqc_curriculum" resolves to the
     TrainTQCCurriculum class defined right here; every other registered name
-    is imported lazily (importlib) from its own existing
-    train_<model>_curriculum_agent.py — no other trainer's code is duplicated
-    or modified.
+    is imported lazily (importlib) from its own canonical
+    ``drl_agent.training.baselines.<algo>_curriculum`` module — no other
+    trainer's code is duplicated or modified.
   - --rl_model CLI flag (also accepts --model) and a ROS `rl_model` parameter;
     CLI > ROS param > default ("tqc_curriculum").
   - --list-models / --dry-run: resolve-only smoke tests that need no Gazebo,
@@ -21,19 +21,17 @@ of the imports, and the entry point at the end of the file):
     added after the trainer's own __init__ writes it (best-effort, generic
     for any registered model).
 
-Everything below the registry section (the TrainTQCCurriculum class itself:
-curriculum config loading, evaluate_and_print(), stage advancement, CSV
-logging, curriculum_state.json resume) is unchanged from
-train_tqc_curriculum_agent.py.
-
 Usage:
   ros2 run drl_agent train_rl.py --ros-args -p rl_model:=tqc_curriculum
-  python3 scripts/policy/train_rl.py --rl_model tqc_curriculum
-  python3 scripts/policy/train_rl.py --list-models
-  python3 scripts/policy/train_rl.py --dry-run --rl_model tqc_curriculum
+  python3 -m drl_agent.training.train_rl --rl_model tqc_curriculum
+  python3 -m drl_agent.training.train_rl --list-models
+  python3 -m drl_agent.training.train_rl --dry-run --rl_model tqc_curriculum
 
-The environment must be running environment_curriculum.py (not environment.py)
-so that the curriculum_stage / curriculum_num_stages parameters exist on /gym_node.
+The environment must be running the curriculum environment node
+(``ros2 run drl_agent environment_curriculum_node.py``, or its canonical
+module ``drl_agent.env.curriculum.environment_curriculum`` — NOT the
+non-curriculum ``drl_agent.env.simulation.environment``) so that the
+curriculum_stage / curriculum_num_stages parameters exist on /gym_node.
 """
 
 import os
@@ -91,12 +89,12 @@ from drl_agent.training.curriculum.metrics import _LabelProximity
 #  Model registry                                                              #
 # --------------------------------------------------------------------------- #
 # "tqc_curriculum" -> the TrainTQCCurriculum class defined below in THIS file
-# (module=None). Every other entry names an EXISTING, unmodified
-# train_<model>_curriculum_agent.py sibling script — imported lazily via
+# (module=None). Every other entry names an EXISTING, canonical
+# drl_agent.training.baselines.<algo>_curriculum module — imported lazily via
 # importlib so choosing one model never pulls in every other trainer's deps
 # (e.g. stable_baselines3 for a plain TQC run). Only add an entry here once
-# its class/module genuinely exists under scripts/policy/ — do not invent
-# placeholders for algorithms that have no curriculum trainer yet.
+# its class/module genuinely exists under drl_agent/training/baselines/ — do
+# not invent placeholders for algorithms that have no curriculum trainer yet.
 MODEL_REGISTRY = {
     "tqc_curriculum": {
         "module": None,
@@ -104,32 +102,32 @@ MODEL_REGISTRY = {
         "description": "TQC + 10-stage curriculum (primary training path).",
     },
     "sac_curriculum": {
-        "module": "train_sac_curriculum_agent",
+        "module": "drl_agent.training.baselines.sac_curriculum",
         "class_name": "TrainSACCurriculum",
         "description": "SAC curriculum baseline.",
     },
     "td7_curriculum": {
-        "module": "train_td7_curriculum_agent",
+        "module": "drl_agent.training.baselines.td7_curriculum",
         "class_name": "TrainTD7Curriculum",
         "description": "TD7 curriculum baseline.",
     },
     "tqc_ieqn_curriculum": {
-        "module": "train_tqc_ieqn_curriculum_agent",
+        "module": "drl_agent.training.baselines.tqc_ieqn_curriculum",
         "class_name": "TrainTQCIEQNCurriculum",
         "description": "TQC + IEQn (inequality constraint) curriculum variant.",
     },
     "a3c_curriculum": {
-        "module": "train_a3c_curriculum_agent",
+        "module": "drl_agent.training.baselines.a3c_curriculum",
         "class_name": "TrainA3CCurriculum",
         "description": "A3C curriculum baseline.",
     },
     "sb3_sac_curriculum": {
-        "module": "train_sb3_sac_curriculum_agent",
+        "module": "drl_agent.training.baselines.sb3_sac_curriculum",
         "class_name": "TrainSB3SACCurriculum",
         "description": "Stable-Baselines3 SAC curriculum baseline.",
     },
     "sb3_td3_curriculum": {
-        "module": "train_sb3_td3_curriculum_agent",
+        "module": "drl_agent.training.baselines.sb3_td3_curriculum",
         "class_name": "TrainSB3TD3Curriculum",
         "description": "Stable-Baselines3 TD3 curriculum baseline.",
     },
@@ -1463,8 +1461,8 @@ def _build_arg_parser():
         description=(
             "Unified DRL trainer launcher: selects a registered curriculum "
             "trainer by name (--rl_model / ROS param 'rl_model') and runs it "
-            "exactly as that model's own train_<model>_curriculum_agent.py "
-            "entry point would."
+            "exactly as that model's own "
+            "drl_agent.training.baselines.<model>_curriculum module would."
         ),
     )
     parser.add_argument(

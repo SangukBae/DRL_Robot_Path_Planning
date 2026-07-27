@@ -12,7 +12,7 @@ Launch with:
   ros2 run drl_agent environment_curriculum.py \\
     --ros-args -p config_file:=<path>/environment_curriculum.yaml
 
-The trainer (train_tqc_curriculum_agent.py) advances the stage by writing to
+The trainer (drl_agent.training.train_tqc_curriculum) advances the stage by writing to
 the /gym_node/set_parameters service after each successful evaluation.
 The trainer also reads /gym_node/get_parameters::curriculum_num_stages to stay
 in sync with the actual number of stages in the config that was passed here.

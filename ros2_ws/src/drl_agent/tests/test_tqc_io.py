@@ -16,7 +16,7 @@ import pytest
 try:
     import torch
     import numpy as np
-    import tqc_io
+    import drl_agent.rl.checkpointing.tqc_io as tqc_io
     _HAVE_TORCH = True
 except Exception:  # pragma: no cover
     _HAVE_TORCH = False

@@ -9,9 +9,9 @@ unconditionally opening in "w" mode; these tests pin that contract directly on
 the real writer classes (not just the underlying helper).
 """
 
-import episode_metrics as em
-import dynamic_avoidance_log as dal
-import aux_ablation_logging as aux_log
+import drl_agent.training.episode_metrics as em
+import drl_agent.training.dynamic_avoidance_log as dal
+import drl_agent.training.aux_ablation_logging as aux_log
 
 
 class _FakeAgent:

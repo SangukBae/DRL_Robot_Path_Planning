@@ -10,11 +10,12 @@ Usage (new, preferred):
     python3 train_node.py --profile phase2/both --validate-only
 
 Resolves the profile (drl_experiments/profiles/<name>/profile.yaml), runs the
-strong ConfigValidator pre-flight, then ``exec``s the UNCHANGED legacy trainer
-for the profile's (algorithm, trainer) pair with the translated legacy
-parameters (``train_config_file:=<profile dir>``, ``load_model:=true`` on
-resume). Legacy invocations (``ros2 run drl_agent train_tqc_curriculum_agent.py
--p train_config_file:=...``) keep working unchanged.
+strong ConfigValidator pre-flight, then ``exec``s the CANONICAL trainer module
+for the profile's (algorithm, trainer) pair (``drl_agent.training.registry``)
+with the translated parameters (``train_config_file:=<profile dir>``,
+``load_model:=true`` on resume). Every algorithm the registry knows about is
+also directly reachable without a profile via
+``ros2 run drl_agent train_rl.py --ros-args -p rl_model:=<name>``.
 """
 
 import os
@@ -61,7 +62,7 @@ def main():
     if "action_risk_head_enabled" in spec.overrides:
         params["action_risk_head_enabled"] = str(spec.overrides["action_risk_head_enabled"]).lower()
 
-    nc.exec_legacy(entry.trainer_exec, params, passthrough)
+    nc.exec_module(entry.trainer_module, params, passthrough)
 
 
 if __name__ == "__main__":

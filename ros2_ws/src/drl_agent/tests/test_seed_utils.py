@@ -5,7 +5,7 @@ import random
 import numpy as np
 import pytest
 
-import seed_utils
+import drl_agent.common.seed_utils as seed_utils
 
 
 def test_seed_basic_rngs_makes_random_and_numpy_reproducible():

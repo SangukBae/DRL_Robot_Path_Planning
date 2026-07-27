@@ -43,8 +43,7 @@ if(BUILD_TESTING)
   ament_add_pytest_test(drl_agent_pytests tests
     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     TIMEOUT 600
-    # Collection imports every module under scripts/ + drl_agent/ (via the
-    # bare-name shims and canonical package alike); without this, running
+    # Collection imports every module under drl_agent/; without this, running
     # the suite against a bind-mounted / shared-ownership source tree (e.g.
     # the docker dev container) leaves root-owned __pycache__/*.pyc behind
     # that a later host-side `compileall` or `git clean` chokes on.
@@ -56,128 +55,79 @@ install(
   DIRECTORY
     config
     launch
-    scripts
   DESTINATION
     share/${PROJECT_NAME}/
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE
 )
 
-# Make the flat legacy shim dir importable from PLAIN python after sourcing
-# the workspace (`import tqc_agent`, `import buffer`, …), not only from
-# `ros2 run` executables whose sys.path[0] is already lib/drl_agent. The
-# .dsv env hook prepends <prefix>/lib/drl_agent to PYTHONPATH.
-ament_environment_hooks("${CMAKE_CURRENT_SOURCE_DIR}/env-hooks/flat_legacy_scripts.dsv.in")
-
-# Importable Python package (drl_agent/drl_agent/) — the CANONICAL home of the
+# Importable Python package (drl_agent/drl_agent/) — the CANONICAL and ONLY
 # implementation: config (profile loader/validator, paths), rl (networks,
 # replay buffer+schema, checkpointing incl. tqc_io, algorithms tqc/sac/td7/
-# a3c/tqc_ieqn/sb3), training (trainer bases + curriculum modules + train_rl),
-# evaluation (generalization/risk-map/sim-validation, real_policy_runner), env
-# (environment node bodies, mixins, samplers, rewards, observation), common
-# (pure helpers). Installed into site-packages; the flat legacy scripts below
-# are compatibility shims / exec wrappers resolving into this package.
+# a3c/tqc_ieqn/sb3), training (trainer bases + curriculum modules + train_rl +
+# baselines), evaluation (generalization/risk-map/sim-validation, live-sim
+# runners, post-hoc analysis), env (environment node bodies, mixins,
+# samplers, rewards, observation), common (pure helpers). Installed into
+# site-packages, importable as `import drl_agent.<...>` from any sourced
+# environment — this is the only mechanism by which drl_agent code is
+# importable (no flat/bare-name compatibility layer).
 ament_python_install_package(${PROJECT_NAME})
 
-# NOTE (2026-07 restructure): most entries below are no longer the
-# implementation — they are thin bare-name compatibility shims (library
-# modules) or exec wrappers (ros2-run entry points) that alias/dispatch into
-# the drl_agent package installed above. They MUST stay installed flat here so
-# every legacy `ros2 run drl_agent <name>.py` invocation and bare-name import
-# keeps working. Files without a shim note in their header (e.g. environment_360,
-# sb3_ppo, plotting/analysis utils, per-algo train_* baselines) are still the
-# real flat implementations.
+# ROS executables (`ros2 run drl_agent <name>.py`). Each entry below is
+# installed under its OWN basename into lib/${PROJECT_NAME}; the canonical
+# implementation lives at the listed drl_agent/ path (ament_python_install_package
+# above already makes it importable — this list only grants direct `ros2 run`
+# access). Runtime dispatch between them (e.g. the profile wrappers below
+# selecting a trainer/env module) resolves the canonical module via
+# importlib.util.find_spec, not by relying on this flat layout — see
+# drl_agent/nodes/_node_common.py.
 install(
   PROGRAMS
-    scripts/policy/td7_agent.py
-    scripts/policy/a3c_agent.py
-    scripts/policy/sac_agent.py
-    scripts/policy/tqc_agent.py
-    scripts/policy/tqc_ieqn_agent.py
-    scripts/policy/train_sac_agent.py
-    scripts/policy/train_td7_agent.py
-    scripts/policy/test_td7_agent.py
-    scripts/policy/test_tqc_agent.py
-    scripts/policy/train_a3c_agent.py
-    scripts/policy/train_tqc_base.py
-    scripts/policy/train_tqc_ieqn_agent.py
-    scripts/policy/sb3_sac_agent.py
-    scripts/policy/sb3_td3_agent.py
-    scripts/policy/sb3_ppo_agent.py
-    scripts/policy/train_sb3_sac_agent.py
-    scripts/policy/train_sb3_td3_agent.py
-    scripts/policy/train_sb3_ppo_agent.py
-    scripts/utils/buffer.py
-    scripts/utils/point_cloud2.py
-    scripts/utils/file_manager.py
-    scripts/utils/episode_metrics.py
-    scripts/utils/dynamic_avoidance_log.py     # DYN_AVOID consolidated per-episode CSV
-    scripts/utils/pure_pursuit.py
-    scripts/utils/geometry_utils.py    # pure helpers (extracted from environment.py)
-    scripts/utils/seed_utils.py        # centralised RNG seeding
-    scripts/utils/config_paths.py      # pure path/config-discovery helpers
-    scripts/utils/run_layout.py        # RUN_LAYOUT: runtime/experiments/<run_id>/ per-run dirs
-    scripts/utils/sim_validation.py            # SIM_VALIDATION
-    scripts/utils/sim_validation_summary.py    # SIM_VALIDATION
-    scripts/environment/environment_interface.py
-    scripts/environment/environment.py
-    scripts/environment/environment_360.py
-    scripts/environment/environment_curriculum.py
-    scripts/environment/reward_calculator.py     # extracted from environment.py
-    scripts/environment/collision_checker.py     # RectSafetyChecker (from environment.py)
-    scripts/environment/dynamic_avoidance_telemetry.py # DYN_AVOID per-episode pedestrian diagnostics
-    scripts/environment/localization_noise.py    # loc/proprio noise models (from environment.py)
-    scripts/environment/map_catalog.py           # static-obstacle catalog policy (pure)
-    scripts/environment/map_layout_registry.py   # pure map-layout geometry builder
-    scripts/environment/zone_tracker.py          # ZoneMixin (legacy zone tracking)
-    scripts/environment/observation_builder.py   # ObservationMixin (state assembly)
-    scripts/environment/gazebo_entity_manager.py # GazeboEntityMixin (spawn/delete)
-    scripts/environment/gazebo_service_wait.py   # Gazebo service wait helpers
-    scripts/environment/map_layout_runtime.py    # MapLayoutMixin (layout selection/walls)
-    scripts/environment/start_sampler.py         # StartSamplerMixin
-    scripts/environment/goal_sampler.py          # GoalSamplerMixin
-    scripts/environment/human_spawn_sampler.py   # HumanSpawnMixin
-    scripts/environment/human_motion_manager.py  # HumanMotionMixin
-    scripts/environment/obstacle_catalog_spawner.py # ObstacleMixin
-    scripts/policy/tqc_networks.py               # Actor/Critic/loss (from tqc_agent.py)
-    scripts/policy/tqc_io.py                      # checkpoint save/load (from tqc_agent.py)
-    scripts/policy/gym_parameter_client.py       # /gym_node param client (from curriculum trainer)
-    scripts/policy/curriculum_stage_logic.py     # stage-advance gate (from curriculum trainer)
-    scripts/policy/curriculum_state_io.py        # resume state persistence (from curriculum trainer)
-    scripts/policy/curriculum_metrics.py         # eval metric accumulators (pure)
-    scripts/policy/curriculum_aux_eval.py        # CurriculumAuxEvalMixin
-    scripts/policy/curriculum_eval_runner.py     # CurriculumEvalMixin (eval loop)
-    scripts/policy/train_tqc_curriculum_agent.py
-    scripts/policy/train_rl.py                   # unified trainer launcher (MODEL_REGISTRY, see file header)
-    scripts/policy/train_td7_curriculum_agent.py
-    scripts/policy/train_sac_curriculum_agent.py
-    scripts/policy/train_tqc_ieqn_curriculum_agent.py
-    scripts/policy/train_a3c_curriculum_agent.py
-    scripts/policy/train_sb3_sac_curriculum_agent.py
-    scripts/policy/train_sb3_td3_curriculum_agent.py
-    scripts/policy/generalization_eval.py
-    scripts/policy/risk_map_eval.py               # PHASE1B: per-step risk-map dump eval harness
-    scripts/policy/real_policy_runner.py
-    scripts/policy/sim_validation_runner.py    # SIM_VALIDATION
-    scripts/utils/aggregate_results.py
-    scripts/policy/aux_prediction.py            # AUX_PRED
-    scripts/policy/aux_prediction_losses.py     # AUX_PRED
-    scripts/policy/aux_prediction_temporal.py   # AUX_PRED
-    scripts/environment/aux_prediction_labels.py # AUX_PRED
-    scripts/environment/obs_time_context.py      # observation time-context (frame stacking)
-    scripts/utils/aux_ablation_logging.py       # AUX_ABLATION
-    scripts/utils/aux_ablation_summary.py       # AUX_ABLATION
-    scripts/utils/analyze_yield_freezing.py     # PHASE1A: yield precision/recall/freezing post-processing
-    scripts/utils/analyze_aux_correlation.py    # PHASE1A: aux-accuracy vs avoidance correlation post-processing
-    scripts/utils/risk_map_dump.py               # PHASE1B: per-step risk-map dump writer (JSONL)
-    scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics
-    scripts/policy/action_risk_head.py          # PHASE2: Critic-connected Action-Risk Head
-    # PROFILE: new profile-based entrypoint wrappers (delegate to the legacy
-    # executables above after ConfigValidator pre-flight — see drl_agent/nodes/).
+    # Profile-based entrypoint wrappers (resolve + validate a profile, then
+    # exec the canonical trainer/env/eval module for it).
     drl_agent/nodes/train_node.py
     drl_agent/nodes/environment_curriculum_node.py
     drl_agent/nodes/eval_node.py
     drl_agent/nodes/real_policy_node.py
+    # Unified trainer launcher (MODEL_REGISTRY; --rl_model / -p rl_model:=...).
+    drl_agent/training/train_rl.py
+    # TQC (primary): curriculum path + non-curriculum/ablation path.
+    drl_agent/training/train_tqc_curriculum.py
+    drl_agent/training/train_tqc_base.py
+    # Environment nodes.
+    drl_agent/env/curriculum/environment_curriculum.py
+    drl_agent/env/simulation/environment.py
+    drl_agent/env/simulation/environment_360.py   # legacy Classic-Gazebo variant
+    # Evaluation / deploy harnesses.
+    drl_agent/evaluation/generalization_eval.py
+    drl_agent/evaluation/risk_map_eval.py
+    drl_agent/evaluation/real_policy_runner.py
+    drl_agent/evaluation/sim_validation_runner.py
+    drl_agent/evaluation/live/tqc_live_runner.py   # used by launch/test_tqc.launch.py
+    drl_agent/evaluation/live/td7_live_runner.py   # used by launch/test_td7.launch.py
+    # Post-hoc analysis / result aggregation.
+    drl_agent/evaluation/analysis/aggregate_results.py
+    drl_agent/evaluation/analysis/aux_ablation_summary.py
+    drl_agent/evaluation/analysis/analyze_yield_freezing.py
+    drl_agent/evaluation/analysis/analyze_aux_correlation.py
+    drl_agent/evaluation/analysis/sim_validation_summary.py
+    # Paper comparison/ablation baselines — SAC, TD7, A3C, TQC+IEQn, and the
+    # Stable-Baselines3 SAC/TD3/PPO wrappers — each with a curriculum variant
+    # where one exists (PPO has none). Reachable directly here AND via
+    # train_rl.py's MODEL_REGISTRY.
+    drl_agent/training/baselines/sac.py
+    drl_agent/training/baselines/sac_curriculum.py
+    drl_agent/training/baselines/td7.py
+    drl_agent/training/baselines/td7_curriculum.py
+    drl_agent/training/baselines/a3c.py
+    drl_agent/training/baselines/a3c_curriculum.py
+    drl_agent/training/baselines/tqc_ieqn.py
+    drl_agent/training/baselines/tqc_ieqn_curriculum.py
+    drl_agent/training/baselines/sb3_sac.py
+    drl_agent/training/baselines/sb3_sac_curriculum.py
+    drl_agent/training/baselines/sb3_td3.py
+    drl_agent/training/baselines/sb3_td3_curriculum.py
+    drl_agent/training/baselines/sb3_ppo.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

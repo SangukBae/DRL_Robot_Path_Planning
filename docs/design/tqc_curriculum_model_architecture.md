@@ -1,6 +1,6 @@
 # TQC Curriculum 학습 모델 구조 (block diagram)
 
-`train_tqc_curriculum_agent.py`(`TrainTQCCurriculum`)가 학습하는 강화학습 모델의 전체 구조를
+`train_tqc_curriculum.py`(`TrainTQCCurriculum`)가 학습하는 강화학습 모델의 전체 구조를
 정리한 문서다. 이 trainer는 **TQC + Temporal Fusion Encoder + Action-conditioned Auxiliary
 Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으며 커리큘럼(10-stage)으로
 학습한다.

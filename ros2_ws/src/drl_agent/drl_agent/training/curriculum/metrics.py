@@ -1,6 +1,6 @@
 """Curriculum evaluation metric accumulators (pure, ROS/torch-free).
 
-Extracted from ``train_tqc_curriculum_agent.py``. Holds the per-episode
+Extracted from ``drl_agent.training.train_tqc_curriculum``. Holds the per-episode
 human-proximity tracker used to derive H-Coll and the TRUE (human) Personal-Space
 Compliance from the env's privileged human-distance labels. Pure Python (only
 ``math``), so it is unit-testable in isolation; the trainer imports

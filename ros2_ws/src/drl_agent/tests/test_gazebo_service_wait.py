@@ -8,7 +8,7 @@ contract is: ALWAYS terminate within the budget, succeed as soon as a probe
 succeeds, and report elapsed time. ``GazeboServiceError`` is the failure type the
 callbacks propagate so the trainer's bounded service call sees a clean failure.
 
-Pure module (no ROS/Gazebo/torch); ``conftest.py`` puts scripts/environment on
+Pure module (no ROS/Gazebo/torch); ``conftest.py`` puts the package root on
 sys.path. Run: ``python3 -m pytest -q -p no:anyio tests/test_gazebo_service_wait.py``
 """
 
@@ -16,7 +16,9 @@ import itertools
 
 import pytest
 
-from gazebo_service_wait import GazeboServiceError, bounded_wait_for_service
+from drl_agent.env.simulation.gazebo_service_wait import (
+    GazeboServiceError, bounded_wait_for_service,
+)
 
 
 class FakeClock:

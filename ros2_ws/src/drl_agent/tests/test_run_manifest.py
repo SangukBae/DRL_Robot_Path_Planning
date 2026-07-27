@@ -10,8 +10,8 @@ import json
 import os
 import tempfile
 
-import aux_ablation_logging as al
-import aux_ablation_summary as asum
+import drl_agent.training.aux_ablation_logging as al
+import drl_agent.evaluation.analysis.aux_ablation_summary as asum
 
 
 class _FakeAgent:

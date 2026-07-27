@@ -65,7 +65,7 @@ hyperparameters:
   # The curriculum trainer fail-fasts at startup (raises) if the env-appended
   # label length disagrees with these values, so a mismatch aborts the run
   # instead of training on the wrong target.  Also: aux is ONLY usable from
-  # train_tqc_curriculum_agent.py -- enabling it on any other TQC trainer raises.
+  # train_tqc_curriculum.py -- enabling it on any other TQC trainer raises.
   aux_prediction:
     enabled: true                   # aux encoder/head 전체 사용 여부
     version: 1                      # legacy 표기용 버전 키(현재 head contract 선택 보조)

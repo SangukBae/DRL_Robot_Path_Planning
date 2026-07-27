@@ -11,7 +11,7 @@ import pytest
 # the tests with skipif instead.
 try:
     import torch
-    import tqc_networks as net
+    import drl_agent.rl.networks.tqc as net
     _HAVE_TORCH = True
 except Exception:  # pragma: no cover - exercised only where torch is absent
     _HAVE_TORCH = False

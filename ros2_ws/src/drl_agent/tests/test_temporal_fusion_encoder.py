@@ -15,8 +15,8 @@ try:
     import numpy as np
     import torch
 
-    import aux_prediction as ap
-    import aux_prediction_temporal as apt
+    import drl_agent.rl.networks.aux_prediction as ap
+    import drl_agent.rl.networks.aux_temporal as apt
     _HAVE_TORCH = True
 except Exception:  # pragma: no cover
     _HAVE_TORCH = False
@@ -162,7 +162,7 @@ def _fill(agent, n=40, ep_len=10):
 
 
 def test_agent_builds_fusion_encoder_and_actor_width_unchanged():
-    from tqc_agent import Agent
+    from drl_agent.rl.algorithms.tqc.agent import Agent
     agent = Agent(STATE_DIM, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
     assert isinstance(agent.encoder, apt.TemporalFusionEncoder)
     assert agent.encoder.out_dim == LATENT
@@ -174,7 +174,7 @@ def test_agent_builds_fusion_encoder_and_actor_width_unchanged():
 
 
 def test_agent_stage_gating_controls_temporal_gradient():
-    from tqc_agent import Agent
+    from drl_agent.rl.algorithms.tqc.agent import Agent
     agent = Agent(STATE_DIM, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
     _fill(agent)
 
@@ -201,13 +201,13 @@ def test_agent_stage_gating_controls_temporal_gradient():
 
 
 def test_agent_state_dim_mismatch_fails_fast():
-    from tqc_agent import Agent
+    from drl_agent.rl.algorithms.tqc.agent import Agent
     with pytest.raises(RuntimeError, match="state_dim"):
         Agent(STATE_DIM + 5, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
 
 
 def test_agent_save_load_roundtrip(tmp_path):
-    from tqc_agent import Agent
+    from drl_agent.rl.algorithms.tqc.agent import Agent
     a = Agent(STATE_DIM, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
     _fill(a)
     a.set_curriculum_stage(2)
@@ -224,7 +224,7 @@ def test_agent_temporal_only_ablation_without_aux():
     """Decoupled ablation: temporal_actor_context ON with aux_prediction OFF. The
     fusion encoder still builds (main = identity 87 -> fused width 87, no aux head)
     and the temporal+fusion params train from the CRITIC loss alone."""
-    from tqc_agent import Agent
+    from drl_agent.rl.algorithms.tqc.agent import Agent
     hp = _agent_hp()
     hp["aux_prediction"] = dict(enabled=False)      # aux supervision OFF
     agent = Agent(STATE_DIM, 2, 1.0, hp, env_obs_dim=OBS, env_agent_dim=AGENT)

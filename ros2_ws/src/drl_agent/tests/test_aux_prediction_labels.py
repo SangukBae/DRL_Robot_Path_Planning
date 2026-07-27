@@ -14,7 +14,7 @@ import math
 
 import numpy as np
 
-import aux_prediction_labels as al
+import drl_agent.env.observation.aux_prediction_labels as al
 
 
 def _cfg(**over):
@@ -168,7 +168,7 @@ def test_env_agent_aux_label_geometry_agree():
     from pathlib import Path
     import yaml
     try:
-        import aux_prediction as ap                  # agent side (torch)
+        import drl_agent.rl.networks.aux_prediction as ap  # agent side (torch)
     except Exception:
         pytest.skip("aux_prediction unavailable (torch not installed)")
 

@@ -1,6 +1,6 @@
 # TQC Scaling Improvement Plan
 
-`train_tqc_curriculum_agent.py`의 현재 학습 구조에서 **"GPU 사용률이 낮으니 모델을 키우자"**는 판단을
+`train_tqc_curriculum.py`의 현재 학습 구조에서 **"GPU 사용률이 낮으니 모델을 키우자"**는 판단을
 어떤 순서와 기준으로 적용할지 정리한 문서다. 목표는 단순한 GPU 점유율 상승이 아니라, **동적 장애물
 회피 성능을 해치지 않으면서 sample efficiency와 representation quality를 올리는 것**이다.
 
@@ -318,24 +318,24 @@ CFG=$PWD/src/drl_agent/config/experiments   # 실험 config 루트 (cwd = ros2_w
 ### A0 — baseline (변경 없음)
 
 ```bash
-ros2 run drl_agent train_tqc_curriculum_agent.py
+ros2 run drl_agent train_tqc_curriculum.py
 # (seed 지정: --ros-args -p seed:=0)
 ```
 
 ### A1 — UTD ratio 증가 + batch size 확대
 
 - **구현**: 학습 루프의 non-checkpoint 경로에서 `1 env step -> N train update`가
-  가능하도록 옵션화. `train_tqc_curriculum_agent.py`가 `updates_per_env_step`만큼
+  가능하도록 옵션화. `train_tqc_curriculum.py`가 `updates_per_env_step`만큼
   `rl_agent.train()`을 반복한다. checkpoint 경로(`train_and_checkpoint`)는 손대지 않았다.
 - **config key**:
   - `train_tqc_config.yaml: updates_per_env_step`(기본 1) 또는 CLI `-p updates_per_env_step:=N`(N>0이면 우선).
   - `hyperparameters_tqc.yaml: batch_size`(실험 파일에서 256 → 512).
-- **바뀐 파일**: `scripts/policy/train_tqc_base.py`(설정/파라미터 로드),
-  `scripts/policy/train_tqc_curriculum_agent.py`(train 반복), `config/train_tqc_config.yaml`,
+- **바뀐 파일**: `drl_agent/training/train_tqc_base.py`(설정/파라미터 로드),
+  `drl_agent/training/train_tqc_curriculum.py`(train 반복), `config/train_tqc_config.yaml`,
   `config/experiments/A1/hyperparameters_tqc.yaml`.
 
 ```bash
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p updates_per_env_step:=4 \
   -p train_config_file:=$PWD/src/drl_agent/config/experiments/A1
 ```
@@ -352,7 +352,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   `config/experiments/A2/hyperparameters_tqc.yaml`(A1 + schedule).
 
 ```bash
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p updates_per_env_step:=4 \
   -p train_config_file:=$PWD/src/drl_agent/config/experiments/A2
 ```
@@ -365,8 +365,8 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   쓰고 `critic_hdim`을 384로 올린다.
 - **config key**: `hyperparameters_tqc.yaml`의 `critic_residual`(기본 false),
   `critic_layernorm`(기본 false), `critic_residual_blocks`(기본 2), `critic_hdim`(실험 384).
-- **바뀐 파일**: `scripts/policy/tqc_networks.py`(residual body),
-  `scripts/policy/tqc_agent.py`(config → Critic 전달), `config/hyperparameters_tqc.yaml`(키 추가),
+- **바뀐 파일**: `drl_agent/rl/networks/tqc.py`(residual body),
+  `drl_agent/rl/algorithms/tqc/agent.py`(config → Critic 전달), `config/hyperparameters_tqc.yaml`(키 추가),
   `config/experiments/A3/hyperparameters_tqc.yaml`(A2 + residual 384).
 - **주의**: residual critic은 critic state_dict가 바뀌므로 **fresh run 전용**이다
   (baseline plain-critic checkpoint를 strict load할 수 없음). trainer가 이를
@@ -374,7 +374,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   `resume_weight_prefix`)이면 hybrid resume를 막기 위해 즉시 에러로 중단한다.
 
 ```bash
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p updates_per_env_step:=4 \
   -p train_config_file:=$PWD/src/drl_agent/config/experiments/A3
 ```
@@ -390,7 +390,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   **뒤에 마지막으로** 생성하므로, 같은 seed에서 trunk/head 초기 가중치가 concat(A3)과
   **동일**하다 — A4는 초기조건이 같은 상태에서 fusion만 다른 순수 ablation이다.
 - **config key**: `hyperparameters_tqc.yaml: aux_prediction.fusion_type`(기본 `concat`; `concat`|`film`).
-- **바뀐 파일**: `scripts/policy/aux_prediction.py`(fusion_type + FiLM),
+- **바뀐 파일**: `drl_agent/rl/networks/aux_prediction.py`(fusion_type + FiLM),
   `config/hyperparameters_tqc.yaml`(키 추가),
   `config/experiments/A4/hyperparameters_tqc.yaml`(A3 + film).
 - **주의**: FiLM generator가 추가되어 aux head state_dict가 바뀌므로 **fresh run 전용**이며,
@@ -398,7 +398,7 @@ ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
   `resume_weight_prefix`를 거부한다.
 
 ```bash
-ros2 run drl_agent train_tqc_curriculum_agent.py --ros-args \
+ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p updates_per_env_step:=4 \
   -p train_config_file:=$PWD/src/drl_agent/config/experiments/A4
 ```

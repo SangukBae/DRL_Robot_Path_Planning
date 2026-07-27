@@ -22,7 +22,7 @@ import random
 
 import numpy as np
 
-import seed_utils
+import drl_agent.common.seed_utils as seed_utils
 
 
 def _shared_sampler(regions, radius, rng=None):

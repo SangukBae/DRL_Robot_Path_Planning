@@ -4,8 +4,8 @@
 # reward-done-separation / reset-consistency / stale-handling logic in sim. It is
 # NOT used on the training/deploy hot path unless `enable_sim_validation_logging`
 # is true. To remove the validation feature: delete this file, the
-# sim_validation_runner.py / sim_validation_summary.py scripts, and grep for
-# `SIM_VALIDATION` in environment.py to drop the 3 small guarded hooks there.
+# sim_validation_runner.py / analysis/sim_validation_summary.py modules, and
+# grep for `SIM_VALIDATION` in environment.py to drop the 3 small guarded hooks there.
 """Per-step + per-reset CSV logger for localization-error validation.
 
 Writes two CSVs in the environment's log dir:

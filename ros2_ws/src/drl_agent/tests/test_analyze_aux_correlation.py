@@ -1,4 +1,4 @@
-"""Unit tests for scripts/utils/analyze_aux_correlation.py (Phase 1a).
+"""Unit tests for drl_agent.evaluation.analysis.analyze_aux_correlation (Phase 1a).
 
 Pure-function / file-I/O tests, no ROS -- follows the existing convention
 (direct import of the module, no fixtures beyond pytest's tmp_path).
@@ -9,7 +9,7 @@ import json
 import math
 import warnings
 
-import analyze_aux_correlation as aac
+import drl_agent.evaluation.analysis.analyze_aux_correlation as aac
 
 
 def _write_eval_summary_csv(path, rows):

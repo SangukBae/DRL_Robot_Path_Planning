@@ -1,4 +1,4 @@
-# Curriculum-learning settings for train_tqc_curriculum_agent.py.
+# Curriculum-learning settings for train_tqc_curriculum.py.
 # Only the curriculum_settings block is here; base train_settings are
 # still read from train_tqc_config.yaml by the parent TrainTQC class.
 

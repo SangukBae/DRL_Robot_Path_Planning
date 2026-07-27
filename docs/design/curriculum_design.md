@@ -60,6 +60,6 @@ yield 축(`action[2]`)은 **Stage 0–4 봉인**(`yield_reward.action_enabled=fa
 ## Where in code
 - stage 적용: `environment/environment_curriculum.py::_apply_curriculum_stage`, `_parse_active_by_map`, `_resolve_noise_override`, `_deep_merge`
 - 맵별 활성 개수 결정: `environment/environment.py::_apply_episode_active_counts` (reset 중 map_type 확정 직후) + ROS-free `environment/map_catalog.py::resolve_active_count`, `clamp_active_by_map`
-- 진급 판정: `policy/train_tqc_curriculum_agent.py::_check_stage_advance`, `evaluate_and_print`
+- 진급 판정: `training/train_tqc_curriculum.py::_check_stage_advance`, `evaluate_and_print`
 - stage 정의: `config/environment_curriculum.yaml` (`curriculum.stages`)
 - 진급 파라미터: `config/train_tqc_curriculum_config.yaml` → [config_reference](../reference/config_reference.md)

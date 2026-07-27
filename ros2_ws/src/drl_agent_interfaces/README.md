@@ -89,5 +89,5 @@ bool target
 
 ## 이 README에서 다루지 않음
 
-- 서비스 호출 구현 예제: `drl_agent/scripts/environment/environment_interface.py` 참고
-- 환경 노드 서비스 제공 로직: `drl_agent/scripts/environment/environment.py` 참고
+- 서비스 호출 구현 예제: `drl_agent/drl_agent/env/environment_interface.py` 참고
+- 환경 노드 서비스 제공 로직: `drl_agent/drl_agent/env/simulation/environment.py` 참고

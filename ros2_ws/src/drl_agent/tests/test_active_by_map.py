@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-import map_catalog as mc
+import drl_agent.env.simulation.map_catalog as mc
 
 
 ROOT = Path(__file__).resolve().parents[1]

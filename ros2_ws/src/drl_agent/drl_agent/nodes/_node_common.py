@@ -7,14 +7,18 @@ real_policy_node.py) do three things:
      ``validate_only`` — accepted BOTH as ``-p key:=value`` ROS params and as
      plain ``--key value`` CLI flags) and STRIP them from argv;
   2. resolve + validate the profile (ConfigValidator, hard fail before launch);
-  3. ``os.execv`` the UNCHANGED legacy executable with translated legacy
+  3. ``os.execv`` the resolved CANONICAL trainer/env module (its installed
+     ``.py`` file, located via ``importlib.util.find_spec``) with translated
      parameters (``train_config_file`` / ``config_file`` / ``load_model`` …)
-     appended as an extra ``--ros-args`` section.
+     appended as an extra ``--ros-args`` section — a fresh ``python3 <path>``
+     process, same separate-process launch semantics ``ros2 run drl_agent
+     <exec>`` always had.
 
-So a wrapper never re-implements training/env logic — compatibility with the
-legacy entrypoints is structural, not duplicated.
+So a wrapper never re-implements training/env logic — it only selects which
+canonical module actually runs.
 """
 
+import importlib.util
 import json
 import os
 import sys
@@ -157,25 +161,23 @@ def load_and_validate(profile_name: str, *, resume: bool, seed):
     return spec, entry
 
 
-def find_legacy_executable(name: str) -> str:
-    """Locate a legacy entrypoint script by filename.
+def find_module_file(module_name: str) -> str:
+    """Resolve a canonical ``drl_agent.*`` module's own ``.py`` file.
 
-    Install case: the wrappers are installed FLAT next to the legacy scripts in
-    ``lib/drl_agent`` → same directory. Source case: look under
-    ``scripts/{policy,environment}`` of the source package.
+    Works identically whether ``drl_agent`` resolves from the source tree
+    (dev, no colcon build yet) or from the installed site-packages copy —
+    ``importlib.util.find_spec`` follows whatever is actually on ``sys.path``,
+    which is exactly what ``import drl_agent...`` would use.
     """
-    here = os.path.dirname(os.path.abspath(sys.argv[0] or __file__))
-    cands = [os.path.join(here, name)]
-    root = compat.package_source_root()
-    if root:
-        cands += [os.path.join(root, "scripts", "policy", name),
-                  os.path.join(root, "scripts", "environment", name)]
-    for c in cands:
-        if os.path.isfile(c):
-            return c
-    print(f"[profile] ERROR: legacy executable '{name}' not found "
-          f"(tried {cands})", file=sys.stderr)
-    sys.exit(1)
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except (ImportError, ModuleNotFoundError, ValueError):
+        spec = None
+    if spec is None or not spec.origin or not os.path.isfile(spec.origin):
+        print(f"[profile] ERROR: canonical module '{module_name}' not found",
+              file=sys.stderr)
+        sys.exit(1)
+    return spec.origin
 
 
 def export_profile_manifest_env(spec, *, resume: bool, seed) -> None:
@@ -194,13 +196,13 @@ def export_profile_manifest_env(spec, *, resume: bool, seed) -> None:
     os.environ[PROFILE_MANIFEST_ENV] = json.dumps(payload)
 
 
-def exec_legacy(exec_name: str, extra_ros_params: dict, passthrough) -> None:
-    """Replace this process with the legacy executable.
+def exec_module(module_name: str, extra_ros_params: dict, passthrough) -> None:
+    """Replace this process with ``python3 <resolved module file>``.
 
     ``extra_ros_params`` are appended as one additional ``--ros-args`` section
     (ROS 2 accepts multiple), AFTER the user's passthrough args.
     """
-    path = find_legacy_executable(exec_name)
+    path = find_module_file(module_name)
     argv = [sys.executable, path] + list(passthrough)
     if extra_ros_params:
         argv.append("--ros-args")

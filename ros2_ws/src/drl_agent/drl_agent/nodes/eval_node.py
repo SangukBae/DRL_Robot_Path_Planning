@@ -7,10 +7,11 @@ Usage:
         -p profile:=phase2/both -p seed:=0 \
         -p weight_prefix:=<checkpoint prefix> [-p conditions:="[5,6]"] ...
 
-Resolves + validates the profile, then ``exec``s the unchanged
-``generalization_eval.py`` harness (TQC eval over curriculum stages) with the
-profile's configs. All generalization_eval parameters (``weight_prefix``,
-``weights_dir``, ``world``, ``conditions``, …) pass through untouched.
+Resolves + validates the profile, then ``exec``s the canonical
+``drl_agent.evaluation.generalization_eval`` harness (TQC eval over curriculum
+stages) with the profile's configs. All generalization_eval parameters
+(``weight_prefix``, ``weights_dir``, ``world``, ``conditions``, …) pass
+through untouched.
 """
 
 import os
@@ -42,9 +43,9 @@ def main():
     if opts["seed"] is not None:
         params["seed"] = opts["seed"]
 
-    # generalization_eval.py is the (TQC-based) eval harness for every profile
+    # generalization_eval is the (TQC-based) eval harness for every profile
     # algorithm we currently evaluate this way.
-    nc.exec_legacy("generalization_eval.py", params, passthrough)
+    nc.exec_module("drl_agent.evaluation.generalization_eval", params, passthrough)
 
 
 if __name__ == "__main__":

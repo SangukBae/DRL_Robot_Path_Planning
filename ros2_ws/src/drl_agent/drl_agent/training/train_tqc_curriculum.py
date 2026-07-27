@@ -9,7 +9,7 @@ Extends TrainTQCBase (train_tqc_base.py) with:
   - curriculum_state.json checkpoint for resume / inspection
 
 Usage:
-  ros2 run drl_agent train_tqc_curriculum_agent.py
+  ros2 run drl_agent train_tqc_curriculum.py
 
 The environment must be running environment_curriculum.py (not environment.py)
 so that the curriculum_stage / curriculum_num_stages parameters exist on /gym_node.
