@@ -7,6 +7,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 find_package(rclpy REQUIRED)
 # Gazebo Classic 전용 패키지였던 drl_agent_gazebo는 Fortress 환경에서는 사용하지 않으므로 제거
 # find_package(drl_agent_gazebo REQUIRED)
@@ -37,6 +38,13 @@ install(
   DESTINATION
     share/${PROJECT_NAME}/
 )
+
+# Importable Python package (drl_agent/drl_agent/): profile loader/validator,
+# trainer registry, run/checkpoint managers, and the migrated pure modules
+# (run_layout, config_paths -> drl_agent.config.paths, geometry/seed utils).
+# Installed into site-packages so both the flat legacy scripts (via their
+# bare-name shims) and new code can `import drl_agent.*`.
+ament_python_install_package(${PROJECT_NAME})
 
 install(
   PROGRAMS
@@ -123,6 +131,12 @@ install(
     scripts/utils/risk_map_dump.py               # PHASE1B: per-step risk-map dump writer (JSONL)
     scripts/utils/aux_eval_metrics.py           # AUX_PRED formal eval metrics
     scripts/policy/action_risk_head.py          # PHASE2: Critic-connected Action-Risk Head
+    # PROFILE: new profile-based entrypoint wrappers (delegate to the legacy
+    # executables above after ConfigValidator pre-flight — see drl_agent/nodes/).
+    drl_agent/nodes/train_node.py
+    drl_agent/nodes/environment_curriculum_node.py
+    drl_agent/nodes/eval_node.py
+    drl_agent/nodes/real_policy_node.py
   DESTINATION
     lib/${PROJECT_NAME}
 )

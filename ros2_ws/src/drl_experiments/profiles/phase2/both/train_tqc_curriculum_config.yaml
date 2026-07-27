@@ -1,0 +1,70 @@
+# Curriculum-learning settings for train_tqc_curriculum_agent.py.
+# Only the curriculum_settings block is here; base train_settings are
+# still read from train_tqc_config.yaml by the parent TrainTQC class.
+
+curriculum_settings:
+  enabled: true                  # trainer가 stage promotion 로직을 사용할지 여부
+
+  min_stage_steps: 30000         # 이 step 수를 넘기기 전에는 stage 승급 금지
+  min_stage_episodes: 20         # 이 episode 수를 넘기기 전에는 stage 승급 금지
+
+  # Per-stage success / collision thresholds (list index = stage index).
+  # Early stages require high success because the task is simple; later stages
+  # allow lower success as the environment becomes genuinely harder.
+  # List length should equal (num_stages - 1): one entry per promotable stage.
+  # Curriculum is now 10 stages (0..9) → 9 promotable transitions (0→1 … 8→9).
+  # curriculum_stage_logic clamps an out-of-range stage index to the LAST entry,
+  # so a shorter list still runs without crashing.
+  # NOTE: eval runs 10 episodes, so collision_rate is quantized to 0.1 steps —
+  # 0.10 = "1 collision allowed", 0.20 = "2 collisions". Anything in 0.10–0.19 is
+  # the same bucket (1), 0.20–0.29 the same (2); gates are set on these breakpoints.
+  # Consequences of that quantization for the gates below:
+  #   • stage 3 collision 0.11→0.12 is notation-only (both = 1-collision bucket);
+  #     the REAL stage-3 relaxation is success 0.82→0.80 (9/10→8/10) + SPL 0.52→0.50.
+  #   • stages 3,4,5 (0.12,0.12,0.15) are ALL the 1-collision bucket; only stages
+  #     6–8 (0.20) actually allow 2 collisions.
+  #   stage idx:               0     1     2     3     4     5     6     7     8
+  pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.80, 0.80, 0.76, 0.74, 0.72, 0.70] # stage별 최소 성공률 gate
+  pass_eval_collision_rate: [0.10, 0.10, 0.10, 0.12, 0.12, 0.15, 0.20, 0.20, 0.20] # stage별 최대 전체 충돌률 gate
+
+  # Quality gate (conservative): minimum SPL (Success weighted by Path Length)
+  # required to PROMOTE, per stage. This stops "arrived but wandered" policies
+  # from passing on success_rate alone. Values are deliberately mild (well below
+  # a clean-run SPL) so they only catch clearly inefficient driving.
+  # Empty list / 0.0 / omit → SPL gate disabled (legacy success-only behaviour).
+  #   stage idx:     0     1     2     3     4     5     6     7     8
+  pass_eval_spl:  [0.55, 0.55, 0.54, 0.50, 0.50, 0.48, 0.47, 0.45, 0.44] # stage별 최소 SPL gate
+
+  # Optional extra gate (default OFF): minimum LiDAR clearance rate before
+  # promotion. Leave empty to disable; raise to require safer-distance driving.
+  # Kept off by default to introduce one quality metric (SPL) at a time.
+  pass_eval_lidar_clearance_rate: [] # 비우면 LiDAR clearance gate 비활성
+
+  # Rollback to the older promotion behaviour: keep advancement driven by the
+  # global success / collision / SPL gates only. The newer human-safety hard
+  # gates and per-map fail-fast gates stay available in code, but are disabled
+  # here so the run promotes like the pre-tightening curriculum.
+  pass_eval_psc: []                     # 비우면 PSC hard gate 비활성
+  pass_eval_h_coll_rate: []             # 비우면 H-Coll hard gate 비활성
+  pass_eval_per_map_success_rate: []    # 비우면 per-map success fail-fast 비활성
+  pass_eval_per_map_collision_rate: []  # 비우면 per-map collision fail-fast 비활성
+
+  # How many consecutive evaluations must pass the threshold before promotion.
+  # Set to 1 for faster iteration, 2-3 for more conservative advancement.
+  consecutive_eval_passes: 2      # 연속 몇 번 eval gate를 통과해야 실제 승급할지
+
+  # Replay-buffer reset on promotion INTO these stages. Only needed where the
+  # normalized action / control contract CHANGES between stages (off-contract
+  # transitions would otherwise poison the critic). The curriculum now uses ONE
+  # stop-capable contract from Stage 0 through the final stage — no stage changes
+  # action semantics — so NO stage needs a reset. Stage 3 is now just the
+  # first-human stage, not a contract boundary.
+  # Empty list → never reset (the current, correct behaviour). Keep the mechanism
+  # available in case a future curriculum reintroduces a contract-changing stage.
+  # Stage 5 (add_clutter_clean) UNSEALS the yield channel (action[2] goes from
+  # no-op to honoured), so the control contract changes there — reset the buffer
+  # so off-contract (yield-inactive) transitions don't poison the critic.
+  reset_buffer_on_promote_to: [5]  # yield 해제 stage에서 buffer reset
+  # Random-action re-warmup steps AFTER a buffer reset (no gradient updates), so
+  # the buffer refills with on-contract (yield-capable) data before training.
+  rewarmup_steps: 5000            # reset 후 on-contract 재warmup

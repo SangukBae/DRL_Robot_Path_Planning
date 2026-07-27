@@ -1,0 +1,12 @@
+# PHASE2 multi-seed sweep definition.
+# Consumed by scripts/run_profile.py --sweep (prints/launches one trainer
+# command per (profile, seed) combination; the env node is launched separately
+# per the two-terminal workflow).
+sweep:
+  name: phase2_seeds
+  profiles:
+    - phase2/baseline
+    - phase2/reward_shaping_only
+    - phase2/action_risk_head_only
+    - phase2/both
+  seeds: [0, 1, 2]

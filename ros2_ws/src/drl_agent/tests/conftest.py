@@ -18,8 +18,15 @@ imported by these tests; they are exercised only on a built ROS2 workspace.
 import os
 import sys
 
-_SCRIPTS = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "scripts"))
+_PKG_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+_SCRIPTS = os.path.join(_PKG_ROOT, "scripts")
 for _sub in ("utils", "environment", "policy"):
     _d = os.path.join(_SCRIPTS, _sub)
     if _d not in sys.path:
         sys.path.insert(0, _d)
+
+# The importable ``drl_agent`` Python package (drl_agent/drl_agent/) — hosts
+# the migrated pure modules (run_layout, config_paths→config.paths, …) plus the
+# profile loader/validator. The bare-name shims in scripts/ resolve through it.
+if _PKG_ROOT not in sys.path:
+    sys.path.insert(0, _PKG_ROOT)

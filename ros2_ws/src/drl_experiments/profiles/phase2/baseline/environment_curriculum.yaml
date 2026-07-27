@@ -1,0 +1,716 @@
+environment:
+  lower: -9.0
+  upper: 9.0
+  goal_obstacle_lower: -11.5
+  goal_obstacle_upper: 11.5
+  num_of_static_obstacles: 10
+  num_of_humans: 7
+  environment_state_dim: 80
+  agent_state_dim: 7
+  aux_prediction:
+    enabled: true
+    num_sectors: 16
+    horizons_sec:
+    - 0.5
+    - 1.0
+    - 1.5
+    risk_distance_scale: 3.0
+    min_speed_for_motion: 0.05
+    ttc_head_enabled: true
+    ttc_horizon_sec: 3.0
+    ttc_collision_radius: 0.5
+    hazard_sector_head_enabled: true
+    hazard_sector_bins: 3
+    hazard_distance: 3.0
+  observation_time_context:
+    enabled: true
+    obs_frame_stack: 4
+    stack_agent_state: false
+  action_dim: 3
+  agent_name: hunter_se
+  max_action: 1.0
+  actions_low:
+  - 0.0
+  - -0.524
+  - -1.0
+  actions_high:
+  - 2.0
+  - 0.524
+  - 1.0
+  vehicle_wheelbase_m: 0.547696
+  vehicle_steering_limit_deg: 21.58
+  vehicle_min_speed_for_steering_mps: 0.15
+  controller_cruise_speed_mps: 2.0
+  controller_min_speed_mps: 0.0
+  controller_speed_steer_factor: 0.6
+  controller_low_speed_distance_m: 0.0
+  controller_lookahead_min_m: 0.8
+  controller_v_move_min_mps: 0.35
+  controller_yield_creep_mps: 0.0
+  spawn_z: 0.02
+  obs_z_min_sensor_m: -0.455
+  obs_z_max_sensor_m: 0.25
+  obstacle_catalog: drl_obstacle_assets
+  human_update_rate: 20.0
+  human_stop_prob_per_sec: 0.02
+  human_pause_duration: 1.0
+  human_heading_jitter_deg: 12.0
+  human_retarget_prob_per_sec: 0.01
+  human_heading_jitter_on_retarget_only: true
+  human_min_retarget_interval: 3.0
+  human_desired_yaw_rate_limit: 0.7
+  human_scan_dropout_prob: 0.04
+  human_scan_noise_std: 0.06
+  human_max_accel: 0.6
+  human_max_yaw_rate: 0.8
+  human_max_yaw_accel: 1.5
+  human_k_yaw: 2.0
+  human_waypoint_dist_min: 1.5
+  human_waypoint_dist_max: 3.5
+  human_max_segment_sec: 4.0
+  human_goal_driven_enabled: true
+  human_goal_reach_threshold: 0.6
+  human_goal_pause_duration: 0.0
+  human_local_step_m: 2.0
+  human_goal_span_multiplier: 2.0
+  human_goal_min_span_m: 4.0
+  human_static_obstacle_clearance: 0.35
+  human_social_avoid_enabled: true
+  human_social_avoid_radius: 1.5
+  human_social_avoid_strength: 0.6
+  human_social_avoid_max_heading_offset_deg: 25.0
+  human_robot_avoid_enabled: false
+  human_robot_avoid_radius: 2.0
+  human_robot_avoid_strength: 0.6
+  human_robot_avoid_max_heading_offset_deg: 25.0
+  hard_pedestrian_eval:
+    human_mode_weights:
+      crossing: 0.5
+      along_path: 0.5
+      waiting: 1.0
+      slow_turn: 1.5
+    human_mode_params:
+      slow_turn:
+        stop_prob: 0.03
+        dir_spread_deg: 70.0
+      waiting:
+        stop_prob: 0.15
+        dir_spread_deg: 75.0
+  human_risk_penalty:
+    enabled: true
+    w_personal_space: 0.4
+    personal_space_radius_m: 1.0
+    w_approach_rate: 0.25
+    approach_radius_m: 2.0
+    approach_v_ref_mps: 1.0
+    w_ttc: 0.3
+    ttc_safe_s: 2.0
+  yield_reward:
+    enabled: true
+    action_enabled: true
+    action_threshold: 0.3
+    risk_gate_ttc_s: 2.0
+    risk_gate_approach: 0.15
+    w_yield_bonus: 0.0
+    max_yield_bonus: 0.0
+    w_idle_penalty: 0.07
+    idle_speed_threshold_mps: 0.1
+    step_penalty_relief_scale: 0.6
+    w_bad_yield: 0.15
+    yield_streak_grace: 8
+    yield_streak_grow_w: 0.01
+  stall:
+    enabled: true
+    w_penalty: 0.02
+    progress_eps: 0.0
+    speed_threshold_mps: 0.15
+    static_risk_thr: 0.2
+  anti_freeze:
+    enabled: true
+    speed_threshold_mps: 0.12
+    min_freeze_steps: 12
+    w_penalty: 0.02
+  directional_risk:
+    num_sectors: 16
+    horizon_sec: 1.0
+    risk_distance_scale: 3.0
+    min_speed_for_motion: 0.05
+  risk_map_reward:
+    enabled: false
+    penalty_weight: 0.3
+    bonus_weight: 0.15
+    bonus_max: 0.1
+    progress_positive_gate_eps: 0.0
+  action_risk_head:
+    enabled: false
+  human_mode_weights:
+    crossing: 1.0
+    along_path: 1.0
+    waiting: 0.5
+    slow_turn: 1.0
+  start_edge_heading_margin_m: 1.0
+  start_front_clearance_m: 1.2
+  start_front_fov_deg: 35.0
+  open_map_safe_start_yaw_enabled: true
+  open_map_safe_yaw_wall_margin_m: 0.0
+  open_map_safe_yaw_edge_margin_deg: 10.0
+  open_map_safe_yaw_fallback_halfwidth_deg: 25.0
+  obstacle_wall_margin: 1.0
+  obstacle_robot_margin: 2.82
+  obstacle_goal_margin: 1.5
+  obstacle_mutual_margin: 1.2
+  use_obstacle_pool: true
+  obstacle_pool_static_size: 24
+  obstacle_pool_human_size: 8
+  parking_slot_xs:
+  - -18.0
+  - -16.0
+  - -14.0
+  - 14.0
+  - 16.0
+  - 18.0
+  parking_slot_ys:
+  - -18.0
+  - -16.0
+  - -14.0
+  - 14.0
+  - 16.0
+  - 18.0
+  parking_z: 0.0
+  map_layout_enabled: true
+  map_inner_lower: -12.5
+  map_inner_upper: 12.5
+  map_wall_thickness: 0.3
+  map_wall_height: 1.2
+  map_corridor_width: 5.2
+  map_intersection_width: 5.2
+  map_lobby_open_half_extent: 6.0
+  map_large_footprint_margin: 2.0
+  map_wall_clearance: 0.55
+  map_static_coverage_per_group: 7
+  map_start_band_depth: 2.5
+  map_start_side_margin: 0.4
+  map_spawn_yaw_center_bias_deg: 12.0
+  map_spawn_yaw_jitter_deg: 8.0
+  map_corridor_passage_width: 1.6
+  map_intersection_passage_width: 1.6
+  map_passage_safety_margin: 0.25
+threshold_parameters:
+  goal_threshold: 0.42
+  collision_threshold: 0.7
+  time_delta: 0.1
+  inter_entity_distance: 2.5
+  lidar_max_range: 50
+localization:
+  enabled: false
+  mode: 'off'
+  sigma_xy_m: 0.0
+  sigma_yaw_rad: 0.0
+  corr_time_xy_s: 0.0
+  corr_time_yaw_s: 0.0
+  bias_xy_m: 0.0
+  bias_yaw_rad: 0.0
+  random_walk_xy_mps: 0.0
+  random_walk_yaw_rps: 0.0
+  delay_steps: 0
+  jump_prob: 0.0
+  jump_xy_m: 0.0
+  jump_yaw_rad: 0.0
+  big_jump_prob: 0.0
+  big_jump_xy_m: 0.0
+  big_jump_yaw_rad: 0.0
+  yaw_flip_prob: 0.0
+  yaw_flip_map_types:
+  - corridor
+  map_type_multipliers:
+    corridor:
+      sigma_xy: 1.6
+      sigma_yaw: 2.0
+      drift: 2.0
+      jump: 1.5
+      along_axis: x
+      along_extra: 1.8
+    intersection:
+      sigma_xy: 1.3
+      sigma_yaw: 1.5
+      drift: 1.5
+      jump: 1.2
+    clutter:
+      sigma_xy: 1.1
+      sigma_yaw: 1.1
+      drift: 1.1
+      jump: 1.0
+    lobby:
+      sigma_xy: 1.0
+      sigma_yaw: 1.0
+      drift: 1.0
+      jump: 1.0
+  use_gt_for_reward: true
+  use_gt_for_done: true
+localization_profiles:
+  clean:
+    enabled: false
+  weak_goal_noise:
+    enabled: true
+    mode: gaussian
+    sigma_xy_m: 0.05
+    sigma_yaw_rad: 0.02
+    corr_time_xy_s: 0.8
+    corr_time_yaw_s: 0.8
+    delay_steps: 1
+  drift_goal_noise:
+    enabled: true
+    mode: drift
+    sigma_xy_m: 0.08
+    sigma_yaw_rad: 0.03
+    corr_time_xy_s: 1.0
+    corr_time_yaw_s: 1.0
+    drift_xy_mps: 0.02
+    drift_yaw_radps: 0.01
+    bias_xy_m: 0.03
+    bias_yaw_rad: 0.01
+    delay_steps: 2
+  robustness_train:
+    enabled: true
+    mode: full
+    sigma_xy_m: 0.1
+    sigma_yaw_rad: 0.04
+    corr_time_xy_s: 1.2
+    corr_time_yaw_s: 1.2
+    bias_xy_m: 0.05
+    bias_yaw_rad: 0.02
+    drift_xy_mps: 0.03
+    drift_yaw_radps: 0.015
+    delay_steps: 3
+    jump_prob: 0.002
+    jump_xy_m: 0.3
+    jump_yaw_rad: 0.1
+    big_jump_prob: 0.0005
+    big_jump_xy_m: 0.8
+    big_jump_yaw_rad: 0.4
+  stress_eval:
+    enabled: true
+    mode: full
+    sigma_xy_m: 0.12
+    sigma_yaw_rad: 0.05
+    corr_time_xy_s: 1.2
+    corr_time_yaw_s: 1.2
+    bias_xy_m: 0.08
+    bias_yaw_rad: 0.03
+    drift_xy_mps: 0.05
+    drift_yaw_radps: 0.02
+    delay_steps: 5
+    jump_prob: 0.01
+    jump_xy_m: 0.5
+    jump_yaw_rad: 0.2
+    big_jump_prob: 0.003
+    big_jump_xy_m: 1.0
+    big_jump_yaw_rad: 0.6
+    noise_flip_enabled: true
+    yaw_flip_prob: 0.002
+proprio_noise:
+  enabled: false
+  speed_sigma_mps: 0.0
+  speed_bias_mps: 0.0
+  speed_scale_sigma: 0.0
+  yaw_rate_sigma_radps: 0.0
+  yaw_rate_bias_radps: 0.0
+  steer_sigma_rad: 0.0
+  delay_steps: 0
+proprio_noise_profiles:
+  clean:
+    enabled: false
+  light:
+    enabled: true
+    speed_sigma_mps: 0.02
+    yaw_rate_sigma_radps: 0.02
+    speed_scale_sigma: 0.01
+  medium:
+    enabled: true
+    speed_sigma_mps: 0.04
+    speed_bias_mps: 0.02
+    yaw_rate_sigma_radps: 0.04
+    yaw_rate_bias_radps: 0.01
+    speed_scale_sigma: 0.02
+    steer_sigma_rad: 0.01
+    delay_steps: 1
+localization_logging:
+  log_gt_goal_metrics: true
+  log_noisy_goal_metrics: true
+  log_localization_error: false
+  log_jump_events: false
+evaluation:
+  eval_use_same_localization_noise: true
+  eval_noise_profile: ''
+use_zone_collision: false
+zone_angles_deg:
+- -30
+- 30
+- -50
+- -30
+- 30
+- 50
+- -130
+- -50
+- 50
+- 130
+- -150
+- -130
+- 130
+- 150
+- 150
+- -150
+zone_thresholds:
+- 0.68
+- 0.75
+- 0.75
+- 0.62
+- 0.62
+- 0.75
+- 0.75
+- 0.68
+safety_region:
+  d_front: 0.475638
+  d_rear: 0.41
+  d_left: 0.322
+  d_right: 0.322
+  margin_front: 0.1
+  margin_rear: 0.03
+  margin_left: 0.03
+  margin_right: 0.03
+  reward_warning_scale_front: 1.2
+  reward_warning_scale_rear: 1.2
+  reward_warning_scale_left: 1.2
+  reward_warning_scale_right: 1.2
+  scan_resolution: 0.05
+curriculum:
+  enabled: true
+  initial_stage: 0
+  stages:
+  - name: empty
+    yield_reward:
+      action_enabled: false
+    active_static: 0
+    active_humans: 0
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - lobby
+    allowed_static_groups:
+    - small
+    - medium
+    eval_map_types:
+    - lobby
+    localization_profile: clean
+  - name: corridor_static
+    yield_reward:
+      action_enabled: false
+    active_static: 3
+    active_humans: 0
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - corridor
+    allowed_static_groups:
+    - small
+    - medium
+    eval_map_types:
+    - corridor
+    localization_profile: clean
+  - name: add_intersection
+    yield_reward:
+      action_enabled: false
+    active_static: 6
+    active_humans: 0
+    active_static_by_map:
+      corridor: 3
+      intersection: 6
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - corridor
+    - intersection
+    map_type_probs:
+    - 0.5
+    - 0.5
+    allowed_static_groups:
+    - small
+    - medium
+    eval_map_types:
+    - corridor
+    - intersection
+    localization_profile: clean
+  - name: first_human_clean
+    yield_reward:
+      action_enabled: false
+    active_static: 3
+    active_humans: 1
+    active_static_by_map:
+      corridor: 2
+      intersection: 3
+    active_humans_by_map:
+      corridor: 1
+      intersection: 1
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - corridor
+    - intersection
+    map_type_probs:
+    - 0.5
+    - 0.5
+    allowed_static_groups:
+    - small
+    - medium
+    eval_map_types:
+    - corridor
+    - intersection
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 0.0
+      slow_turn: 0.0
+    human_social_avoid_strength: 0.3
+    human_goal_span_multiplier: 1.5
+    localization_profile: clean
+  - name: first_human_noisy
+    yield_reward:
+      action_enabled: false
+    active_static: 3
+    active_humans: 1
+    active_static_by_map:
+      corridor: 2
+      intersection: 3
+    active_humans_by_map:
+      corridor: 1
+      intersection: 1
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - corridor
+    - intersection
+    map_type_probs:
+    - 0.5
+    - 0.5
+    allowed_static_groups:
+    - small
+    - medium
+    eval_map_types:
+    - corridor
+    - intersection
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 0.0
+      slow_turn: 0.0
+    human_social_avoid_strength: 0.3
+    human_goal_span_multiplier: 1.5
+    localization_profile: weak_goal_noise
+  - name: add_clutter_clean
+    yield_reward:
+      action_enabled: true
+    active_static: 4
+    active_humans: 2
+    active_static_by_map:
+      corridor: 2
+      intersection: 3
+      clutter: 4
+    active_humans_by_map:
+      corridor: 2
+      intersection: 2
+      clutter: 2
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - corridor
+    - intersection
+    - clutter
+    map_type_probs:
+    - 0.34
+    - 0.33
+    - 0.33
+    allowed_static_groups:
+    - small
+    - medium
+    - large
+    eval_map_types:
+    - corridor
+    - intersection
+    - clutter
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 0.0
+      slow_turn: 0.0
+    human_social_avoid_strength: 0.3
+    human_goal_span_multiplier: 1.5
+    localization_profile: weak_goal_noise
+  - name: add_clutter_noisy
+    active_static: 4
+    active_humans: 2
+    active_static_by_map:
+      corridor: 2
+      intersection: 3
+      clutter: 4
+    active_humans_by_map:
+      corridor: 2
+      intersection: 2
+      clutter: 2
+    human_scan_noise_std: 0.0
+    human_scan_dropout_prob: 0.0
+    allowed_map_types:
+    - corridor
+    - intersection
+    - clutter
+    map_type_probs:
+    - 0.34
+    - 0.33
+    - 0.33
+    allowed_static_groups:
+    - small
+    - medium
+    - large
+    eval_map_types:
+    - corridor
+    - intersection
+    - clutter
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 0.0
+      slow_turn: 0.0
+    human_social_avoid_strength: 0.3
+    human_goal_span_multiplier: 1.5
+    localization_profile: weak_goal_noise
+    proprio_noise_profile: light
+  - name: add_lobby
+    active_static: 4
+    active_humans: 4
+    active_static_by_map:
+      corridor: 2
+      intersection: 3
+      clutter: 4
+      lobby: 4
+    active_humans_by_map:
+      corridor: 2
+      intersection: 3
+      clutter: 3
+      lobby: 4
+    human_scan_noise_std: 0.03
+    human_scan_dropout_prob: 0.015
+    allowed_map_types:
+    - lobby
+    - corridor
+    - intersection
+    - clutter
+    map_type_probs:
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.25
+    allowed_static_groups:
+    - small
+    - medium
+    - large
+    eval_map_types:
+    - lobby
+    - corridor
+    - intersection
+    - clutter
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 0.0
+      slow_turn: 0.0
+    human_social_avoid_strength: 0.3
+    human_goal_span_multiplier: 1.5
+    localization_profile: weak_goal_noise
+    proprio_noise_profile: light
+  - name: scale_crowd
+    active_static: 4
+    active_humans: 6
+    active_static_by_map:
+      corridor: 2
+      intersection: 3
+      clutter: 4
+      lobby: 4
+    active_humans_by_map:
+      corridor: 3
+      intersection: 4
+      clutter: 4
+      lobby: 6
+    human_scan_noise_std: 0.045
+    human_scan_dropout_prob: 0.025
+    allowed_map_types:
+    - lobby
+    - corridor
+    - intersection
+    - clutter
+    map_type_probs:
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.25
+    allowed_static_groups:
+    - small
+    - medium
+    - large
+    eval_map_types:
+    - lobby
+    - corridor
+    - intersection
+    - clutter
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 0.5
+      slow_turn: 0.75
+    human_social_avoid_strength: 0.6
+    human_goal_span_multiplier: 2.0
+    localization_profile: drift_goal_noise
+    proprio_noise_profile: light
+  - name: full_complexity
+    active_static: 5
+    active_humans: 6
+    active_static_by_map:
+      corridor: 3
+      intersection: 4
+      clutter: 5
+      lobby: 5
+    active_humans_by_map:
+      corridor: 3
+      intersection: 4
+      clutter: 5
+      lobby: 6
+    human_scan_noise_std: 0.06
+    human_scan_dropout_prob: 0.04
+    allowed_map_types:
+    - lobby
+    - corridor
+    - intersection
+    - clutter
+    map_type_probs:
+    - 0.3
+    - 0.3
+    - 0.2
+    - 0.2
+    allowed_static_groups:
+    - small
+    - medium
+    - large
+    eval_map_types:
+    - lobby
+    - corridor
+    - intersection
+    - clutter
+    human_mode_weights:
+      crossing: 1.0
+      along_path: 1.0
+      waiting: 1.0
+      slow_turn: 1.0
+    human_social_avoid_strength: 0.8
+    human_social_avoid_radius: 1.8
+    human_social_avoid_max_heading_offset_deg: 35.0
+    human_goal_span_multiplier: 2.5
+    localization_profile: robustness_train
+    proprio_noise_profile: medium

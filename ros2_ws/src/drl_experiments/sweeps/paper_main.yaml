@@ -1,0 +1,7 @@
+# Main paper-result sweep (placeholder — extend as paper experiments firm up).
+sweep:
+  name: paper_main
+  profiles:
+    - phase2/baseline
+    - phase2/both
+  seeds: [0, 1, 2, 3, 4]

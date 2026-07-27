@@ -1,0 +1,13 @@
+train_settings:
+  seed: 0
+  deterministic_torch: true
+  deterministic_warn_only: true
+  max_episode_steps: 600
+  max_timesteps: 2000000
+  load_model: false
+  use_checkpoints: false
+  eval_freq: 12000
+  eval_eps: 20
+  timesteps_before_training: 12000
+  updates_per_env_step: 1
+  base_file_name: tqc_phase2_action_risk_head_only

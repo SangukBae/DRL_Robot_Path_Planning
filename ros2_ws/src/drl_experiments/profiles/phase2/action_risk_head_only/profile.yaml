@@ -1,0 +1,16 @@
+# PHASE2 experiment profile: action_risk_head_only
+# Loaded by drl_agent.config.loader (ProfileLoader). File paths are relative
+# to this directory. Flags below must MATCH the yaml contents — validated by
+# drl_agent.config.validation before training starts.
+profile:
+  name: phase2/action_risk_head_only
+  algorithm: tqc
+  trainer: curriculum
+  environment: environment_curriculum.yaml
+  train: train_tqc_config.yaml
+  hparams: hyperparameters_tqc.yaml
+  curriculum: train_tqc_curriculum_config.yaml
+  output_prefix: tqc_phase2_action_risk_head_only
+  overrides:
+    risk_map_reward_enabled: false      # env-side reward shaping (candidate1)
+    action_risk_head_enabled: true     # env+agent action-risk head (candidate2)
