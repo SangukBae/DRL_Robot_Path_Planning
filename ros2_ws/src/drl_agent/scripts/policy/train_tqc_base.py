@@ -95,6 +95,17 @@ class TrainTQCBase(EnvInterface):
         self.seed                       = self._resolve_seed_override(self.seed)
         self.max_episode_steps          = train_settings["max_episode_steps"]
         self.load_model                 = train_settings["load_model"]
+        # PROFILE: optional CLI override for resume without editing the train
+        # yaml (train_node.py translates -p resume:=true into this). Same
+        # empty-string-means-unset convention as action_risk_head_enabled.
+        self.declare_parameter("load_model", "")
+        _lm_override_raw = (
+            self.get_parameter("load_model").get_parameter_value().string_value
+        )
+        if _lm_override_raw.strip():
+            self.load_model = config_paths.parse_bool_override(
+                _lm_override_raw, bool(self.load_model)
+            )
         self.max_timesteps              = train_settings["max_timesteps"]
         self.use_checkpoints            = train_settings["use_checkpoints"]
         self.eval_freq                  = train_settings["eval_freq"]
@@ -129,6 +140,7 @@ class TrainTQCBase(EnvInterface):
         # Setup output directories
         # ----------------------------
         self._setup_directories()
+        self._write_profile_manifest_if_requested()
         self._init_csv_loggers()
 
         # ----------------------------
@@ -188,6 +200,23 @@ class TrainTQCBase(EnvInterface):
         # AUX_ABLATION: remember resolved hyperparameter path for the manifest.
         self._hparams_path = hparams_path
         hyperparameters = load_yaml(hparams_path)["hyperparameters"]
+
+        # PHASE2: optional CLI override for the agent-side action_risk_head.enabled,
+        # mirroring the env-side risk_map_reward_enabled / action_risk_head_enabled
+        # overrides in environment.py -- lets the 4-way PHASE2 experiment matrix
+        # (neither / candidate1 / candidate2 / both) run via -p flags without
+        # editing hyperparameters_tqc.yaml. "" (default) -> config value wins.
+        self.declare_parameter("action_risk_head_enabled", "")
+        _arh_override_raw = (
+            self.get_parameter("action_risk_head_enabled")
+            .get_parameter_value().string_value
+        )
+        if _arh_override_raw.strip():
+            _arh_block = dict(hyperparameters.get("action_risk_head", {}) or {})
+            _arh_block["enabled"] = config_paths.parse_bool_override(
+                _arh_override_raw, bool(_arh_block.get("enabled", False))
+            )
+            hyperparameters["action_risk_head"] = _arh_block
 
         # ----------------------------
         # Create TQC agent
@@ -423,6 +452,33 @@ class TrainTQCBase(EnvInterface):
         self.log_dir             = os.path.join(self.run_dir, "logs")
 
         self.create_directories()
+
+    def _write_profile_manifest_if_requested(self):
+        """PROFILE: persist the launching profile's identity into the run dir.
+
+        train_node.py serializes the profile manifest (name, config paths +
+        sha256 hashes, overrides) into the DRL_AGENT_PROFILE_MANIFEST env var
+        before exec'ing this trainer; here it lands as
+        ``<configs|logs>/profile_manifest.json`` next to the run's other
+        bookkeeping. Absent env var (every legacy invocation) -> no-op, and a
+        failure never aborts the run (bookkeeping convention).
+        """
+        raw = os.environ.get("DRL_AGENT_PROFILE_MANIFEST", "").strip()
+        if not raw:
+            return
+        try:
+            import json
+            manifest = json.loads(raw)
+            manifest["run_dir"] = self.run_dir
+            manifest["file_name"] = self.file_name
+            target_dir = getattr(self, "configs_dir", None) or self.log_dir
+            os.makedirs(target_dir, exist_ok=True)
+            path = os.path.join(target_dir, "profile_manifest.json")
+            with open(path, "w") as f:
+                json.dump(manifest, f, indent=2)
+            self.get_logger().info(f"[Profile] manifest written: {path}")
+        except Exception as e:
+            self.get_logger().warn(f"[Profile] manifest write failed (ignored): {e}")
 
     def _resolve_drl_agent_source_root(self) -> str:
         """Resolve the source-package root even when run from install/."""

@@ -36,6 +36,7 @@ import pure_pursuit
 # Pure helpers extracted from this file (no ROS deps) — see utils/.
 import geometry_utils as geom
 import seed_utils
+import config_paths
 import reward_calculator
 from collision_checker import RectSafetyChecker
 from localization_noise import LocalizationNoiseModel, ProprioNoiseModel
@@ -596,7 +597,13 @@ class Environment(
         # .compute_reward's risk_map_reward_enabled docstring for the anti-
         # reward-hacking progress-positive gate).
         _rmr = dict(self.environment_config.get("risk_map_reward", {}) or {})
-        self.risk_map_reward_enabled       = bool(_rmr.get("enabled", False))
+        # CLI override (PHASE2 experiment matrix): "" (default) -> config value;
+        # -p risk_map_reward_enabled:=true/false forces it without editing YAML.
+        self.declare_parameter("risk_map_reward_enabled", "")
+        self.risk_map_reward_enabled = config_paths.parse_bool_override(
+            self.get_parameter("risk_map_reward_enabled").get_parameter_value().string_value,
+            bool(_rmr.get("enabled", False)),
+        )
         self.risk_map_reward_penalty_w     = float(_rmr.get("penalty_weight", 0.3))
         self.risk_map_reward_bonus_w       = float(_rmr.get("bonus_weight", 0.15))
         self.risk_map_reward_bonus_max     = float(_rmr.get("bonus_max", 0.1))
@@ -609,7 +616,12 @@ class Environment(
         # supervision-target wire block ahead of the (optional) aux label tail —
         # see _prepend_action_risk_target(). Default OFF -> no wire change.
         _arh = dict(self.environment_config.get("action_risk_head", {}) or {})
-        self.action_risk_head_env_enabled = bool(_arh.get("enabled", False))
+        # CLI override, same convention as risk_map_reward_enabled above.
+        self.declare_parameter("action_risk_head_enabled", "")
+        self.action_risk_head_env_enabled = config_paths.parse_bool_override(
+            self.get_parameter("action_risk_head_enabled").get_parameter_value().string_value,
+            bool(_arh.get("enabled", False)),
+        )
 
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
