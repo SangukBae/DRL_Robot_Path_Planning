@@ -120,3 +120,31 @@ stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/m
 | `yaw_random` | 초기 방향 랜덤화 여부 |
 
 총 38종의 장애물 모델이 `drl_obstacle_assets/models/`에 있다.
+
+---
+
+## PHASE2 directional risk shaping (기본 OFF, 서로 독립)
+
+| 플래그 | 위치 | 의미 |
+|------|-----|------|
+| `risk_map_reward_enabled`(candidate1) | env config + `-p risk_map_reward_enabled:=...` (env 노드) | privileged GT 기준 위험 방향 진입에 페널티 |
+| `action_risk_head_enabled`(candidate2) | `hyperparameters_tqc.yaml` + `-p action_risk_head_enabled:=...` (env 노드 **와** train 노드 둘 다) | 선택된 action의 방향별 위험을 예측하는 critic 연결 head(자체 supervised loss로만 학습, actor 업데이트 forward에서는 critic처럼 freeze) |
+| `critic_risk_input` | `hyperparameters_tqc.yaml`만 (CLI override 없음, fresh-run 전용) | action-risk head의 (detached) 예측을 critic 입력에도 추가(`extra_dim=2`) |
+
+`drl_experiments/profiles/phase2/{baseline,reward_shaping_only,action_risk_head_only,both}/`가 이 두
+플래그의 4가지 조합을 profile로 미리 묶어 둔 것 — 상세는 [package_structure](../overview/package_structure.md#profile-시스템).
+빈 문자열(기본값)은 "override 없음, YAML이 이긴다"는 뜻(`drl_agent.config.paths.parse_bool_override`) — 두
+플래그 모두 노드에 **STRING** 파라미터(`declare_parameter(name, "")`)로 선언되어 있다.
+
+> **CLI로 직접 override할 때 quoting 주의.** `train_node.py`/`environment_curriculum_node.py
+> -p profile:=...`(profile wrapper)는 profile.yaml의 override 값을 내부적으로 자동 quote해서
+> 넘기므로 그대로 두면 안전하다. 하지만 **profile 없이 `environment.py`/`environment_curriculum.py`/
+> `train_tqc_curriculum.py`를 직접 실행하며 이 값을 override할 때는 bare `true`/`false`를 쓰면 안 된다**
+> — ROS2가 `-p key:=value`의 값 텍스트에서 YAML 타입을 추론하므로 bare `true`는 BOOL로 해석되고,
+> 노드가 기대하는 STRING과 타입이 맞지 않아 `InvalidParameterTypeException`이 난다. 셸에서 문자열임을
+> 강제하려면 값에 큰따옴표를 포함해 넘겨야 한다:
+> ```bash
+> ros2 run drl_agent environment_curriculum.py --ros-args \
+>   -p risk_map_reward_enabled:='"true"' -p action_risk_head_enabled:='"true"'
+> ```
+> (bash의 작은따옴표가 셸 해석을 막고, ROS2는 안에 든 `"true"`를 YAML 문자열로 읽는다.)

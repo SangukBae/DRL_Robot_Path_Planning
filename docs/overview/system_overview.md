@@ -16,7 +16,7 @@
 ```
 ┌─────────────────────────┐         ROS2 services          ┌──────────────────────────────┐
 │  Environment node        │  ◀── /reset, /step, /seed ──   │  Agent (trainer) node          │
-│  environment_curriculum  │                                │  train_tqc_curriculum_agent    │
+│  environment_curriculum  │                                │  train_tqc_curriculum.py       │
 │   .py                    │  ── state, reward, done ──▶    │   ├─ TQC 신경망 (actor/critic) │
 │   ├─ Gazebo 제어         │                                │   ├─ replay buffer             │
 │   ├─ LiDAR → state       │                                │   └─ aux prediction head       │

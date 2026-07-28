@@ -170,6 +170,8 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 | [Aux Ablation Logging](docs/experiments/aux_ablation_logging.md) | aux on/off 비교용 run-identity / eval-summary / manifest 로깅 |
 | [Aux Metric Schema](docs/reference/metrics_reference.md) | 학습 모니터링 vs 논문용 평가 지표, 저장 위치(CSV/TB/콘솔) |
 | [Simulation Validation](docs/experiments/simulation_validation.md) | reset→step 일관성 등 시뮬레이션 검증 절차 |
+| [Phase2 Optimization Notes](docs/experiments/phase2_optimization_notes.md) | `phase2/both` 학습 경로 처리량 개선 요약 (무엇을 줄였는지 + 실측치) |
+| [TQC Model Architecture](docs/design/tqc_curriculum_model_architecture.md) | TQC curriculum 전체 모델 block diagram |
 | [Real Robot Deployment](docs/guides/real_robot_deployment.md) | 학습 정책의 실로봇 배포 가이드 |
 | [Troubleshooting](docs/guides/troubleshooting.md) | 환경 변수, 디버깅, 흔한 오류 |
 
@@ -195,10 +197,11 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 ```
 /
 ├── ros2_ws/src/
-│   ├── drl_agent/                          # DRL 환경/정책/학습 스크립트
-│   │   ├── drl_agent/                      #   importable Python package (config loader/validator,
-│   │   │                                   #   trainer registry, run/checkpoint manager, node wrappers)
-│   │   └── scripts/                        #   legacy flat 모듈 + ROS 엔트리포인트 (점진 이관 중)
+│   ├── drl_agent/                          # DRL 환경/정책/학습 (canonical, scripts/ flat 레이어 없음)
+│   │   ├── drl_agent/                      #   importable Python package — 구현의 유일한 위치
+│   │   │                                   #   (config loader/validator, trainer registry,
+│   │   │                                   #   run/checkpoint manager, node wrappers)
+│   │   └── tests/                          #   ROS-free pytest 스위트
 │   ├── drl_experiments/                    # 실험 정의: profiles/ sweeps/ scripts/ outputs(gitignored)
 │   ├── drl_agent_interfaces/               # ROS2 srv/action 정의
 │   ├── hunter_se_gazebo/                   # Hunter SE URDF, Gazebo launch, worlds
