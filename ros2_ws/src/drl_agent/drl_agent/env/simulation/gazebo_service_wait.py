@@ -12,6 +12,17 @@ can be unit tested without ROS/Gazebo, and defines the failure type the node
 raises so it propagates out of the callback (the trainer's bounded
 ``EnvInterface._call_service`` then sees a service failure and runs its
 checkpoint-on-failure path — the two ends now share the same fail-fast policy).
+
+``compute_physics_step_count`` supports ``environment.py``'s opt-in
+``gazebo_deterministic_stepping`` (WorldControl ``multi_step``, see
+``Environment._advance_physics_deterministic``'s docstring): a stricter
+per-step bounded wait on ``/clock`` reaching the target sim time was
+attempted and excluded — it reproducibly hung real ``/step`` calls under the
+live node's MultiThreadedExecutor even though an isolated probe against the
+same ``/clock`` topic worked reliably every time (see memory note
+``gazebo_multi_step_clock_wait_landmine`` for the full investigation). The
+shipped design instead sleeps for the requested duration and verifies sensor
+freshness via the same scan/odom-count wait ``reset_callback`` already uses.
 """
 
 import time
@@ -72,3 +83,33 @@ def bounded_wait_for_service(
             on_wait(elapsed)
         if clock() >= deadline:
             return False, clock() - start
+
+
+def compute_physics_step_count(duration: float, physics_step_size: float, *, tol: float = 1e-6) -> int:
+    """Return the exact integer number of ``physics_step_size``-second physics
+    iterations that make up ``duration`` seconds, for a single WorldControl
+    ``multi_step`` call (empirically confirmed: multi_step=N steps physics by
+    exactly N * max_step_size seconds of sim time, live-measured against
+    drl_arena.world's max_step_size=0.001s).
+
+    Fails fast (ValueError) instead of silently rounding when ``duration``
+    isn't (close to) an integer multiple of ``physics_step_size``, so a
+    mismatched time_delta/physics_step_size pair is caught at startup rather
+    than silently drifting the requested vs. actual sim-time advance.
+    """
+    if physics_step_size <= 0:
+        raise ValueError(f"physics_step_size must be > 0, got {physics_step_size}")
+    raw_n = duration / physics_step_size
+    n_steps = round(raw_n)
+    if n_steps < 1:
+        raise ValueError(
+            f"duration={duration:.6f}s is shorter than one physics step "
+            f"({physics_step_size:.6f}s); deterministic Gazebo stepping needs "
+            "duration >= one physics_step_size.")
+    if abs(raw_n - n_steps) > tol:
+        raise ValueError(
+            f"duration={duration:.6f}s is not an integer multiple of "
+            f"physics_step_size ({physics_step_size:.6f}s); got {raw_n:.6f} "
+            "steps. Adjust time_delta or physics_step_size so this divides "
+            "evenly, or disable gazebo_deterministic_stepping.")
+    return n_steps

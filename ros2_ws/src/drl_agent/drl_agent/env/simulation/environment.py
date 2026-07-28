@@ -74,12 +74,14 @@ from drl_agent.env.simulation.map_layout_runtime import MapLayoutMixin
 from drl_agent.env.spawning.start_sampler import StartSamplerMixin
 from drl_agent.env.spawning.goal_sampler import GoalSamplerMixin
 from drl_agent.env.humans.human_spawn_sampler import HumanSpawnMixin
-from drl_agent.env.humans.human_motion_manager import HumanMotionMixin
+from drl_agent.env.humans.human_motion_manager import (
+    HumanMotionMixin, compute_human_tick_plan)
 from drl_agent.env.simulation.gazebo_entity_manager import GazeboEntityMixin
 from drl_agent.env.spawning.obstacle_catalog_spawner import ObstacleMixin
 # Bounded Gazebo-service wait + the failure type the callbacks propagate, so a
 # dead Gazebo control/set_pose service never hangs /step or /reset forever.
-from drl_agent.env.simulation.gazebo_service_wait import GazeboServiceError, bounded_wait_for_service
+from drl_agent.env.simulation.gazebo_service_wait import (
+    GazeboServiceError, bounded_wait_for_service, compute_physics_step_count)
 
 
 class Environment(
@@ -410,6 +412,57 @@ class Environment(
 
         # Human proxy motion / domain-randomization parameters
         self.human_update_rate       = float(self.environment_config.get("human_update_rate",        20.0))
+        # Deterministic (sim-step-synchronized) human motion, default OFF ->
+        # byte-identical to before (legacy wall-clock timer). When enabled,
+        # NO independent timer is created; propagate_state() instead drives an
+        # exact, integer number of fixed-dt human-motion ticks per call itself,
+        # interleaved with physics sub-stepping -- eliminating the wall-clock
+        # scheduling dependency that made in-episode human trajectories
+        # non-reproducible across runs at different real-time speeds (see
+        # human_motion_manager.compute_human_tick_plan). This changes the
+        # ACTUAL tick count/timing (not just a wait-mechanism latency fix), so
+        # per CLAUDE.md it must stay config-isolated, never silently applied.
+        # CLI override, same convention as risk_map_reward_enabled. Because
+        # this parameter is declared as a STRING sentinel, direct ros2 CLI use
+        # must pass a quoted string, e.g.
+        #   -p human_deterministic_stepping_enabled:='"true"'
+        self.declare_parameter("human_deterministic_stepping_enabled", "")
+        self.human_deterministic_stepping = config_paths.parse_bool_override(
+            self.get_parameter("human_deterministic_stepping_enabled")
+                .get_parameter_value().string_value,
+            bool(self.environment_config.get("human_deterministic_stepping", False)),
+        )
+
+        # Deterministic Gazebo physics stepping, default OFF -> byte-identical
+        # to before (legacy unpause/sleep(duration)/pause, 2 world-control
+        # calls). When enabled, a SINGLE WorldControl call (pause=True,
+        # multi_step=N) requests an EXACT N * physics_step_size seconds of
+        # sim-time advance (empirically confirmed: N=1/50/100 -> sim-time
+        # deltas of exactly 0.001/0.05/0.1s, world stays paused afterward) --
+        # halving the world-control call count vs. the legacy path, which is
+        # the actual measured source of this mode's speedup (live-measured:
+        # 203.6ms/step legacy vs. 152.3ms/step here). A per-step bounded
+        # /clock wait for exact sim-time CONFIRMATION (not just the request)
+        # was attempted but reproducibly hung real /step calls for reasons not
+        # fully root-caused (see _advance_physics_deterministic's docstring
+        # and the gazebo_multi_step_clock_wait_landmine memory note) --
+        # excluded; this mode instead sleeps for the requested duration (same
+        # approach the legacy path already uses, just once instead of via two
+        # calls) and then verifies sensor freshness via the SAME proven
+        # scan/odom-count wait reset_callback already uses. Independent of
+        # human_deterministic_stepping; both compose via the shared
+        # _advance_physics() primitive.
+        self.declare_parameter("gazebo_deterministic_stepping_enabled", "")
+        self.gazebo_deterministic_stepping = config_paths.parse_bool_override(
+            self.get_parameter("gazebo_deterministic_stepping_enabled")
+                .get_parameter_value().string_value,
+            bool(self.environment_config.get("gazebo_deterministic_stepping", False)),
+        )
+        self.gazebo_physics_step_size = float(
+            self.environment_config.get("gazebo_physics_step_size", 0.001))
+        self.gazebo_sensor_wait_timeout_sec = float(
+            self.environment_config.get("gazebo_sensor_wait_timeout_sec", 1.5))
+
         # Per-second probabilities (converted to per-tick inside the timer callback)
         self.human_stop_prob_per_sec = float(self.environment_config.get("human_stop_prob_per_sec",
                                              self.environment_config.get("human_stop_prob", 0.05)))
@@ -980,6 +1033,14 @@ class Environment(
         self.goal_threshold = self.threshold_params_config["goal_threshold"]
         self.collision_threshold = self.threshold_params_config["collision_threshold"]
         self.time_delta = self.threshold_params_config["time_delta"]
+        if self.human_deterministic_stepping:
+            # Fail-fast at startup (not lazily at the first step) if time_delta
+            # isn't an exact multiple of the human-motion tick period.
+            compute_human_tick_plan(self.time_delta, self.human_update_rate)
+        if self.gazebo_deterministic_stepping:
+            # Fail-fast at startup if time_delta isn't an exact multiple of
+            # physics_step_size (see gazebo_service_wait.compute_physics_step_count).
+            compute_physics_step_count(self.time_delta, self.gazebo_physics_step_size)
         self.inter_entity_distance = self.threshold_params_config[
             "inter_entity_distance"
         ]
@@ -1361,8 +1422,11 @@ class Environment(
         # Independent timer for obstacle kinematic updates.
         # Uses its own MutuallyExclusiveCallbackGroup so it never blocks
         # the RL step/reset service callbacks.
+        # human_deterministic_stepping (default OFF) drives ticks explicitly
+        # from propagate_state() instead -- no independent timer is created,
+        # so there is nothing left to decouple from wall-clock scheduling.
         obstacle_update_rate = self.human_update_rate
-        if self.num_of_humans > 0:
+        if self.num_of_humans > 0 and not self.human_deterministic_stepping:
             self.human_timer = self.create_timer(
                 1.0 / obstacle_update_rate,
                 self._human_timer_callback,
@@ -2133,13 +2197,119 @@ class Environment(
 
         unpause→sleep→pause 의 각 경계에 로그를 남겨 /step 이 정확히 어느
         Gazebo 호출에서 멎는지 바로 보이게 한다. pause_world 가 실패하면
-        GazeboServiceError 가 콜백 밖으로 전파된다(여기서 삼키지 않는다)."""
+        GazeboServiceError 가 콜백 밖으로 전파된다(여기서 삼키지 않는다).
+
+        human_deterministic_stepping (default OFF) replaces this single
+        physics advance with an integer number of fixed-dt human-motion ticks
+        interleaved with equal physics sub-windows (see
+        _propagate_state_deterministic_human_ticks). gazebo_deterministic_
+        stepping (default OFF, independent of the above) additionally
+        replaces each physics sub-window's legacy unpause/sleep/pause with a
+        single exact-step-count multi_step call (see _advance_physics).
+        Byte-identical to the legacy path when both are disabled."""
+        if self.human_deterministic_stepping:
+            self._propagate_state_deterministic_human_ticks(time_delta)
+            return
         self.get_logger().debug(
             f"[gazebo] propagate: unpause → run {time_delta:.3f}s")
-        self.pause_world(False)
-        time.sleep(time_delta)
-        self.pause_world(True)
+        self._advance_physics(time_delta)
         self.get_logger().debug("[gazebo] propagate: re-paused")
+
+    def _propagate_state_deterministic_human_ticks(self, time_delta):
+        """Split time_delta into compute_human_tick_plan()'s exact tick count,
+        advancing human motion by one fixed-dt tick immediately before each
+        equal physics sub-window -- so the number of human-motion ticks and
+        their dt are fixed by (time_delta, human_update_rate) alone, never by
+        wall-clock scheduling speed."""
+        n_ticks, sub_dt = compute_human_tick_plan(time_delta, self.human_update_rate)
+        self.get_logger().debug(
+            f"[gazebo] propagate(deterministic): {n_ticks} ticks × {sub_dt:.3f}s "
+            f"= {time_delta:.3f}s")
+        for _ in range(n_ticks):
+            self._advance_humans_one_tick(sub_dt)
+            self._advance_physics(sub_dt)
+        self.get_logger().debug("[gazebo] propagate(deterministic): re-paused")
+
+    def _advance_physics(self, duration):
+        """Advance Gazebo physics by `duration` seconds: the shared primitive
+        used by BOTH propagate_state() and its human-tick-interleaved variant.
+        Legacy unpause/sleep(duration)/pause (2 world-control calls), or
+        (gazebo_deterministic_stepping) a single exact-step-count multi_step
+        call + sleep(duration) + sensor-freshness wait (see
+        _advance_physics_deterministic; the stricter /clock completion wait
+        was excluded after live /step hangs) -- byte-identical to the legacy
+        body below when disabled."""
+        if self.gazebo_deterministic_stepping:
+            self._advance_physics_deterministic(duration)
+            return
+        self.pause_world(False)
+        time.sleep(duration)
+        self.pause_world(True)
+
+    def _multi_step_world(self, n_steps: int):
+        """One WorldControl call: pause=True + multi_step=n_steps steps physics
+        by EXACTLY n_steps * gazebo_physics_step_size seconds of sim time then
+        leaves the world paused (empirically confirmed live). Failure
+        propagates as GazeboServiceError, matching pause_world/reset_world."""
+        srv_name = f"/world/{self.world_name}/control"
+        req = ControlWorld.Request()
+        req.world_control.pause = True
+        req.world_control.multi_step = int(n_steps)
+        self._call_world_service(self.world_control, req, srv_name,
+                                  f"multi_step[{n_steps}]")
+
+    def _wait_for_sensor_freshness(self, prev_scan_updates, prev_role_updates):
+        """Bounded wait for a NEW scan + odom (all roles) update after a
+        multi_step call, mirroring reset_callback's existing freshness check.
+        Warn-and-continue on timeout (not fail-fast): a one-tick-stale sensor
+        reading is an already-tolerated degradation elsewhere in this env,
+        unlike the /clock target above."""
+        t0 = time.time()
+        while (
+            self.scan_update_count <= prev_scan_updates
+            or any(self._odom_role_count[r] <= prev_role_updates[r]
+                   for r in ("gt", "loc", "proprio"))
+        ) and (time.time() - t0 < self.gazebo_sensor_wait_timeout_sec):
+            rclpy.spin_once(self, timeout_sec=0.01)
+        stale = [r for r in ("gt", "loc", "proprio")
+                 if self._odom_role_count[r] <= prev_role_updates[r]]
+        if stale or self.scan_update_count <= prev_scan_updates:
+            self.get_logger().warn(
+                f"[gazebo] post-multi_step sensor freshness: scan stale="
+                f"{self.scan_update_count <= prev_scan_updates} odom stale roles={stale} "
+                f"— caches may be one tick behind.")
+
+    def _advance_physics_deterministic(self, duration):
+        """multi_step requests an EXACT physics-step count (n_steps below) in
+        ONE world-control call -- replacing the legacy path's two calls
+        (unpause + pause) with one, which is the actual measured source of
+        this mode's speedup (live-measured: 203.6ms/step legacy vs.
+        152.3ms/step here, both averaged over independent runs). A per-step
+        bounded /clock wait for exact sim-time confirmation was attempted
+        (WorldControl(pause=True, multi_step=N) itself is confirmed exact:
+        N=1/50/100 -> sim-time deltas of exactly 0.001/0.05/0.1s in isolation)
+        but reproducibly hung real /step calls under the live node's
+        MultiThreadedExecutor for reasons not fully root-caused (same failure
+        CLASS as the _await_future polling-interval investigation: an
+        isolated probe against the same /clock topic worked reliably every
+        time, but the identical wait embedded in this node's fuller
+        callback-group/threading context did not) -- see the
+        gazebo_multi_step_clock_wait_landmine memory note. Excluded; this
+        method instead sleeps for `duration` (matching the legacy path's own
+        approach, which does the same with NO freshness check at all) and
+        then runs _wait_for_sensor_freshness -- which DOES work reliably from
+        step_callback (reuses reset_callback's proven scan/odom-count-based
+        wait unmodified) -- so a genuinely stale LiDAR/odom reading is still
+        caught and logged, even without exact sim-clock confirmation."""
+        n_steps = compute_physics_step_count(duration, self.gazebo_physics_step_size)
+        prev_scan = self.scan_update_count
+        prev_roles = dict(self._odom_role_count)
+        self.get_logger().debug(
+            f"[gazebo] multi_step: {n_steps} × {self.gazebo_physics_step_size:.4f}s "
+            f"= {duration:.3f}s")
+        self._multi_step_world(n_steps)
+        time.sleep(duration)
+        self._wait_for_sensor_freshness(prev_scan, prev_roles)
     # ----------------------------------------------------------------------------------------------
     # ====================================Ignition Finish===========================================
     # ----------------------------------------------------------------------------------------------

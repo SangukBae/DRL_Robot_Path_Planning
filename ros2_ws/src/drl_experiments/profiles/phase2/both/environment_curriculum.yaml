@@ -52,6 +52,14 @@ environment:
   obs_z_max_sensor_m: 0.25
   obstacle_catalog: drl_obstacle_assets
   human_update_rate: 20.0
+  # Enable the measured ~25% faster WorldControl(multi_step=N) path for the
+  # default phase2/both training commands. Human deterministic stepping remains
+  # off here because it is primarily a reproducibility mode and is not a
+  # throughput win in the stage-3 pedestrian case.
+  human_deterministic_stepping: false
+  gazebo_deterministic_stepping: true
+  gazebo_physics_step_size: 0.001
+  gazebo_sensor_wait_timeout_sec: 1.5
   human_stop_prob_per_sec: 0.02
   human_pause_duration: 1.0
   human_heading_jitter_deg: 12.0

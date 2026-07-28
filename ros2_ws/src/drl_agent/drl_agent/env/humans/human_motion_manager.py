@@ -31,6 +31,38 @@ from drl_agent.env.simulation.map_catalog import (
 )
 
 
+def compute_human_tick_plan(duration: float, human_update_rate: float, *, tol: float = 1e-6):
+    """Split ``duration`` seconds into an exact integer number of fixed-dt
+    human-motion ticks at ``human_update_rate`` Hz.
+
+    Pure function (no wall-clock, no RNG) so a given (duration, rate) pair
+    always yields the SAME (n_ticks, sub_dt) -- the basis for making the
+    per-RL-step human-motion tick count independent of wall-clock scheduling
+    speed. Fails fast (ValueError) instead of silently rounding when
+    ``duration`` is not (close to) an integer multiple of the tick period, so
+    a mismatched time_delta/human_update_rate pair is caught at startup.
+    """
+    if human_update_rate <= 0:
+        raise ValueError(f"human_update_rate must be > 0, got {human_update_rate}")
+    tick_period = 1.0 / human_update_rate
+    raw_n = duration / tick_period
+    n_ticks = round(raw_n)
+    if n_ticks < 1:
+        raise ValueError(
+            f"duration={duration:.6f}s is shorter than one human-motion tick "
+            f"({tick_period:.6f}s at human_update_rate={human_update_rate}); "
+            "deterministic human stepping needs duration >= one tick period.")
+    if abs(raw_n - n_ticks) > tol:
+        raise ValueError(
+            f"duration={duration:.6f}s is not an integer multiple of the "
+            f"human-motion tick period ({tick_period:.6f}s at "
+            f"human_update_rate={human_update_rate}); got {raw_n:.6f} ticks. "
+            "Adjust time_delta or human_update_rate so this divides evenly, "
+            "or disable human_deterministic_stepping.")
+    sub_dt = duration / n_ticks
+    return n_ticks, sub_dt
+
+
 class HumanMotionMixin:
     def _publish_model_poses(self, batch: list):
         """Publish (name, x, y, z, qx, qy, qz, qw) tuples to DrlModelPosePlugin."""
@@ -185,8 +217,15 @@ class HumanMotionMixin:
             q = Quaternion.from_euler(0.0, math.pi - pitch, yaw)
             self.set_entity_pose_ignition(vis_name, wx, wy, az, q.x, q.y, q.z, q.w)
 
-    def _human_timer_callback(self):
-        """ROS timer callback — drives moving obstacles independently of RL steps."""
+    def _advance_humans_one_tick(self, dt: float):
+        """Advance human kinematics by one dt-second tick and publish poses.
+
+        Shared by BOTH the legacy wall-clock timer callback and the
+        deterministic per-RL-step driver (propagate_state), so enabling
+        deterministic stepping changes only WHO calls this and how many
+        times, never the tick logic itself. Fast-path no-op (zero RNG draws,
+        zero publishes) when disabled or no humans are active.
+        """
         # Fast-path flag check (no lock cost on the common path during reset).
         if not self._human_updates_enabled or not self.human_states:
             return
@@ -195,11 +234,14 @@ class HumanMotionMixin:
         with self._human_lock:
             if not self._human_updates_enabled or not self.human_states:
                 return
-            dt = 1.0 / self.human_update_rate
             pose_batch = []
             self._update_humans_kinematic(dt, pose_batch)
             if pose_batch:
                 self._publish_model_poses(pose_batch)
+
+    def _human_timer_callback(self):
+        """ROS timer callback — drives moving obstacles independently of RL steps."""
+        self._advance_humans_one_tick(1.0 / self.human_update_rate)
 
     def _social_avoidance_offset(self, key, x, y, desired_yaw, human_pos, robot_xy=None):
         """Falcon-lite weak human-human avoidance: a small, capped heading nudge.

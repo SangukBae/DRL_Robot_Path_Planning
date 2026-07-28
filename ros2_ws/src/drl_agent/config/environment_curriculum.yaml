@@ -127,6 +127,34 @@ environment:
   obstacle_catalog: "drl_obstacle_assets" # obstacle/human asset catalog package 또는 yaml 이름
 
   human_update_rate: 20.0          # pedestrian kinematic update timer 주기 [Hz]
+  # Default false = legacy independent wall-clock ROS timer (byte-identical).
+  # true = propagate_state() drives an exact, integer human_update_rate-based
+  # tick count per RL step itself (no independent timer) -- decouples
+  # in-episode pedestrian trajectories from wall-clock scheduling speed, at
+  # the cost of changing the actual tick timing/RNG-draw sequence (not a
+  # compute-only change). CLI override:
+  #   -p human_deterministic_stepping_enabled:='"true"'|'"false"'
+  human_deterministic_stepping: false
+
+  # Default false = legacy unpause/time.sleep(duration)/pause physics
+  # advance (byte-identical, 2 Gazebo world-control calls per physics
+  # window). true = a single WorldControl(pause=True, multi_step=N) call per
+  # physics window requesting an EXACT N = duration/gazebo_physics_step_size
+  # (must divide evenly -- fails fast at startup otherwise), then a plain
+  # sleep(duration) + the same proven scan/odom sensor-freshness wait
+  # reset_callback already uses. Live-measured: 152.3ms/step here vs.
+  # 203.6ms/step legacy -- the win is from halving the world-control CALL
+  # count, not from physics itself running faster (still wall-clock bound,
+  # ~110-130ms measured for 100 steps in this scene). A stricter /clock-based
+  # completion wait was attempted and excluded (reproducible hang under the
+  # live executor, see gazebo_service_wait.compute_physics_step_count's
+  # module docstring / gazebo_multi_step_clock_wait_landmine memory note).
+  # Independent of human_deterministic_stepping above; both compose.
+  # CLI override:
+  #   -p gazebo_deterministic_stepping_enabled:='"true"'|'"false"'
+  gazebo_deterministic_stepping: false
+  gazebo_physics_step_size: 0.001  # must match the world file's max_step_size
+  gazebo_sensor_wait_timeout_sec: 1.5   # bounded scan/odom freshness wait; warn-and-continue on timeout
   # Prediction-friendly pedestrian motion (Auxiliary Prediction): predictable
   # over short horizons (~constant velocity), mode changes only every few
   # seconds, no reaction to the robot. Smooth (low accel/yaw), bounded waypoint

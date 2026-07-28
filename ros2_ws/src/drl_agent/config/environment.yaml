@@ -76,6 +76,14 @@ environment:
   #     in code: Environment._HUMAN_MODE_DEFAULTS, overridable via human_mode_params.
   #     (human_waypoint_dist_* below is only a fallback for mode-less sampling.)
   human_update_rate: 20.0        # Hz — independent ROS timer rate for pedestrian kinematics
+  # Default false = legacy wall-clock timer (byte-identical). See
+  # environment_curriculum.yaml's human_deterministic_stepping comment.
+  human_deterministic_stepping: false
+  # Default false = legacy sleep-based physics advance. See
+  # environment_curriculum.yaml's gazebo_deterministic_stepping comment.
+  gazebo_deterministic_stepping: false
+  gazebo_physics_step_size: 0.001
+  gazebo_sensor_wait_timeout_sec: 1.5
   human_stop_prob_per_sec: 0.02  # weak stop/go
   human_pause_duration: 1.0      # seconds to stay stopped after a random stop
   human_heading_jitter_deg: 12.0 # heading perturbation, applied only at retarget [deg]
