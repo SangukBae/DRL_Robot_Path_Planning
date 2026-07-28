@@ -9,14 +9,32 @@ so every existing call site and the on-disk checkpoint layout are unchanged.
 """
 
 import copy
+import json
 import os
 
 import torch
 
 
+def _obs_norm_manifest_path(directory, filename):
+    return f"{directory}/{filename}_obs_norm_manifest.json"
+
+
 def save(agent, directory, filename):
     """Save model parameters (+ optimizers, entropy coef, replay buffer)."""
     os.makedirs(directory, exist_ok=True)
+
+    # STAGE 8 (isolated experimental feature): record the observation-
+    # normalization contract (mode + every scale value) so a checkpoint saved
+    # under a DIFFERENT normalization setup can never be silently resumed
+    # (see load()'s matching check below). Always written (even when
+    # disabled) so an explicit "disabled" record distinguishes "predates
+    # Stage 8 entirely" (no manifest file) from "Stage 8 present but off".
+    obs_normalizer = getattr(agent, "obs_normalizer", None)
+    manifest = {"enabled": obs_normalizer is not None}
+    if obs_normalizer is not None:
+        manifest.update(agent.obs_norm_cfg.manifest_dict())
+    with open(_obs_norm_manifest_path(directory, filename), "w", encoding="utf-8") as f:
+        json.dump(manifest, f)
     # Actor
     torch.save(agent.actor.state_dict(), f"{directory}/{filename}_actor.pth")
     torch.save(agent.actor_optimizer.state_dict(), f"{directory}/{filename}_actor_optimizer.pth")
@@ -72,6 +90,49 @@ def load(
     load_replay_buffer=True,
 ):
     maploc = agent.device
+
+    # STAGE 8: fail fast (BEFORE loading any weights) on an observation-
+    # normalization contract mismatch -- never silently load a checkpoint
+    # trained under a different normalization setup (different scale values
+    # would make every saved weight's learned input distribution wrong).
+    current_enabled = getattr(agent, "obs_normalizer", None) is not None
+    manifest_path = _obs_norm_manifest_path(directory, filename)
+    if os.path.isfile(manifest_path):
+        with open(manifest_path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        saved_enabled = bool(saved.get("enabled", False))
+        if saved_enabled != current_enabled:
+            raise RuntimeError(
+                f"[tqc_io] observation_normalization contract mismatch: "
+                f"checkpoint was saved with enabled={saved_enabled}, this run "
+                f"has enabled={current_enabled}. Resuming would silently feed "
+                "every saved weight a differently-scaled input. Start a fresh "
+                "run (load_replay_buffer/load_model=False) or match the "
+                "observation_normalization config exactly."
+            )
+        if current_enabled:
+            current = agent.obs_norm_cfg.manifest_dict()
+            mismatched = {
+                k: (saved.get(k), current.get(k))
+                for k in current if k != "enabled" and saved.get(k) != current.get(k)
+            }
+            if mismatched:
+                raise RuntimeError(
+                    "[tqc_io] observation_normalization scale mismatch between "
+                    f"checkpoint and this run: {mismatched} (saved, current). "
+                    "Resuming would silently feed every saved weight a "
+                    "differently-scaled input. Start a fresh run or match the "
+                    "observation_normalization config exactly."
+                )
+    elif current_enabled:
+        raise RuntimeError(
+            "[tqc_io] observation_normalization.enabled=true but this "
+            f"checkpoint has no '{os.path.basename(manifest_path)}' (it "
+            "predates the observation-normalization feature, so it was "
+            "trained WITHOUT normalization). Resuming would silently feed "
+            "every saved weight a differently-scaled input. Start a fresh "
+            "run or disable observation_normalization."
+        )
 
     def _torch_load(path):
         try:

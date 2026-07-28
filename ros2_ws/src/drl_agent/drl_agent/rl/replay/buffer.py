@@ -28,18 +28,29 @@ class LAP(object):
         self.device = device
         self.batch_size = batch_size
 
-        self.state = np.zeros((max_size, state_dim))
-        self.action = np.zeros((max_size, action_dim))
-        self.next_state = np.zeros((max_size, state_dim))
-        self.reward = np.zeros((max_size, 1))
-        self.not_done = np.zeros((max_size, 1))
+        # STAGE 7: explicit float32 (was no dtype specified -> numpy's
+        # implicit float64 default). Real measured impact (Stage 0 baseline):
+        # the actual phase2/both replay checkpoint (180k/1M transitions,
+        # state_dim=327) was 1032.5MB at float64; extrapolated to the
+        # configured max_size=1e6 (eagerly allocated here regardless of fill
+        # level) that's ~5.7GB float64 -> ~2.87GB at float32. sample()
+        # already requested dtype=torch.float (float32) on every call
+        # regardless of the source array's dtype, so this changes no
+        # downstream numerics -- only removes a redundant float64->float32
+        # cast that used to happen on every sample() call.
+        _dt = np.float32
+        self.state = np.zeros((max_size, state_dim), dtype=_dt)
+        self.action = np.zeros((max_size, action_dim), dtype=_dt)
+        self.next_state = np.zeros((max_size, state_dim), dtype=_dt)
+        self.reward = np.zeros((max_size, 1), dtype=_dt)
+        self.not_done = np.zeros((max_size, 1), dtype=_dt)
 
         # AUX_PRED: optional per-transition auxiliary target (future risk map +
         # min-distance label).  aux_dim == 0 keeps the buffer identical to the
         # baseline so non-aux algorithms / configs are unaffected.
         self.aux_dim = int(aux_dim)
         if self.aux_dim > 0:
-            self.aux_target = np.zeros((max_size, self.aux_dim))
+            self.aux_target = np.zeros((max_size, self.aux_dim), dtype=_dt)
         else:
             self.aux_target = None
 
@@ -48,7 +59,7 @@ class LAP(object):
         # an episode boundary.  None keeps the buffer identical to baseline.
         self.track_traj = bool(track_traj)
         if self.track_traj:
-            self.traj_end = np.zeros((max_size, 1))
+            self.traj_end = np.zeros((max_size, 1), dtype=_dt)
         else:
             self.traj_end = None
 
@@ -58,7 +69,7 @@ class LAP(object):
         # baseline for every config that doesn't opt in.
         self.action_risk_dim = int(action_risk_dim)
         if self.action_risk_dim > 0:
-            self.action_risk_target = np.zeros((max_size, self.action_risk_dim))
+            self.action_risk_target = np.zeros((max_size, self.action_risk_dim), dtype=_dt)
         else:
             self.action_risk_target = None
 
@@ -145,16 +156,20 @@ class LAP(object):
         else:
             self.ind = np.random.randint(0, self.size, size=self.batch_size)
 
+        # STAGE 7: self.state[self.ind] (fancy/advanced indexing) already
+        # allocates a fresh, C-contiguous NumPy copy -- unavoidable for random-
+        # index sampling. torch.from_numpy() SHARES that copy's memory instead
+        # of torch.tensor()'s own additional copy on top of it; now that the
+        # source arrays are float32 (see __init__), this needs no dtype
+        # conversion either (from_numpy preserves whatever dtype the array
+        # already has). .to(self.device) is a no-op view on CPU or the one
+        # unavoidable host->device copy on CUDA, same as before.
         return (
-            torch.tensor(self.state[self.ind], dtype=torch.float, device=self.device),
-            torch.tensor(self.action[self.ind], dtype=torch.float, device=self.device),
-            torch.tensor(
-                self.next_state[self.ind], dtype=torch.float, device=self.device
-            ),
-            torch.tensor(self.reward[self.ind], dtype=torch.float, device=self.device),
-            torch.tensor(
-                self.not_done[self.ind], dtype=torch.float, device=self.device
-            ),
+            torch.from_numpy(self.state[self.ind]).to(self.device),
+            torch.from_numpy(self.action[self.ind]).to(self.device),
+            torch.from_numpy(self.next_state[self.ind]).to(self.device),
+            torch.from_numpy(self.reward[self.ind]).to(self.device),
+            torch.from_numpy(self.not_done[self.ind]).to(self.device),
         )
 
     def get_last_aux(self):
@@ -169,9 +184,7 @@ class LAP(object):
         ind = getattr(self, "ind", None)
         if ind is None:
             return None
-        return torch.tensor(
-            self.aux_target[ind], dtype=torch.float, device=self.device
-        )
+        return torch.from_numpy(self.aux_target[ind]).to(self.device)
 
     def get_last_action_risk(self):
         """PHASE2: Action-Risk Head supervision targets for the indices from the
@@ -182,9 +195,7 @@ class LAP(object):
         ind = getattr(self, "ind", None)
         if ind is None:
             return None
-        return torch.tensor(
-            self.action_risk_target[ind], dtype=torch.float, device=self.device
-        )
+        return torch.from_numpy(self.action_risk_target[ind]).to(self.device)
 
     def get_last_future_actions(self, k_steps):
         """AUX_PRED: future action sequence for the last sample()'s indices.
@@ -318,6 +329,20 @@ class LAP(object):
                 self.priority[: self.size].cpu(), path + "_priority.pt"
             )
 
+    def _cast_loaded(self, name: str, arr):
+        """STAGE 7: explicit float64 (or any other dtype) -> float32 cast for
+        a loaded checkpoint array, logging the FIRST time it actually changes
+        something for this load() call (a checkpoint saved since Stage 7 is
+        already float32 -> true no-op, no log). Never mutates ``arr`` (the
+        caller's view into the just-``np.load``ed .npz) in place."""
+        arr = np.asarray(arr)
+        if arr.dtype != self.state.dtype:
+            print(f"[buffer] load(): casting '{name}' from {arr.dtype} to "
+                  f"{self.state.dtype} (checkpoint predates the float32 replay "
+                  f"buffer change).")
+            arr = arr.astype(self.state.dtype)
+        return arr
+
     def load(self, path: str) -> bool:
         """Restore buffer from <path>.npz.  Returns True on success."""
         npz = path if path.endswith(".npz") else path + ".npz"
@@ -372,23 +397,30 @@ class LAP(object):
                 )
         meta = d["meta"].tolist()
         ptr, size = int(meta[0]), int(meta[1])
-        self.state[: size]      = d["state"]
-        self.action[: size]     = d["action"]
-        self.next_state[: size] = d["next_state"]
-        self.reward[: size]     = d["reward"]
-        self.not_done[: size]   = d["not_done"]
+        # STAGE 7: explicit, logged float64 (or any other dtype) -> float32
+        # cast on load -- runs AFTER the shape/schema validation above (so a
+        # width mismatch still fails fast before any conversion), not relying
+        # on numpy's implicit downcast-on-assignment alone. A checkpoint saved
+        # since this change is already float32 (save() writes whatever dtype
+        # the live arrays have), so this is a true no-op cast for those and
+        # only actually converts pre-Stage-7 checkpoints.
+        self.state[: size]      = self._cast_loaded("state", d["state"])
+        self.action[: size]     = self._cast_loaded("action", d["action"])
+        self.next_state[: size] = self._cast_loaded("next_state", d["next_state"])
+        self.reward[: size]     = self._cast_loaded("reward", d["reward"])
+        self.not_done[: size]   = self._cast_loaded("not_done", d["not_done"])
         # AUX_PRED: restore auxiliary targets when both this buffer and the
         # checkpoint carry them; otherwise leave zeros (graceful fallback).
         if self.aux_target is not None and "aux_target" in d.files:
-            saved = d["aux_target"]
+            saved = self._cast_loaded("aux_target", d["aux_target"])
             cols = min(self.aux_dim, saved.shape[1])
             self.aux_target[: size, :cols] = saved[: size, :cols]
         # AUX_PRED: restore episode-boundary flags when both sides carry them.
         if self.traj_end is not None and "traj_end" in d.files:
-            self.traj_end[: size] = d["traj_end"][: size]
+            self.traj_end[: size] = self._cast_loaded("traj_end", d["traj_end"])[: size]
         # PHASE2: restore the Action-Risk Head target when both sides carry it.
         if self.action_risk_target is not None and "action_risk_target" in d.files:
-            saved_ar = d["action_risk_target"]
+            saved_ar = self._cast_loaded("action_risk_target", d["action_risk_target"])
             cols = min(self.action_risk_dim, saved_ar.shape[1])
             self.action_risk_target[: size, :cols] = saved_ar[: size, :cols]
         self.ptr  = ptr

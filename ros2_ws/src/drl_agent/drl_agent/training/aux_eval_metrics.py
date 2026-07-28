@@ -114,6 +114,18 @@ def compute_aux_eval_metrics(risk_pred, risk_gt, md_pred, md_gt, *,
     recall = _safe_ratio(tp, tp + fn)
     f1 = _safe_ratio(2.0 * precision * recall, precision + recall)
 
+    # STAGE 4: dynamic-sample / positive-event counts alongside RMSE. A batch
+    # dominated by constant-zero (no-human) GT rows makes aux_risk_rmse
+    # trivially low WITHOUT the head having learned anything predictive -- these
+    # counts let a reader (or aggregate_results.py) tell that apart from a
+    # genuinely accurate prediction on real dynamic data. "Dynamic" = the GT
+    # risk map has ANY nonzero cell anywhere across its horizons/sectors for
+    # that sample (a human/obstacle was within risk_distance_scale at some
+    # point); "positive event" = the same near-event threshold already used
+    # for precision/recall/F1 above (gt_pos, per (sample, horizon)).
+    dynamic_mask = risk_gt.reshape(N, -1).max(axis=-1) > 1e-9
+    dynamic_count = int(dynamic_mask.sum())
+
     return {
         "aux_risk_rmse": round(risk_rmse, 6),
         "aux_min_dist_mae_m": round(min_dist_mae_m, 6),
@@ -123,6 +135,9 @@ def compute_aux_eval_metrics(risk_pred, risk_gt, md_pred, md_gt, *,
         "aux_near_event_f1": round(f1, 6),
         "aux_eval_samples": N,
         "aux_near_event_threshold_m": thr,
+        "aux_dynamic_sample_count": dynamic_count,
+        "aux_dynamic_sample_frac": round(dynamic_count / N, 6),
+        "aux_positive_event_count": int(gt_pos.sum()),
     }
 
 

@@ -1,3 +1,5 @@
+import contextlib
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,12 +30,59 @@ from drl_agent.rl.networks.aux_temporal import TemporalFusionEncoder
 # action_risk_head.py's module docstring for the gradient rule.
 from drl_agent.rl.networks.action_risk_head import ActionRiskConfig, ActionRiskHead
 
+# STAGE 8: fixed physical-range observation normalization (ISOLATED
+# experimental feature, default OFF -- see obs_normalization.py docstring).
+from drl_agent.rl.networks.obs_normalization import ObsNormalizationConfig, ObsNormalizer
+
 
 # Network definitions + TQC loss live in drl_agent.rl.networks.tqc; checkpoint
 # I/O in drl_agent.rl.checkpointing.tqc_io. Re-imported here so callers of
 # this module can keep using `Actor`, `Critic`, `quantile_huber_loss` directly.
 from drl_agent.rl.networks.tqc import Actor, Critic, quantile_huber_loss
 import drl_agent.rl.checkpointing.tqc_io as tqc_io
+
+
+@contextlib.contextmanager
+def _frozen_params(*modules):
+    """STAGE 5: temporarily set requires_grad_(False) on every parameter of the
+    given module(s) for a single forward call, guaranteed to restore True even
+    if the wrapped block raises (exception-safe, unlike a bare set-False/call/
+    set-True sequence). Used so a "frozen submodule, live input" forward pass
+    (e.g. the critic during the actor update) never picks up a gradient into
+    its OWN parameters from that pass's backward(), while gradient still flows
+    through to whatever tensor was fed as input (the action, in the critic's
+    case) -- exactly mirroring why action_risk_head is frozen the same way for
+    the actor-update's extra_pi computation."""
+    params = [p for m in modules for p in m.parameters()]
+    for p in params:
+        p.requires_grad_(False)
+    try:
+        yield
+    finally:
+        for p in params:
+            p.requires_grad_(True)
+
+
+def _polyak_update_foreach(src_params, tgt_params, tau: float):
+    """STAGE 5: Polyak (exponential moving average) target update, batched via
+    torch._foreach_* instead of a Python for-loop over individual parameter
+    tensors -- one CUDA kernel launch per op across ALL parameters instead of
+    one per parameter, mathematically identical to the original per-parameter
+    ``target.data.copy_(tau * src.data + (1 - tau) * target.data)`` loop (see
+    test_foreach_polyak_matches_per_parameter_loop_numerically). Wrapped in
+    torch.no_grad() for clarity/defensiveness -- the .data-based ops already
+    bypass autograd either way, so this changes no numerics, only makes the
+    "never build a graph here" intent explicit."""
+    src_list = list(src_params)
+    tgt_list = list(tgt_params)
+    if not src_list:
+        return
+    with torch.no_grad():
+        src_data = [p.data for p in src_list]
+        tgt_data = [p.data for p in tgt_list]
+        scaled_src = torch._foreach_mul(src_data, tau)
+        torch._foreach_mul_(tgt_data, 1.0 - tau)
+        torch._foreach_add_(tgt_data, scaled_src)
 
 
 class Agent(object):
@@ -103,6 +152,31 @@ class Agent(object):
         self.aux_cfg = AuxPredConfig(self.hyperparameters.get("aux_prediction", {}))
         self.aux_enabled = self.aux_cfg.enabled
         self.aux_beta = self.aux_cfg.loss_weight
+
+        # STAGE 8: fixed physical-range observation normalization (ISOLATED
+        # experimental feature -- default OFF, NOT enabled for phase2/both;
+        # see obs_normalization.py's module docstring). Applied to `state`/
+        # `next_state` right after sampling in train() and to `state_t` in
+        # select_action() -- NOT wired into the aux branch's separate
+        # get_last_state_history() temporal-context path, an explicit,
+        # documented scope exclusion for this pass (see the Stage-8 report).
+        onc = dict(self.hyperparameters.get("observation_normalization", {}) or {})
+        self.obs_norm_cfg = ObsNormalizationConfig.from_dict(onc)
+        self.obs_normalizer = None
+        if self.obs_norm_cfg.enabled:
+            if not env_obs_dim or not env_agent_dim:
+                raise RuntimeError(
+                    "observation_normalization.enabled=true requires env_obs_dim "
+                    "and env_agent_dim (the trainer must pass them, same as "
+                    "temporal_actor_context) so the per-frame LiDAR/agent scale "
+                    "layout can be built correctly."
+                )
+            self.obs_normalizer = ObsNormalizer(
+                self.obs_norm_cfg, state_dim=state_dim,
+                obs_dim=int(env_obs_dim), agent_dim=int(env_agent_dim),
+                history_len=int(onc.get("history_len", 1)),
+                stack_agent_state=bool(onc.get("stack_agent_state", False)),
+            )
         # AUX_PRED: action-conditioned variant (predict the same future-risk
         # target from z_t AND the upcoming action sequence).  Only valid when aux
         # is enabled; fail-fast on a contradictory config.
@@ -179,6 +253,14 @@ class Agent(object):
                 "critic_risk_input.enabled=true requires "
                 "action_risk_head.enabled=true."
             )
+        # STAGE 3: gate derived from (current_stage, enable_from_stage) -- set
+        # here from the stage-0 default so a trainer that never calls
+        # set_curriculum_stage() (e.g. non-curriculum) still gets a defined,
+        # correct gate instead of an undefined attribute. Recomputed on every
+        # set_curriculum_stage() call below.
+        self._action_risk_active = bool(
+            self.action_risk_enabled and self.current_stage >= self.action_risk_cfg.enable_from_stage
+        )
         if self.critic_risk_input_enabled:
             print(
                 "[Agent] critic_risk_input.enabled=true: the critic's input "
@@ -262,6 +344,17 @@ class Agent(object):
         self.encoder_target.load_state_dict(self.encoder.state_dict())
         self.checkpoint_encoder = _make_encoder().to(self.device)
         self.checkpoint_encoder.load_state_dict(self.encoder.state_dict())
+        # STAGE 5: both are only ever Polyak-copied (encoder_target) or used
+        # under torch.no_grad() for eval-time inference (checkpoint_encoder,
+        # select_action) -- never backprop'd into directly. Permanently
+        # freezing is defensive (a future forward call outside no_grad() can
+        # never accidentally build a wasted graph) and matches encoder_target's
+        # existing Polyak-only role; .data.copy_() is unaffected by
+        # requires_grad either way.
+        for p in self.encoder_target.parameters():
+            p.requires_grad_(False)
+        for p in self.checkpoint_encoder.parameters():
+            p.requires_grad_(False)
         latent_dim = self.encoder.out_dim
 
         # AUX_PRED (v2): aux-only temporal context encoder (GRU over the shared
@@ -309,6 +402,9 @@ class Agent(object):
                 temporal_dim=_ar_temporal_dim).to(self.device)
             self.action_risk_head_target.load_state_dict(
                 self.action_risk_head.state_dict())
+            # STAGE 5: Polyak-only, same rationale as encoder_target above.
+            for p in self.action_risk_head_target.parameters():
+                p.requires_grad_(False)
         else:
             self.action_risk_head = None
             self.action_risk_head_target = None
@@ -345,9 +441,17 @@ class Agent(object):
             extra_dim=_critic_extra_dim,
         ).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
+        # STAGE 5: Polyak-only, same rationale as encoder_target above.
+        for p in self.critic_target.parameters():
+            p.requires_grad_(False)
 
         # Checkpoint actor (평가 시 use_checkpoint=True 경로)
         self.checkpoint_actor = Actor(latent_dim, action_dim, self.actor_hdim, self.actor_activ).to(self.device)
+        # STAGE 5: only ever used under torch.no_grad() (select_action's
+        # use_checkpoint branch) -- same defensive rationale as
+        # checkpoint_encoder above.
+        for p in self.checkpoint_actor.parameters():
+            p.requires_grad_(False)
 
         # Temperature (α): auto / fixed
         if isinstance(self.ent_coef, str) and self.ent_coef.startswith("auto"):
@@ -415,6 +519,20 @@ class Agent(object):
         # 기본 경로: <log_dir>/tqc_metrics.jsonl
         self.json_log_path = os.path.join(base_dir, "tqc_metrics.json")
 
+        # STAGE 6: interval-configurable logging (default 1 -> log every
+        # step, byte-identical to before). scalar_log_interval gates
+        # TensorBoard add_scalar calls; json_log_interval gates whether a
+        # JSON record is built for this step at all; json_flush_interval
+        # (independent of json_log_interval) controls how many BUFFERED
+        # records accumulate before a single physical open/write-all/close,
+        # instead of one open/close per record. All three preserve the real
+        # self.training_steps as the logged step number regardless of
+        # interval -- sparse logging skips steps, it never renumbers them.
+        self.scalar_log_interval = max(1, int(hyperparameters.get("scalar_log_interval", 1)))
+        self.json_log_interval = max(1, int(hyperparameters.get("json_log_interval", 1)))
+        self.json_flush_interval = max(1, int(hyperparameters.get("json_flush_interval", 1)))
+        self._json_buffer = []
+
     # JSON 라인 기록 헬퍼
     def _json_log(self, step: int, **metrics):
         path = getattr(self, "json_log_path", None)
@@ -437,12 +555,33 @@ class Agent(object):
             except Exception:
                 continue
 
+        self._json_buffer.append(rec)
+        if len(self._json_buffer) >= self.json_flush_interval:
+            self._flush_json_buffer()
+
+    def _flush_json_buffer(self):
+        """STAGE 6: physically write every buffered JSON record in ONE
+        open/write-all/close instead of one open/close per record."""
+        if not self._json_buffer:
+            return
+        path = self.json_log_path
         dirpath = os.path.dirname(path)
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
-
         with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            for rec in self._json_buffer:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        self._json_buffer.clear()
+
+    def flush_logs(self):
+        """STAGE 6: flush any buffered JSON records + the TensorBoard writer
+        on demand. Call on ALL exit paths (normal completion, KeyboardInterrupt,
+        environment-service failure, any other exception, checkpoint-on-
+        failure) so a run that stops between flush intervals never silently
+        loses its most recent metrics."""
+        self._flush_json_buffer()
+        if self.writer:
+            self.writer.flush()
 
     @staticmethod
     def prep_hyperparameters(hyperparameters):
@@ -485,41 +624,85 @@ class Agent(object):
         """AUX_PRED: build the Adam optimizer over the shared trunk (critic +
         encoder + aux head).  Used at construction AND to reset the moments when
         an aux-head architecture change on resume makes the saved moments stale.
-        """
-        trunk_params = list(self.critic.parameters())
+
+        STAGE 8 (isolated experimental feature, default OFF): when
+        optimizer_groups.enabled is set, builds ONE Adam instance with
+        SEPARATE param_groups per component (critic/encoder/aux_head/
+        action_risk_head) instead of one flat parameter list -- each group
+        can have its own LR (e.g. a smaller encoder_lr than the head LRs),
+        while still being a single optimizer (one .zero_grad()/.step() pair,
+        unchanged call sites in train()). Any component whose LR isn't
+        explicitly configured falls back to critic_lr, so enabling the
+        feature WITHOUT setting different LRs is behaviorally a no-op
+        (identical effective LR everywhere, just split across groups)."""
+        og = dict(self.hyperparameters.get("optimizer_groups", {}) or {})
+        use_groups = bool(og.get("enabled", False))
+
+        components = [("critic", list(self.critic.parameters()))]
         if self.encoder.has_params():
-            trunk_params += list(self.encoder.parameters())
+            components.append(("encoder", list(self.encoder.parameters())))
         if self.aux_head is not None:
-            trunk_params += list(self.aux_head.parameters())
+            components.append(("aux_head", list(self.aux_head.parameters())))
         # AUX_PRED (v2): the temporal encoder is part of the aux trunk; its grads
         # flow with critic + aux loss (never the actor) -> same optimizer group.
         if getattr(self, "temporal_encoder", None) is not None:
-            trunk_params += list(self.temporal_encoder.parameters())
+            components.append(("aux_head", list(self.temporal_encoder.parameters())))
         # PHASE2: the Action-Risk Head trains from its own supervised loss added
         # into the SAME trunk loss (critic + beta_aux*aux + risk_beta*action_risk)
         # -> same optimizer group. The TARGET copy is never optimized directly
         # (polyak-updated only, like critic_target/encoder_target).
         if getattr(self, "action_risk_head", None) is not None:
-            trunk_params += list(self.action_risk_head.parameters())
-        return torch.optim.Adam(trunk_params, lr=self.critic_lr)
+            components.append(("action_risk_head", list(self.action_risk_head.parameters())))
+
+        if not use_groups:
+            trunk_params = [p for _, params in components for p in params]
+            return torch.optim.Adam(trunk_params, lr=self.critic_lr)
+
+        lr_key = {"critic": "critic_lr", "encoder": "encoder_lr",
+                  "aux_head": "aux_head_lr", "action_risk_head": "action_risk_head_lr"}
+        param_groups = []
+        merged = {}
+        for name, params in components:
+            merged.setdefault(name, []).extend(params)
+        for name, params in merged.items():
+            lr = float(og.get(lr_key[name], self.critic_lr))
+            param_groups.append({"params": params, "lr": lr})
+        return torch.optim.Adam(param_groups, lr=self.critic_lr)
 
     def set_curriculum_stage(self, stage: int):
-        """TEMPORAL_ACTOR / AUX_PRED: notify the agent of the current curriculum
-        stage so the temporal feature strength and aux loss weight can ramp in
-        with the curriculum WITHOUT changing any tensor shapes.
+        """TEMPORAL_ACTOR / AUX_PRED / STAGE 3: notify the agent of the current
+        curriculum stage so the temporal feature strength, aux loss weight and
+        action-risk-head activation can ramp in with the curriculum WITHOUT
+        changing any tensor shapes.
 
         - temporal_gain = 1.0 once stage >= stage_enable_from, else 0.0 (the
           temporal feature contributes nothing and gets no gradient at the easy
-          early stages). Applied to the online / target / checkpoint encoders so
-          rollout, TD target and checkpoint-eval all use the same gain.
+          early stages, and its forward pass is skipped entirely -- see
+          TemporalFusionEncoder.forward). Applied to the online / target /
+          checkpoint encoders so rollout, TD target and checkpoint-eval all use
+          the same gain.
         - the aux loss weight follows aux_prediction.stagewise_loss_schedule
-          (read in _current_aux_beta).
-        Safe no-op for the legacy (non-fusion) encoder / disabled temporal."""
+          (read in _current_aux_beta); train() skips aux_head's forward pass
+          entirely when that weight is exactly 0 for the current step.
+        - _action_risk_active = stage >= action_risk_head.enable_from_stage;
+          train() skips action_risk_head's forward pass entirely (both call
+          sites: its own supervised loss AND critic_risk_input's `extra`) when
+          this is False, substituting a fixed all-zero (batch, 2) tensor for
+          `extra` when critic_risk_input is enabled so the critic's input
+          width never changes with stage. Re-derived from the CURRENT stage on
+          every call (not latched), so demoting the stage re-disables it too --
+          resume calls this from the restored curriculum_stage parameter, so
+          the gate is always consistent with checkpoint state.
+        Safe no-op for the legacy (non-fusion) encoder / disabled temporal /
+        disabled action-risk head."""
         self.current_stage = int(stage)
         gain = 1.0 if int(stage) >= self.temporal_stage_enable_from else 0.0
         for enc in (self.encoder, self.encoder_target, self.checkpoint_encoder):
             if hasattr(enc, "set_temporal_gain"):
                 enc.set_temporal_gain(gain)
+        self._action_risk_active = bool(
+            self.action_risk_enabled and self.current_stage >= self.action_risk_cfg.enable_from_stage
+        )
 
     def _current_aux_beta(self):
         """AUX_PRED: effective trunk-level aux weight at this step.
@@ -567,6 +750,10 @@ class Agent(object):
 
             state_np = np.asarray(state, dtype=np.float32).reshape(1, -1)
             state_t  = torch.from_numpy(state_np).to(self.device)
+            # STAGE 8 (isolated experimental, default OFF): same fixed-scale
+            # normalization as train(), applied before either encoder.
+            if self.obs_normalizer is not None:
+                state_t = self.obs_normalizer.normalize(state_t)
 
             # AUX_PRED: encode the raw state first, then run the policy on the
             # latent.  At inference NO privileged info / aux head is used.
@@ -677,6 +864,12 @@ class Agent(object):
 
         # Sample batch from replay buffer
         state, action, next_state, reward, not_done = self.replay_buffer.sample()
+        # STAGE 8 (isolated experimental, default OFF): fixed physical-range
+        # normalization applied identically to state and next_state, right
+        # before either reaches an encoder.
+        if self.obs_normalizer is not None:
+            state = self.obs_normalizer.normalize(state)
+            next_state = self.obs_normalizer.normalize(next_state)
         # AUX_PRED: matching auxiliary targets for this batch (None if disabled).
         aux_target = self.replay_buffer.get_last_aux()
 
@@ -716,16 +909,24 @@ class Agent(object):
             # TARGET head (mirrors encoder_target -- keeps whatever extra signal
             # feeds the target Q on a slow-moving copy). Already under
             # torch.no_grad() so no explicit .detach() is needed.
+            # STAGE 3: below action_risk_head.enable_from_stage, skip the
+            # forward pass entirely and feed the critic a fixed all-zero
+            # (batch, 2) tensor instead -- extra_dim never changes with stage.
             extra_next = None
             if self.critic_risk_input_enabled:
-                # PHASE2 (temporal): paired with z_next -> from the TARGET
-                # encoder on next_state, mirroring z_next's own origin.
-                ar_temporal_next = (
-                    self.encoder_target.temporal_feature(next_state)
-                    if self.action_risk_temporal_enabled else None
-                )
-                extra_next = self.action_risk_head_target(
-                    z_next, next_actions, temporal_feature=ar_temporal_next)
+                if self._action_risk_active:
+                    # PHASE2 (temporal): paired with z_next -> from the TARGET
+                    # encoder on next_state, mirroring z_next's own origin.
+                    ar_temporal_next = (
+                        self.encoder_target.temporal_feature(next_state)
+                        if self.action_risk_temporal_enabled else None
+                    )
+                    extra_next = self.action_risk_head_target(
+                        z_next, next_actions, temporal_feature=ar_temporal_next)
+                else:
+                    extra_next = torch.zeros(
+                        z_next.shape[0], self.action_risk_head_target.out.out_features,
+                        device=self.device)
 
             # Get target quantiles
             next_quantiles = self.critic_target(z_next, next_actions, extra=extra_next)  # [B, n_critics, n_quantiles]
@@ -753,18 +954,25 @@ class Agent(object):
         # PHASE2 (temporal): ar_temporal_cur also gets REUSED (detached) for the
         # actor-update call further below -- same state batch, same encoder ->
         # identical feature, no need to recompute it a third time.
+        # STAGE 3: below action_risk_head.enable_from_stage, skip this forward
+        # pass entirely (ar_pred_cur stays None -> the supervised loss below is
+        # naturally skipped too) -- extra_cur is filled with a fixed all-zero
+        # (batch, 2) tensor when critic_risk_input is enabled, same as extra_next.
         ar_pred_cur = None
         ar_temporal_cur = None
-        if self.action_risk_enabled and self.action_risk_head is not None:
+        if self.action_risk_enabled and self.action_risk_head is not None and self._action_risk_active:
             if self.action_risk_temporal_enabled:
                 ar_temporal_cur = self.encoder.temporal_feature(state)
             ar_pred_cur = self.action_risk_head(
                 z, action, temporal_feature=ar_temporal_cur)
-        extra_cur = (
-            ar_pred_cur.detach()
-            if (self.critic_risk_input_enabled and ar_pred_cur is not None)
-            else None
-        )
+        if self.critic_risk_input_enabled:
+            extra_cur = (
+                ar_pred_cur.detach() if ar_pred_cur is not None
+                else torch.zeros(z.shape[0], self.action_risk_head.out.out_features,
+                                  device=self.device)
+            )
+        else:
+            extra_cur = None
 
         # Get current quantiles (encoder latent keeps its graph here)
         current_quantiles = self.critic(z, action, extra=extra_cur)  # [B, n_critics, n_quantiles]
@@ -774,10 +982,19 @@ class Agent(object):
 
         # AUX_PRED: future-risk prediction loss; gradients flow into the shared
         # encoder together with the critic loss (encoder = critic + beta*aux).
-        aux_loss_val = 0.0
+        # STAGE 3: beta computed FIRST and the WHOLE block (aux head forward,
+        # aux-temporal-context encoder forward, action-conditioned future-
+        # action lookup) is skipped when it's exactly 0 -- not just the loss
+        # contribution zeroed after computing it. beta==0 covers BOTH an
+        # explicit aux_prediction.stagewise_loss_schedule entry of 0.0 for the
+        # current stage AND the pre-warmup window (aux_beta_warmup_steps not
+        # yet elapsed) -- both cases already contribute nothing to the loss,
+        # so skipping the compute changes no numerics, only wasted work.
         aux_logs = {}
         total_trunk_loss = critic_loss
-        if self.aux_enabled and self.aux_head is not None and aux_target is not None:
+        beta = self._current_aux_beta()
+        if (self.aux_enabled and self.aux_head is not None and aux_target is not None
+                and beta != 0.0):
             # AUX_PRED (v2): aux-only temporal context (recent in-episode state
             # history). None when temporal is off -> the head ignores it and the
             # v1 path is unchanged. Shares the encoder graph so it shapes E_psi.
@@ -806,9 +1023,7 @@ class Agent(object):
                     aux_pred, aux_target, self.aux_cfg, self.device
                 )
                 aux_logs.update(_logs)
-                beta = self._current_aux_beta()
                 total_trunk_loss = critic_loss + beta * aux_loss
-                aux_loss_val = float(aux_loss.detach().item())
                 aux_logs["aux/beta"] = float(beta)
 
         # PHASE2: Action-Risk Head supervised loss (MSE against the PRIVILEGED
@@ -851,27 +1066,47 @@ class Agent(object):
         # grad for this graph, so restoring True right after (before backward())
         # is safe and standard practice for a "frozen submodule, live input"
         # forward pass.
+        # STAGE 3: below action_risk_head.enable_from_stage, skip this forward
+        # pass too and feed the critic a fixed all-zero (batch, 2) tensor
+        # (same neutral value as extra_cur/extra_next) -- constant w.r.t.
+        # actions_pi, so it contributes no gradient signal to the actor via
+        # this channel, matching "no risk information available yet."
         extra_pi = None
         if self.critic_risk_input_enabled:
-            # PHASE2 (temporal): reuse ar_temporal_cur (same state batch, same
-            # online encoder as z_actor's origin) -- .detach() so actor_loss
-            # cannot flow into self.encoder.temporal's parameters, mirroring
-            # why z_actor itself is detached from z. This does NOT touch the
-            # actions_pi gradient path (a separate cat() branch below), so it
-            # does not affect the critic_risk_input "gradient into the actor"
-            # channel at all.
-            ar_temporal_pi = (
-                ar_temporal_cur.detach() if ar_temporal_cur is not None else None
-            )
-            for p in self.action_risk_head.parameters():
-                p.requires_grad_(False)
-            extra_pi = self.action_risk_head(
-                z_actor, actions_pi, temporal_feature=ar_temporal_pi)
-            for p in self.action_risk_head.parameters():
-                p.requires_grad_(True)
+            if self._action_risk_active:
+                # PHASE2 (temporal): reuse ar_temporal_cur (same state batch,
+                # same online encoder as z_actor's origin) -- .detach() so
+                # actor_loss cannot flow into self.encoder.temporal's
+                # parameters, mirroring why z_actor itself is detached from z.
+                # This does NOT touch the actions_pi gradient path (a separate
+                # cat() branch below), so it does not affect the
+                # critic_risk_input "gradient into the actor" channel at all.
+                ar_temporal_pi = (
+                    ar_temporal_cur.detach() if ar_temporal_cur is not None else None
+                )
+                # STAGE 5: exception-safe freeze (was a bare set-False/call/
+                # set-True sequence that could leave the head permanently
+                # frozen if the forward call raised).
+                with _frozen_params(self.action_risk_head):
+                    extra_pi = self.action_risk_head(
+                        z_actor, actions_pi, temporal_feature=ar_temporal_pi)
+            else:
+                extra_pi = torch.zeros(
+                    z_actor.shape[0], self.action_risk_head.out.out_features,
+                    device=self.device)
 
-        # Get Q-values for policy actions
-        qf_pi = self.critic(z_actor, actions_pi, extra=extra_pi)
+        # Get Q-values for policy actions.
+        # STAGE 5: freeze the critic's OWN parameters for this forward call
+        # (exception-safe context manager) -- actor_loss.backward() must
+        # reach actions_pi (the intended "does this action raise Q" signal)
+        # but must NOT waste a backward pass building gradients into the
+        # critic's parameters, which the critic-trunk update above already
+        # owns exclusively and which get overwritten by critic_optimizer.step()
+        # on the NEXT train() call regardless. Same freeze-not-detach pattern
+        # already used for action_risk_head just above (detaching the whole
+        # output would sever d(qf_pi)/d(actions_pi) too).
+        with _frozen_params(self.critic):
+            qf_pi = self.critic(z_actor, actions_pi, extra=extra_pi)
         # Average over quantiles and critics
         qf_pi = qf_pi.mean(dim=2).mean(dim=1, keepdim=True)
 
@@ -897,25 +1132,24 @@ class Agent(object):
         ** Target Network Update
         ******************************************"""
         if self.training_steps % self.target_update_interval == 0:
-            # Polyak averaging
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+            # STAGE 5: Polyak averaging, batched via torch._foreach_* instead
+            # of a per-parameter Python loop -- numerically identical to the
+            # original ``target.data.copy_(tau*src.data + (1-tau)*target.data)``
+            # loop (see test_foreach_polyak_matches_per_parameter_loop_
+            # numerically), fewer CUDA kernel launches for networks with many
+            # parameter tensors (5 critics here).
+            _polyak_update_foreach(self.critic.parameters(), self.critic_target.parameters(), self.tau)
 
             # AUX_PRED: keep the target encoder in lock-step with the encoder.
             if self.encoder.has_params():
-                for param, target_param in zip(
-                    self.encoder.parameters(), self.encoder_target.parameters()
-                ):
-                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                _polyak_update_foreach(self.encoder.parameters(), self.encoder_target.parameters(), self.tau)
 
             # PHASE2: keep the target Action-Risk Head in lock-step (mirrors the
             # encoder_target block above).
             if self.action_risk_head is not None:
-                for param, target_param in zip(
+                _polyak_update_foreach(
                     self.action_risk_head.parameters(),
-                    self.action_risk_head_target.parameters(),
-                ):
-                    target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
+                    self.action_risk_head_target.parameters(), self.tau)
 
             if self.prioritized:
                 self.replay_buffer.reset_max_priority()
@@ -923,39 +1157,37 @@ class Agent(object):
         """******************************************
         ** Logging
         ******************************************"""
-        if self.writer:
-            self.writer.add_scalar("loss/critic", float(critic_loss.item()), self.training_steps)
-            self.writer.add_scalar("loss/actor",  float(actor_loss.item()),  self.training_steps)
-            self.writer.add_scalar("values/Q",    float(qf_pi.mean().item()), self.training_steps)
-            self.writer.add_scalar("values/Q_max", float(current_quantiles.max().item()), self.training_steps)
-            if self.ent_coef_auto:
-                self.writer.add_scalar("values/ent_coef", float(ent_coef.item()), self.training_steps)
-                self.writer.add_scalar("loss/ent_coef", float(ent_coef_loss.item()), self.training_steps)
-            # AUX_PRED: log auxiliary loss terms when active.
-            if self.aux_enabled and aux_logs:
-                for _k, _v in aux_logs.items():
-                    self.writer.add_scalar(_k, float(_v), self.training_steps)
-            # PHASE2: log the Action-Risk Head's supervised loss when active.
-            if self.action_risk_enabled and action_risk_logs:
-                for _k, _v in action_risk_logs.items():
-                    self.writer.add_scalar(_k, float(_v), self.training_steps)
-
-        # === JSON 동시 기록 ===
-        self._json_log(
-            self.training_steps,
-            **{
+        # STAGE 6: .item() forces a GPU->CPU sync. Compute each scalar AT MOST
+        # ONCE per train() call (the original code called critic_loss.item()
+        # etc. TWICE -- once for TensorBoard, once for JSON) and skip the sync
+        # entirely on a step where NEITHER sink is due (scalar_log_interval /
+        # json_log_interval, both default 1 -> log every step, byte-identical
+        # to before).
+        log_scalar_now = (self.training_steps % self.scalar_log_interval == 0) and self.writer
+        log_json_now = (self.training_steps % self.json_log_interval == 0)
+        if log_scalar_now or log_json_now:
+            scalars = {
                 "loss/critic":  float(critic_loss.item()),
                 "loss/actor":   float(actor_loss.item()),
                 "values/Q":     float(qf_pi.mean().item()),
                 "values/Q_max": float(current_quantiles.max().item()),
-                **({"values/ent_coef": float(ent_coef.item()),
-                    "loss/ent_coef":   float(ent_coef_loss.item())} if self.ent_coef_auto else {}),
-                # AUX_PRED: persist auxiliary metrics to the JSONL log too.
-                **(aux_logs if (self.aux_enabled and aux_logs) else {}),
-                # PHASE2: persist the Action-Risk Head's loss too.
-                **(action_risk_logs if (self.action_risk_enabled and action_risk_logs) else {}),
             }
-        )
+            if self.ent_coef_auto:
+                scalars["values/ent_coef"] = float(ent_coef.item())
+                scalars["loss/ent_coef"] = float(ent_coef_loss.item())
+            # AUX_PRED / PHASE2: aux_logs / action_risk_logs are already
+            # plain floats (materialised where computed, gated by Stage 3's
+            # forward-skip -- not re-synced here).
+            if self.aux_enabled and aux_logs:
+                scalars.update(aux_logs)
+            if self.action_risk_enabled and action_risk_logs:
+                scalars.update(action_risk_logs)
+
+            if log_scalar_now:
+                for _k, _v in scalars.items():
+                    self.writer.add_scalar(_k, _v, self.training_steps)
+            if log_json_now:
+                self._json_log(self.training_steps, **scalars)
 
     def train_and_checkpoint(self, ep_timesteps, ep_return):
         """Train and potentially update checkpoint"""

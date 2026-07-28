@@ -14,6 +14,7 @@ import pytest
 try:
     import numpy as np
     import torch
+    import torch.nn.functional as F
 
     import drl_agent.rl.networks.aux_prediction as ap
     import drl_agent.rl.networks.aux_temporal as apt
@@ -114,6 +115,65 @@ def test_gain_one_uses_history():
     assert not torch.allclose(o1, o2, atol=1e-6), "history ignored at temporal_gain=1"
 
 
+def test_gain_zero_skips_the_temporal_encoder_forward_call():
+    # STAGE 3: gain==0 must SKIP self.temporal(scan) entirely (not compute it
+    # and multiply by 0) -- verified by spying on the actual forward call, not
+    # just checking the output value.
+    enc = _enc().eval()
+    enc.set_temporal_gain(0.0)
+    calls = []
+    real_forward = enc.temporal.forward
+    enc.temporal.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    with torch.no_grad():
+        enc(_make_state(b=2))
+    assert calls == [], "temporal encoder forward was called despite gain==0"
+
+
+def test_gain_one_does_not_skip_the_temporal_encoder_forward_call():
+    enc = _enc().eval()
+    enc.set_temporal_gain(1.0)
+    calls = []
+    real_forward = enc.temporal.forward
+    enc.temporal.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    with torch.no_grad():
+        enc(_make_state(b=2))
+    assert calls == [1], "temporal encoder forward must run when gain==1"
+
+
+def test_skip_and_compute_then_zero_are_numerically_equivalent():
+    # Output/gradient-contract equivalence: an encoder using the skip path
+    # (gain==0) must produce IDENTICAL forward output to one that computes
+    # self.temporal(scan) and multiplies by a gain frozen at exactly 0.0 --
+    # proving the optimization changes only WHETHER the compute runs, never
+    # the resulting values seen downstream by the fusion/actor/critic.
+    torch.manual_seed(0)
+    enc_skip = _enc().eval()
+    enc_skip.set_temporal_gain(0.0)
+    enc_ref = _enc().eval()
+    enc_ref.load_state_dict(enc_skip.state_dict())
+    state = _make_state(b=4)
+    with torch.no_grad():
+        out_skip = enc_skip(state)
+        # Reference: force the OLD always-compute-then-scale path explicitly.
+        cur, scan = enc_ref._split(state)
+        z_cur = enc_ref.main(cur)
+        z_temporal_ref = enc_ref.temporal(scan) * 0.0
+        out_ref = F.elu(enc_ref.fusion(torch.cat([z_cur, z_temporal_ref], dim=-1)))
+    assert torch.allclose(out_skip, out_ref, atol=1e-6)
+
+
+def test_temporal_feature_also_skips_forward_call_at_gain_zero():
+    enc = _enc().eval()
+    enc.set_temporal_gain(0.0)
+    calls = []
+    real_forward = enc.temporal.forward
+    enc.temporal.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    with torch.no_grad():
+        out = enc.temporal_feature(_make_state(b=2))
+    assert calls == []
+    assert torch.equal(out, torch.zeros(2, enc.temporal.out_dim))
+
+
 def test_gain_zero_gives_temporal_encoder_zero_gradient():
     enc = _enc()
     enc.set_temporal_gain(0.0)
@@ -198,6 +258,52 @@ def test_agent_stage_gating_controls_temporal_gradient():
     t_after2 = list(agent.encoder.temporal.parameters())
     assert any(not torch.equal(b, a) for b, a in zip(t_before2, t_after2)), \
         "temporal encoder did not update at stage 2 (gain 1)"
+
+
+# --------------------------------------------------------------------------- #
+#  STAGE 3: aux forward pass skipped entirely when the effective beta is 0
+#  (not just its loss contribution zeroed) -- _agent_hp()'s
+#  stagewise_loss_schedule=[0.0, 0.0, 0.1, 0.3, 0.5] makes stage 0/1 beta==0.
+# --------------------------------------------------------------------------- #
+def test_aux_head_forward_skipped_when_stagewise_beta_is_zero():
+    from drl_agent.rl.algorithms.tqc.agent import Agent
+    agent = Agent(STATE_DIM, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
+    _fill(agent)
+    agent.set_curriculum_stage(0)
+    assert agent._current_aux_beta() == 0.0
+
+    calls = []
+    real_forward = agent.aux_head.forward
+    agent.aux_head.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    agent.train()
+    assert calls == [], "aux_head forward ran despite beta==0 for this stage"
+
+
+def test_aux_head_forward_runs_when_stagewise_beta_is_nonzero():
+    from drl_agent.rl.algorithms.tqc.agent import Agent
+    agent = Agent(STATE_DIM, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
+    _fill(agent)
+    agent.set_curriculum_stage(2)
+    assert agent._current_aux_beta() == 0.1
+
+    calls = []
+    real_forward = agent.aux_head.forward
+    agent.aux_head.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    agent.train()
+    assert calls, "aux_head forward must run when beta != 0"
+
+
+def test_aux_head_params_do_not_update_while_beta_is_zero():
+    from drl_agent.rl.algorithms.tqc.agent import Agent
+    agent = Agent(STATE_DIM, 2, 1.0, _agent_hp(), env_obs_dim=OBS, env_agent_dim=AGENT)
+    _fill(agent)
+    agent.set_curriculum_stage(0)
+    before = [p.detach().clone() for p in agent.aux_head.parameters()]
+    for _ in range(5):
+        agent.train()
+    after = list(agent.aux_head.parameters())
+    assert all(torch.equal(b, a) for b, a in zip(before, after)), \
+        "aux_head must not update while beta==0 (no loss term reaches it)"
 
 
 def test_agent_state_dim_mismatch_fails_fast():

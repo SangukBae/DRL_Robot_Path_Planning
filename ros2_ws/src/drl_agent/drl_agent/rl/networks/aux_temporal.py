@@ -174,10 +174,23 @@ class TemporalFusionEncoder(nn.Module):
         scan = torch.stack(frames, dim=1)                   # (B, N, O)
         return cur, scan
 
+    def _zero_temporal_feature(self, batch_size: int, ref: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(batch_size, self.temporal.out_dim,
+                            device=ref.device, dtype=ref.dtype)
+
     def forward(self, state):
         cur, scan = self._split(state)
         z_cur = self.main(cur)
-        z_temporal = self.temporal(scan) * self.temporal_gain
+        # STAGE 3: at gain==0 the temporal term is discarded downstream
+        # regardless (0 * anything == 0, and its gradient is 0 too), so SKIP
+        # the conv1d/GRU forward entirely instead of computing then zeroing --
+        # numerically identical output/gradients (see
+        # test_skip_and_compute_then_zero_are_numerically_equivalent), just
+        # without the wasted compute.
+        if self.temporal_gain == 0.0:
+            z_temporal = self._zero_temporal_feature(cur.shape[0], cur)
+        else:
+            z_temporal = self.temporal(scan) * self.temporal_gain
         return F.elu(self.fusion(torch.cat([z_cur, z_temporal], dim=-1)))
 
     def temporal_feature(self, state):
@@ -191,7 +204,10 @@ class TemporalFusionEncoder(nn.Module):
         optional ``use_temporal_context``) calls this instead -- on the SAME
         ``state`` batch already passed to ``forward()``, so the split/gain
         logic is guaranteed identical, at the cost of recomputing the (cheap,
-        ``feature_dim``-wide) ScanTemporalEncoder pass a second time."""
+        ``feature_dim``-wide) ScanTemporalEncoder pass a second time. Skips
+        the forward call at gain==0, same as forward() above."""
+        if self.temporal_gain == 0.0:
+            return self._zero_temporal_feature(state.shape[0], state)
         _, scan = self._split(state)
         return self.temporal(scan) * self.temporal_gain
 

@@ -278,6 +278,119 @@ def test_save_load_roundtrip_with_both_enabled(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+#  STAGE 3: curriculum-stage-gated forward pass (enable_from_stage)
+# --------------------------------------------------------------------------- #
+def test_enable_from_stage_defaults_to_zero_always_active():
+    cfg = ActionRiskConfig(dict(enabled=True))
+    assert cfg.enable_from_stage == 0
+
+
+def test_head_only_below_threshold_skips_forward_call_entirely(tmp_path):
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "enable_from_stage": 3}),
+                  log_dir=str(tmp_path))
+    _fill(agent, action_risk_target=True)
+    agent.set_curriculum_stage(0)
+    assert agent._action_risk_active is False
+
+    calls = []
+    real_forward = agent.action_risk_head.forward
+    agent.action_risk_head.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    agent.train()
+    assert calls == [], "action_risk_head forward ran below enable_from_stage"
+
+    before = [p.detach().clone() for p in agent.action_risk_head.parameters()]
+    for _ in range(5):
+        agent.train()
+    after = list(agent.action_risk_head.parameters())
+    assert all(torch.equal(b, a) for b, a in zip(before, after)), \
+        "action_risk_head must not update below enable_from_stage (no loss term)"
+
+
+def test_head_only_above_threshold_runs_forward_and_trains(tmp_path):
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "enable_from_stage": 3}),
+                  log_dir=str(tmp_path))
+    _fill(agent, action_risk_target=True)
+    agent.set_curriculum_stage(3)
+    assert agent._action_risk_active is True
+
+    calls = []
+    real_forward = agent.action_risk_head.forward
+    agent.action_risk_head.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    agent.train()
+    assert calls, "action_risk_head forward must run at/above enable_from_stage"
+
+    before = [p.detach().clone() for p in agent.action_risk_head.parameters()]
+    for _ in range(5):
+        agent.train()
+    after = list(agent.action_risk_head.parameters())
+    assert any(not torch.equal(b, a) for b, a in zip(before, after))
+
+
+def test_critic_risk_input_below_threshold_feeds_fixed_zero_extra(tmp_path):
+    """critic_risk_input requires action_risk_head, and its extra_dim=2 input
+    width must NEVER change with stage -- below enable_from_stage the head's
+    forward is skipped but the critic still gets a (batch, 2) all-zero extra
+    tensor, not None (which would mismatch Critic(extra_dim=2)'s contract)."""
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "enable_from_stage": 3},
+                      critic_risk_input={"enabled": True}),
+                  log_dir=str(tmp_path))
+    assert agent.critic.extra_dim == 2
+    _fill(agent, action_risk_target=True)
+    agent.set_curriculum_stage(0)
+    assert agent._action_risk_active is False
+
+    calls = []
+    real_forward = agent.action_risk_head.forward
+    agent.action_risk_head.forward = lambda *a, **kw: (calls.append(1) or real_forward(*a, **kw))
+    real_target_forward = agent.action_risk_head_target.forward
+    agent.action_risk_head_target.forward = (
+        lambda *a, **kw: (calls.append(1) or real_target_forward(*a, **kw)))
+    # train() must run to completion (critic forward requires a correctly
+    # shaped extra tensor at all 3 call sites) without ever invoking either
+    # action_risk_head's forward.
+    agent.train()
+    assert calls == [], "action_risk_head(_target) forward ran below enable_from_stage"
+
+
+def test_gate_recomputed_on_set_curriculum_stage_transition(tmp_path):
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "enable_from_stage": 3}),
+                  log_dir=str(tmp_path))
+    agent.set_curriculum_stage(2)
+    assert agent._action_risk_active is False
+    agent.set_curriculum_stage(3)
+    assert agent._action_risk_active is True
+    agent.set_curriculum_stage(2)
+    assert agent._action_risk_active is False, \
+        "gate must re-derive from the CURRENT stage, not latch true forever"
+
+
+def test_gate_is_false_at_init_before_any_set_curriculum_stage_call_when_threshold_positive(tmp_path):
+    # Agent.current_stage defaults to 0; a positive enable_from_stage must
+    # leave the gate inactive even if set_curriculum_stage is never called
+    # (e.g. a non-curriculum trainer that never invokes it).
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32,
+                                    "enable_from_stage": 3}),
+                  log_dir=str(tmp_path))
+    assert agent._action_risk_active is False
+
+
+def test_gate_true_at_init_when_threshold_zero_default(tmp_path):
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                  _hp(action_risk={"enabled": True, "hidden_dim": 32}),
+                  log_dir=str(tmp_path))
+    assert agent._action_risk_active is True
+
+
+# --------------------------------------------------------------------------- #
 #  PHASE2 temporal context: Agent-level fail-fast + end-to-end wiring
 # --------------------------------------------------------------------------- #
 OBS, AGENT_DIM, HIST = 80, 7, 4

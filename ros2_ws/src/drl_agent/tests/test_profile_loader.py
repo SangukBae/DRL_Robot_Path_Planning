@@ -10,6 +10,7 @@ import os
 import textwrap
 
 import pytest
+import yaml
 
 from drl_agent.config import ProfileError, ProfileLoader
 from drl_agent.config.schema import CONFIG_FILE_KEYS
@@ -92,7 +93,10 @@ def test_available_profiles_lists_nested_names(tmp_path):
 # --------------------------------------------------------------------------- #
 
 _PHASE2 = ("phase2/baseline", "phase2/reward_shaping_only",
-           "phase2/action_risk_head_only", "phase2/both")
+           "phase2/action_risk_head_only", "phase2/both",
+           # STAGE 8: isolated observation-normalization + optimizer-group
+           # ablation profile (NOT merged into phase2/both).
+           "phase2/obs_norm_optim_split")
 
 
 def _experiments_present():
@@ -112,3 +116,25 @@ def test_real_phase2_profiles_load_and_point_at_existing_files(name):
     # PHASE2 matrix flags are declared explicitly on every variant.
     assert set(spec.overrides) == {"risk_map_reward_enabled",
                                    "action_risk_head_enabled"}
+
+
+@pytest.mark.skipif(not _experiments_present(),
+                    reason="drl_experiments profiles root not found")
+def test_phase2_both_default_profile_enables_gazebo_deterministic_stepping():
+    """The exact user-facing phase2/both commands should use the measured
+    faster Gazebo multi_step path without requiring an extra CLI override."""
+    spec = ProfileLoader().load("phase2/both")
+    with open(spec.config_paths["environment"], "r") as f:
+        env = (yaml.safe_load(f) or {}).get("environment", {})
+    assert env.get("gazebo_deterministic_stepping") is True
+    assert env.get("gazebo_physics_step_size") == 0.001
+    assert env.get("human_deterministic_stepping") is False
+
+
+def test_packaged_curriculum_config_has_single_human_deterministic_key():
+    """Avoid YAML's silent last-key-wins behavior for this safety-sensitive flag."""
+    cfg_path = os.path.join(
+        os.path.dirname(__file__), "..", "config", "environment_curriculum.yaml")
+    with open(os.path.normpath(cfg_path), "r") as f:
+        text = f.read()
+    assert text.count("\n  human_deterministic_stepping:") == 1

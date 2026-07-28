@@ -156,6 +156,27 @@ class AuxPredConfig:
         self.hazard_sector_loss_weight = float(
             cfg.get("hazard_sector_loss_weight", 1.0))
 
+        # STAGE 4: sparse/degenerate positive-event handling for imbalanced aux
+        # targets (most timesteps -- even with a human present -- carry no near-
+        # risk event, so plain MSE/BCE can be dominated by the safe majority).
+        # Both default to the ORIGINAL unweighted loss (byte-identical) unless
+        # explicitly configured.
+        #   hazard_pos_weight: passed straight to F.binary_cross_entropy_with_
+        #   logits' pos_weight (None -> vanilla BCE, the current default).
+        #   Capped at hazard_pos_weight_cap to avoid an extreme, destabilising
+        #   imbalance ratio if computed/configured too aggressively.
+        _hpw = cfg.get("hazard_pos_weight", None)
+        self.hazard_pos_weight_cap = float(cfg.get("hazard_pos_weight_cap", 20.0))
+        self.hazard_pos_weight = (
+            None if _hpw is None else min(float(_hpw), self.hazard_pos_weight_cap))
+        # risk_map_positive_weight: extra multiplicative weight (>= 1.0) applied
+        # to risk-map MSE terms for cells whose target exceeds
+        # risk_map_positive_threshold (nonzero/positive risk). 1.0 -> uniform
+        # weighting, i.e. the original plain MSE.
+        self.risk_map_positive_weight = float(cfg.get("risk_map_positive_weight", 1.0))
+        self.risk_map_positive_threshold = float(
+            cfg.get("risk_map_positive_threshold", 0.0))
+
     # --- derived geometry -------------------------------------------------
     @property
     def num_horizons(self) -> int:

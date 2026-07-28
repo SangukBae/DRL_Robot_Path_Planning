@@ -1,0 +1,21 @@
+# STAGE 8 experiment profile: obs_norm_optim_split
+# Isolated ablation of fixed observation normalization + optimizer parameter-
+# group LR separation, layered onto phase2/both's exact settings (same
+# environment_curriculum.yaml / train_tqc_config.yaml /
+# train_tqc_curriculum_config.yaml, copied byte-for-byte -- only
+# hyperparameters_tqc.yaml differs, by the two new config blocks at its tail).
+# NOT merged into phase2/both (which keeps observation_normalization and
+# optimizer_groups both OFF) -- run both profiles with the SAME seed to
+# compare like-for-like, per the fairness requirement.
+profile:
+  name: phase2/obs_norm_optim_split
+  algorithm: tqc
+  trainer: curriculum
+  environment: environment_curriculum.yaml
+  train: train_tqc_config.yaml
+  hparams: hyperparameters_tqc.yaml
+  curriculum: train_tqc_curriculum_config.yaml
+  output_prefix: tqc_phase2_obs_norm_optim_split
+  overrides:
+    risk_map_reward_enabled: true      # env-side reward shaping (candidate1)
+    action_risk_head_enabled: true     # env+agent action-risk head (candidate2)

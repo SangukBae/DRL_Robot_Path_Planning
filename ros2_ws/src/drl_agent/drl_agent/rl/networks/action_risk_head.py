@@ -63,6 +63,15 @@ class ActionRiskConfig:
         # Only "actor" (reuse temporal_actor_context's feature) is implemented;
         # tqc_agent.py fail-fasts on any other value instead of guessing.
         self.temporal_context_source = str(cfg.get("temporal_context_source", "actor"))
+        # STAGE 3: curriculum stage at/after which the head actually runs its
+        # forward pass (both for its own supervised loss AND for feeding the
+        # critic via critic_risk_input). Default 0 -> active from the start,
+        # identical to the pre-Stage-3 behaviour. Below this stage the agent
+        # skips the forward pass entirely (not just its loss weight) and, when
+        # critic_risk_input is enabled, feeds the critic a fixed all-zero
+        # (batch, 2) tensor instead so the critic's input shape never changes
+        # with stage (see Agent.train()'s action-risk gating).
+        self.enable_from_stage = int(cfg.get("enable_from_stage", 0))
 
 
 class ActionRiskHead(nn.Module):

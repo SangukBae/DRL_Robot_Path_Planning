@@ -1389,6 +1389,16 @@ def main(args=None):
         import traceback
         traceback.print_exc()
     finally:
+        # STAGE 6: flush any buffered TensorBoard/JSON metrics on EVERY exit
+        # path (normal completion, KeyboardInterrupt, EnvServiceError, any
+        # other exception) -- json_flush_interval > 1 batches physical JSON
+        # writes, so without this a run that stops between flush intervals
+        # would silently lose its most recent buffered records.
+        if node is not None and getattr(node, "rl_agent", None) is not None:
+            try:
+                node.rl_agent.flush_logs()
+            except Exception as fe:
+                print(f"[Curriculum] flush_logs() failed during shutdown: {fe}")
         if node is not None:
             node.destroy_node()
         rclpy.shutdown()

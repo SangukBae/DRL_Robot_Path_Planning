@@ -474,6 +474,95 @@ def test_compute_aux_loss_includes_ttc_and_hazard_terms():
     assert loss.requires_grad and np.isfinite(logs["aux/loss"])
 
 
+# --------------------------------------------------------------------------- #
+#  STAGE 4: sparse/degenerate positive-event weighting (defaults byte-identical)
+# --------------------------------------------------------------------------- #
+def test_hazard_pos_weight_and_risk_map_positive_weight_default_to_unweighted():
+    c = _cfg()
+    assert c.hazard_pos_weight is None
+    assert c.risk_map_positive_weight == 1.0
+    assert c.risk_map_positive_threshold == 0.0
+    assert c.hazard_pos_weight_cap == 20.0
+
+
+def test_hazard_pos_weight_is_capped():
+    c = _cfg(hazard_pos_weight=1000.0, hazard_pos_weight_cap=20.0)
+    assert c.hazard_pos_weight == 20.0
+    c2 = _cfg(hazard_pos_weight=5.0, hazard_pos_weight_cap=20.0)
+    assert c2.hazard_pos_weight == 5.0  # under the cap -> unchanged
+
+
+def test_default_risk_map_weighting_is_byte_identical_to_plain_mse():
+    torch.manual_seed(0)
+    c = _cfg()
+    head = ap.AuxiliaryHead(c.latent_dim, c)
+    b = 8
+    pred = head(torch.randn(b, c.latent_dim))
+    label = torch.rand(b, c.label_dim)
+    _, logs = apl.compute_aux_loss(pred, label, c, torch.device("cpu"))
+    risk_target = label[:, : c.risk_dim]
+    ref = torch.nn.functional.mse_loss(pred["risk_map"], risk_target)
+    assert logs["aux/risk_mse"] == pytest.approx(float(ref.item()), abs=1e-6)
+
+
+def test_risk_map_positive_weight_upweights_positive_cells_more():
+    # A risk-map target that is mostly zero with a FEW positive cells: with
+    # risk_map_positive_weight > 1, the SAME prediction must produce a LARGER
+    # loss than the unweighted (weight=1.0) baseline, since the positive-cell
+    # errors now count more.
+    c_base = _cfg(risk_map_positive_weight=1.0)
+    c_weighted = _cfg(risk_map_positive_weight=5.0, risk_map_positive_threshold=0.0)
+    torch.manual_seed(1)
+    head = ap.AuxiliaryHead(c_base.latent_dim, c_base)
+    b = 6
+    z = torch.randn(b, c_base.latent_dim)
+    pred = head(z)
+    label = torch.zeros(b, c_base.label_dim)
+    label[:, 0] = 1.0  # one positive risk cell
+    label[:, 1] = 1.0
+    loss_base, logs_base = apl.compute_aux_loss(pred, label, c_base, torch.device("cpu"))
+    loss_w, logs_w = apl.compute_aux_loss(pred, label, c_weighted, torch.device("cpu"))
+    assert logs_w["aux/risk_mse"] > logs_base["aux/risk_mse"], \
+        "risk_map_positive_weight>1 must strictly increase the loss when a " \
+        "positive cell has nonzero error"
+    # all-zero target -> weighting has NOTHING to upweight -> identical loss.
+    label_zero = torch.zeros(b, c_base.label_dim)
+    _, logs_base0 = apl.compute_aux_loss(pred, label_zero, c_base, torch.device("cpu"))
+    _, logs_w0 = apl.compute_aux_loss(pred, label_zero, c_weighted, torch.device("cpu"))
+    assert logs_base0["aux/risk_mse"] == pytest.approx(logs_w0["aux/risk_mse"], abs=1e-6)
+
+
+def test_hazard_pos_weight_none_matches_plain_bce():
+    c = _cfg(hazard_sector_head_enabled=True, hazard_sector_bins=3,
+             hazard_sector_loss_weight=1.0)
+    torch.manual_seed(2)
+    head = ap.AuxiliaryHead(c.latent_dim, c)
+    b = 5
+    pred = head(torch.randn(b, c.latent_dim))
+    label = torch.rand(b, c.label_dim)
+    label[:, -3:] = (label[:, -3:] > 0.5).float()
+    _, logs = apl.compute_aux_loss(pred, label, c, torch.device("cpu"))
+    ref = torch.nn.functional.binary_cross_entropy_with_logits(
+        pred["hazard"], label[:, -3:])
+    assert logs["aux/hazard_bce"] == pytest.approx(float(ref.item()), abs=1e-6)
+
+
+def test_hazard_pos_weight_configured_changes_loss_for_positive_labels():
+    c_base = _cfg(hazard_sector_head_enabled=True, hazard_sector_bins=3,
+                   hazard_sector_loss_weight=1.0)
+    c_weighted = _cfg(hazard_sector_head_enabled=True, hazard_sector_bins=3,
+                       hazard_sector_loss_weight=1.0, hazard_pos_weight=5.0)
+    torch.manual_seed(3)
+    head = ap.AuxiliaryHead(c_base.latent_dim, c_base)
+    b = 5
+    pred = head(torch.randn(b, c_base.latent_dim))
+    label = torch.zeros(b, c_base.label_dim)
+    label[:, -3:] = 1.0  # all-positive hazard labels
+    _, logs_base = apl.compute_aux_loss(pred, label, c_base, torch.device("cpu"))
+    _, logs_w = apl.compute_aux_loss(pred, label, c_weighted, torch.device("cpu"))
+    assert logs_w["aux/hazard_bce"] != pytest.approx(logs_base["aux/hazard_bce"], abs=1e-6)
+
+
 def test_loss_label_slicing_offsets_are_correct():
     """A label that is zero except in the TTC slot drives ONLY the ttc term."""
     c = _cfg(min_distance_loss_weight=0.0, ttc_head_enabled=True,

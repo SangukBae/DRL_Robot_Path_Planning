@@ -59,7 +59,19 @@ def compute_aux_loss(pred, label, cfg, device):
     risk_target, min_dist_target, ttc_target, hazard_target = _split_label(label, cfg)
 
     # --- v1: risk-map regression (always on) ---
-    risk_loss = F.mse_loss(pred["risk_map"], risk_target)
+    # STAGE 4: risk_map_positive_weight > 1.0 up-weights cells whose target
+    # exceeds risk_map_positive_threshold (nonzero/positive risk), so rare
+    # near-risk events aren't washed out by the safe majority. Default 1.0 ->
+    # a uniform weight mask -> byte-identical to plain F.mse_loss.
+    if cfg.risk_map_positive_weight != 1.0:
+        weight = torch.where(
+            risk_target > cfg.risk_map_positive_threshold,
+            torch.full_like(risk_target, cfg.risk_map_positive_weight),
+            torch.ones_like(risk_target),
+        )
+        risk_loss = (weight * (pred["risk_map"] - risk_target).pow(2)).mean()
+    else:
+        risk_loss = F.mse_loss(pred["risk_map"], risk_target)
     total = risk_loss
     logs = {"aux/risk_mse": float(risk_loss.detach().item())}
 
@@ -95,9 +107,16 @@ def compute_aux_loss(pred, label, cfg, device):
     # --- v2: hazard-sector classification (optional) ---
     # Per-sector binary imminent-hazard target -> BCE-with-logits (pred["hazard"]
     # is raw logits). Multi-label (independent sectors), stable when all-zero
-    # (no humans / no hazard).
+    # (no humans / no hazard). STAGE 4: hazard_pos_weight (capped) up-weights
+    # positive-class errors for sparse hazard events; None (default) -> plain
+    # F.binary_cross_entropy_with_logits, byte-identical to before.
     if "hazard" in pred and hazard_target is not None and cfg.hazard_sector_loss_weight > 0.0:
-        hz_loss = F.binary_cross_entropy_with_logits(pred["hazard"], hazard_target)
+        pos_weight = (
+            None if cfg.hazard_pos_weight is None
+            else torch.full_like(hazard_target[0], cfg.hazard_pos_weight)
+        )
+        hz_loss = F.binary_cross_entropy_with_logits(
+            pred["hazard"], hazard_target, pos_weight=pos_weight)
         total = total + cfg.hazard_sector_loss_weight * hz_loss
         logs["aux/hazard_bce"] = float(hz_loss.detach().item())
 

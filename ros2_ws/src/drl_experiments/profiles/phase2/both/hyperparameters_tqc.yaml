@@ -24,6 +24,15 @@ hyperparameters:
   prioritized: false
   alpha: 0.4
   min_priority: 1.0
+  # STAGE 6: interval-configurable logging (compute-only, does not change
+  # training numerics -- pure metrics-reporting cadence). tqc_metrics.json /
+  # TensorBoard scalars are live-monitoring only; no formal analysis tool
+  # (aggregate_results.py etc.) reads them -- those consume the SEPARATE
+  # eval_metrics_*.csv (eval_freq-cadence, unaffected). Defaults (1/1/1)
+  # elsewhere preserve exact legacy every-step logging.
+  scalar_log_interval: 10   # TensorBoard add_scalar cadence
+  json_log_interval: 10     # tqc_metrics.json record cadence
+  json_flush_interval: 100  # buffered records per physical disk write
   aux_prediction:
     enabled: true
     version: 1
@@ -36,7 +45,17 @@ hyperparameters:
     - 1.5
     loss_weight: 0.1
     aux_beta_warmup_steps: 5000
-    stagewise_loss_schedule: []
+    # STAGE 3: activate aux supervision only from stage 3 (first_human_clean,
+    # the first stage with an active pedestrian) -- stages 0-2 have zero
+    # humans, so the future-risk target is constant/degenerate there and the
+    # aux head previously trained on meaningless data via the warmup ramp
+    # alone (stagewise_loss_schedule, when non-empty, takes precedence over
+    # aux_beta_warmup_steps -- see Agent._current_aux_beta). A stagewise
+    # entry of exactly 0.0 also makes Agent.train() skip the aux forward pass
+    # entirely for stages 0-2 (not just zero its loss contribution). 10
+    # entries (one per curriculum stage 0-9); the last entry is reused for
+    # any stage beyond the list length.
+    stagewise_loss_schedule: [0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
     min_distance_loss_weight: 0.1
     use_distributional_aux: false
     distributional_quantiles:
@@ -80,5 +99,12 @@ hyperparameters:
     loss_weight: 0.1
     use_temporal_context: true
     temporal_context_source: "actor"
+    # STAGE 3: same rationale as aux_prediction.stagewise_loss_schedule above
+    # -- stages 0-2 have zero humans, so the action-risk target is constant/
+    # degenerate there. Below this stage Agent.train() skips the head's
+    # forward pass entirely (both its own supervised loss AND critic_risk_
+    # input's `extra`, which gets a fixed all-zero (batch,2) tensor instead
+    # so the critic's input width never changes with stage).
+    enable_from_stage: 3
   critic_risk_input:
     enabled: true

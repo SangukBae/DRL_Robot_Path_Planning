@@ -1,0 +1,135 @@
+hyperparameters:
+  # STAGE 8 EXPERIMENT PROFILE: isolated ablation of fixed observation
+  # normalization + optimizer-group LR separation, layered ONTO phase2/both's
+  # exact settings (this file is phase2/both's hyperparameters_tqc.yaml with
+  # ONLY the two new blocks below added -- everything else, including
+  # n_critics=5/n_quantiles=25/hidden dims, is untouched, so this is a fair,
+  # single-variable comparison against phase2/both). environment_curriculum.
+  # yaml / train_tqc_config.yaml / train_tqc_curriculum_config.yaml are
+  # copied byte-for-byte from phase2/both (same stepping mode, seed control,
+  # evaluation suite, curriculum, total env-step budget) per the fairness
+  # requirement -- run both profiles with the SAME --ros-args -p seed:=N to
+  # compare like-for-like.
+  discount: 0.99
+  batch_size: 256
+  buffer_size: 1000000
+  n_quantiles: 25
+  n_critics: 5
+  top_quantiles_to_drop_per_net: 2
+  tau: 0.005
+  target_update_interval: 1
+  ent_coef: auto_1.0
+  ent_coef_lr: 0.0003
+  actor_hdim: 256
+  actor_activ: relu
+  actor_lr: 0.0003
+  critic_hdim: 256
+  critic_activ: elu
+  critic_lr: 0.0003
+  critic_residual: false
+  critic_layernorm: false
+  critic_residual_blocks: 2
+  reset_weight: 0.9
+  steps_before_checkpointing: 40000
+  max_eps_when_checkpointing: 50
+  prioritized: false
+  alpha: 0.4
+  min_priority: 1.0
+  scalar_log_interval: 10
+  json_log_interval: 10
+  json_flush_interval: 100
+  aux_prediction:
+    enabled: true
+    version: 1
+    encoder_hidden_dim: 256
+    latent_dim: 128
+    num_sectors: 16
+    horizons_sec:
+    - 0.5
+    - 1.0
+    - 1.5
+    loss_weight: 0.1
+    aux_beta_warmup_steps: 5000
+    stagewise_loss_schedule: [0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+    min_distance_loss_weight: 0.1
+    use_distributional_aux: false
+    distributional_quantiles:
+    - 0.1
+    - 0.5
+    - 0.9
+    distributional_loss_weight: 0.5
+    aux_trunk_hidden_dim: 256
+    aux_trunk_layers: 2
+    aux_head_layernorm: true
+    action_conditioned_aux: true
+    action_conditioned_steps: 4
+    action_embed_dim: 64
+    action_condition_hidden_dim: 256
+    action_condition_attention: true
+    action_condition_attention_heads: 4
+    fusion_type: concat
+    ttc_head_enabled: true
+    ttc_horizon_sec: 3.0
+    ttc_loss_weight: 0.5
+    hazard_sector_head_enabled: true
+    hazard_sector_bins: 3
+    hazard_sector_loss_weight: 0.5
+    encoder_layernorm: false
+    temporal_enabled: false
+    temporal_mode: none
+    history_len: 4
+    temporal_context_dim: 64
+    temporal_attention: false
+    state_stack_len: 1
+  temporal_actor_context:
+    enabled: true
+    history_len: 4
+    temporal_feature_dim: 32
+    encoder_type: conv1d
+    stack_agent_state: false
+    stage_enable_from: 2
+  action_risk_head:
+    enabled: true
+    hidden_dim: 64
+    loss_weight: 0.1
+    use_temporal_context: true
+    temporal_context_source: "actor"
+    enable_from_stage: 3
+  critic_risk_input:
+    enabled: true
+
+  # STAGE 8 (the actual experimental variable of this profile): fixed
+  # physical-range observation normalization, ISOLATED from phase2/both
+  # (default OFF there). obs_dim/agent_dim/history_len/stack_agent_state
+  # MUST mirror temporal_actor_context above (327-D transported state: 87-D
+  # current frame + 3x80-D obs-only history). Scale values sourced from this
+  # profile's own environment_curriculum.yaml where available (lidar_max_
+  # range=50, controller_cruise_speed_mps=2.0, arena half-extent ~11.5m ->
+  # diagonal ~32.5m goal-distance scale); yaw_rate/steering scales are
+  # approximate placeholders (no single documented max in this config) --
+  # tune against the robot's actual physical limits before using this
+  # profile for a real ablation run.
+  observation_normalization:
+    enabled: true
+    lidar_scale: 50.0
+    goal_dist_scale: 33.0
+    heading_scale: 3.14159265
+    prev_action_r_scale: 1.0
+    prev_action_theta_scale: 1.0
+    speed_scale: 2.0
+    yaw_rate_scale: 1.0
+    steering_scale: 0.4363323129985824
+    history_len: 4
+    stack_agent_state: false
+
+  # STAGE 8: optimizer parameter-group separation, ISOLATED from phase2/both
+  # (default OFF there). Demonstrates "a smaller encoder LR than head LR" --
+  # critic/action_risk_head keep the baseline critic_lr (3e-4); encoder and
+  # aux_head get a 10x smaller LR so the shared representation moves more
+  # slowly than the task-specific heads reading it.
+  optimizer_groups:
+    enabled: true
+    critic_lr: 0.0003
+    encoder_lr: 0.00003
+    aux_head_lr: 0.00003
+    action_risk_head_lr: 0.0003
