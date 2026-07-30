@@ -56,6 +56,14 @@ class EnvInterface(Node):
         # reset()/step() -- (risk_dir, min_dist_dir) for the action that just
         # produced this response, or None (disabled / reset / no sentinel found).
         self.last_action_risk_target = None
+        # RISK_BALANCE: FULL-360 collision verdict + min distance from the
+        # response of the most recent step() (see environment.py's
+        # response.collision / response.min_obstacle_dist_m) -- the ground
+        # truth check_collision() itself used, NOT an approximation from the
+        # front-180 obs_state slice of the RL state. False/inf on reset (no
+        # step has happened yet this episode).
+        self.last_collision = False
+        self.last_min_obstacle_dist_m = float("inf")
 
     def _strip_action_risk_target(self, state):
         """PHASE2: split the optional action-risk-head wire block off the FRONT
@@ -172,6 +180,9 @@ class EnvInterface(Node):
         # PHASE2: strip the action-risk block first (no-op — env never emits it
         # on /reset, no action has been taken yet), THEN the aux label tail.
         state = self._strip_action_risk_target(result.state)
+        # RISK_BALANCE: no step has happened yet this episode.
+        self.last_collision = False
+        self.last_min_obstacle_dist_m = float("inf")
         # AUX_PRED: strip the appended label (no-op when aux disabled).
         return self._strip_aux_label(state)
 
@@ -187,6 +198,16 @@ class EnvInterface(Node):
         state = self._strip_action_risk_target(response.state)
         # AUX_PRED: strip the appended label (no-op when aux disabled).
         state = self._strip_aux_label(state)
+        # RISK_BALANCE: cache the FULL-360 collision/min-distance metadata
+        # (side-channel, matching last_aux_label/last_action_risk_target's
+        # pattern) so callers needing the ground-truth collision proximity
+        # (not the front-180 obs_state prefix of `state`) can read it off
+        # self.last_collision / self.last_min_obstacle_dist_m without
+        # widening this method's return tuple (every existing caller keeps
+        # working unchanged).
+        self.last_collision = bool(getattr(response, "collision", False))
+        self.last_min_obstacle_dist_m = float(
+            getattr(response, "min_obstacle_dist_m", float("inf")))
         return state, response.reward, response.done, response.target
 
     def get_dimensions(self):

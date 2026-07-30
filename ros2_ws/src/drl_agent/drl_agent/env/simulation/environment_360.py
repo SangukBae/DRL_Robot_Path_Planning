@@ -525,6 +525,16 @@ class Environment(Node):
         response.reward = reward
         response.done = done
         response.target = target
+        # RISK_BALANCE: mirror environment.py's response.collision /
+        # response.min_obstacle_dist_m (the FULL scan verdict/min-distance
+        # check_collision() itself used above) -- every Step service provider
+        # must fill these or a caller reading them (e.g. the curriculum
+        # trainer's risk_meta) silently sees collision=False/min_dist=0,
+        # which would misread every transition as near-collision.
+        response.collision = bool(collision)
+        response.min_obstacle_dist_m = (
+            float(min_laser) if math.isfinite(min_laser) else float(self.lidar_max_range)
+        )
         return response
 
     def reset_callback(self, _, response):

@@ -30,7 +30,7 @@ ros2 interface show drl_agent_interfaces/action/StartDrlSession
 
 | 서비스 | Request | Response | 용도 |
 |--------|---------|----------|------|
-| `Step.srv` | `float32[] action` | `state, reward, done, target` | 환경 스텝 실행 |
+| `Step.srv` | `float32[] action` | `state, reward, done, target, collision, min_obstacle_dist_m` | 환경 스텝 실행 |
 | `Reset.srv` | (empty) | `float32[] state` | 에피소드 리셋 |
 | `GetDimensions.srv` | (empty) | `state_dim, action_dim, max_action, environment_dim, agent_dim` | 환경 차원 조회 |
 | `Seed.srv` | `int32 seed` | `bool success` | 랜덤 시드 설정 |
@@ -54,6 +54,12 @@ float32[] state
 float32 reward
 bool done
 bool target
+bool collision              # FULL-360 collision verdict (same check_collision()
+                             # used) -- distinct from state[:environment_dim],
+                             # which is the front-180 obs_state RL input
+float32 min_obstacle_dist_m # FULL-360 min distance this step (== check_collision()'s
+                             # min_used); lets a caller apply its own near-collision
+                             # threshold without re-deriving it from the RL state
 ```
 
 ## Configuration
