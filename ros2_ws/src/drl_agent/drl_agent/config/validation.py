@@ -18,6 +18,7 @@ Checks (per the PHASE2 experiment-safety requirements):
      (an error if nothing resumable exists).
 """
 
+import json
 import os
 
 import yaml
@@ -47,6 +48,7 @@ class ConfigValidator:
         self._check_output_prefix(rep, docs)
         if resume:
             self._check_resume_state(rep, docs, seed=seed, package_root=package_root)
+        self._check_action_mode(rep, docs, resume=resume, seed=seed, package_root=package_root)
         return rep
 
     # ------------------------------------------------------------------ #
@@ -121,6 +123,81 @@ class ConfigValidator:
         elif not self.spec.output_prefix:
             rep.warnings.append("profile declares no output_prefix (base_file_name "
                                 f"'{base}' will be used unchecked)")
+
+    def _check_action_mode(self, rep, docs, *, resume: bool, seed=None, package_root: str = ""):
+        """environment.action_mode="speed_steering" changes the action
+        contract (action_dim 2, no waypoint/yield geometry) and therefore the
+        actor/critic/action-risk-head input width vs. any waypoint_yield /
+        legacy-waypoint checkpoint — NOT just an architecture-flag change like
+        A3/A4, an outright incompatible contract.
+
+        Resume is only ever allowed when the checkpoint being resumed was
+        ITSELF trained under the exact same (action_mode, action_dim) — verified
+        via the resumed run's ``configs/profile_manifest.json`` (written by
+        TrainTQCCurriculum._init_motion_logging_contract's manifest-augmentation
+        call; see train_tqc_curriculum.py). Any other case — no manifest found
+        (legacy layout / a run that predates this contract field), or a
+        manifest recording a DIFFERENT action_mode/action_dim — is rejected
+        outright, rather than relying on a shape-mismatch crash/silent-
+        fresh-init deep inside tqc_io.load() to catch it (see that module:
+        an actor/critic shape mismatch there is caught and silently degrades
+        to a freshly-initialised network, which is NOT a safe way to detect
+        this for a long unattended run).
+        """
+        env_cfg = (docs.get("environment") or {}).get("environment", docs.get("environment") or {})
+        action_dim = env_cfg.get("action_dim")
+        action_mode = str(env_cfg.get(
+            "action_mode",
+            "waypoint_yield" if (action_dim or 0) >= 3 else "waypoint",
+        )).strip().lower()
+        rep.info["environment.action_mode"] = action_mode
+        if action_mode != "speed_steering" or not resume:
+            return
+
+        run_dir = rep.info.get("resume.run_dir", "(none)")
+        if not run_dir or run_dir == "(none)":
+            # _check_resume_state already reported "no checkpoint found" (or
+            # resume wasn't otherwise resolvable) — nothing further to check.
+            return
+
+        contract = self._read_action_contract(run_dir)
+        if contract is None:
+            rep.errors.append(
+                "profile uses environment.action_mode=speed_steering and "
+                f"resume=true, but no action-contract record (action_mode/"
+                f"action_dim) was found for the checkpoint in {run_dir} "
+                "(missing/legacy-layout profile_manifest.json — it predates "
+                "this contract check). Refusing to risk silently loading an "
+                "incompatible checkpoint; start a fresh run instead."
+            )
+            return
+        saved_mode = str(contract.get("action_mode", "")).strip().lower()
+        saved_dim = contract.get("action_dim")
+        if saved_mode != action_mode or int(saved_dim or -1) != int(action_dim or 0):
+            rep.errors.append(
+                f"profile uses environment.action_mode={action_mode!r} "
+                f"(action_dim={action_dim}) but the checkpoint in {run_dir} "
+                f"was trained under action_mode={saved_mode!r} "
+                f"(action_dim={saved_dim}) — incompatible action contracts. "
+                "Start a fresh run (no -p resume:=true / --resume)."
+            )
+
+    @staticmethod
+    def _read_action_contract(run_dir: str):
+        """Read {action_mode, action_dim} back from a prior run's
+        configs/profile_manifest.json, or None if absent/unreadable/missing
+        those keys (legacy layout has no configs/ dir at all)."""
+        path = os.path.join(run_dir, "configs", "profile_manifest.json")
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, "r") as f:
+                manifest = json.load(f)
+        except (OSError, ValueError):
+            return None
+        if "action_mode" not in manifest or "action_dim" not in manifest:
+            return None
+        return manifest
 
     def _check_resume_state(self, rep, docs, *, seed, package_root):
         """Verify what ``resume=true`` would ACTUALLY restore, not just that a

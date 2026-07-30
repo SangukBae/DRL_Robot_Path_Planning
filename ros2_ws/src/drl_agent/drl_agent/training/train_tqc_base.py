@@ -70,6 +70,18 @@ class TrainTQCBase(EnvInterface):
             self.get_parameter("train_config_file")
             .get_parameter_value().string_value.strip()
         )
+        # PROFILE: cached for subclasses (e.g. TrainTQCCurriculum's own
+        # _find_config_file("environment_curriculum.yaml") / ("train_tqc_
+        # curriculum_config.yaml") calls) so a profile-based run resolves
+        # THIS run's profile-specific config file, not drl_agent's generic
+        # package-default copy -- a call that omits this hint falls through
+        # to the source-tree/share-dir search order, which can silently
+        # resolve to a DIFFERENT file with a different action contract (see
+        # the discovery that motivated this: _init_motion_logging_contract's
+        # omitted hint made a speed_steering profile's telemetry mirror load
+        # the generic action_dim=3 config instead of its own action_dim=2 one,
+        # crashing on the very first step).
+        self._train_config_file_param = user_param_path
 
         # ----------------------------
         # Find and load training configuration file

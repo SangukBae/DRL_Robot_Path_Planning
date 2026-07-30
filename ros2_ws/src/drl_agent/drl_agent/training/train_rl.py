@@ -308,7 +308,8 @@ class TrainTQCCurriculum(
         """Load the environment action/control contract for episode telemetry."""
         self._motion_log_enabled = False
         self._motion_low_speed_threshold_mps = 0.12
-        env_cfg_path = self._find_config_file("environment_curriculum.yaml")
+        env_cfg_path = self._find_config_file(
+            "environment_curriculum.yaml", self._train_config_file_param)
         if not env_cfg_path:
             self.get_logger().warn(
                 "[Curriculum] environment_curriculum.yaml not found; "
@@ -336,6 +337,13 @@ class TrainTQCCurriculum(
             )
             # 3D hybrid-action contract (for telemetry consistency with the env).
             self._motion_action_dim = int(env_cfg.get("action_dim", 2))
+            # action_mode: same inference rule as environment.py (default
+            # derived from action_dim -> identical dispatch for every existing
+            # config that doesn't set this key).
+            self._motion_action_mode = str(env_cfg.get(
+                "action_mode",
+                "waypoint_yield" if self._motion_action_dim >= 3 else "waypoint",
+            )).strip().lower()
             self._motion_lookahead_min_m = float(
                 env_cfg.get("controller_lookahead_min_m", 0.8)
             )
@@ -369,12 +377,40 @@ class TrainTQCCurriculum(
                 f"{env_cfg_path}: {e}"
             )
 
+    def _augment_profile_manifest_with_action_contract(self):
+        """RESUME-SAFETY: mirrors TrainTQCCurriculum._augment_profile_manifest_
+        with_action_contract exactly (see that docstring) -- appends
+        action_mode/action_dim to configs/profile_manifest.json so a later
+        resume attempt can verify the checkpoint's action contract (see
+        config/validation.py's _check_action_mode). No-op when no manifest
+        was written this run."""
+        target_dir = getattr(self, "configs_dir", None) or self.log_dir
+        path = os.path.join(target_dir, "profile_manifest.json")
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r") as f:
+                manifest = json.load(f)
+            manifest["action_mode"] = str(getattr(self, "_motion_action_mode", "waypoint"))
+            manifest["action_dim"] = int(getattr(self, "_motion_action_dim", 2))
+            with open(path, "w") as f:
+                json.dump(manifest, f, indent=2)
+        except Exception as e:
+            self.get_logger().warn(
+                f"[Profile] manifest action-contract augmentation failed (ignored): {e}"
+            )
+
     def _motion_telemetry_sample(self, state, action):
         """Return per-step command + observed-motion telemetry for episode CSVs."""
         cmd_v = float("nan")
         cmd_steer = float("nan")
         if self._motion_log_enabled:
-            if getattr(self, "_motion_action_dim", 2) >= 3:
+            _mode = getattr(self, "_motion_action_mode", "waypoint")
+            if _mode == "speed_steering":
+                cmd_v, cmd_steer = pure_pursuit.speed_steering_action_to_command(
+                    action, self._motion_cruise_speed_mps, self._motion_steer_limit_rad,
+                )
+            elif getattr(self, "_motion_action_dim", 2) >= 3:
                 # 3D hybrid: mirror the env's command exactly (incl. yield floors).
                 # Use the CURRENT stage's effective yield gate so telemetry matches
                 # the env's per-stage seal (early stages have yield disabled).
@@ -421,11 +457,44 @@ class TrainTQCCurriculum(
 
         return cmd_v, cmd_steer, obs_speed, obs_yaw_rate, obs_steer
 
+    def _compute_risk_meta(self, action_risk_target):
+        """RISK_BALANCE: mirrors TrainTQCCurriculum._compute_risk_meta exactly
+        (see that docstring) -- per-transition [stage, human_event,
+        risk_positive, collision_or_near] metadata for the replay buffer's
+        optional risk_meta field. Best-effort, never raises.
+
+        human_event/collision_or_near fixes: human_event requires the label's
+        nearest-human distance to be STRICTLY below self._label_Dc (the safe
+        sentinel, not merely present -- see TrainTQCCurriculum's docstring);
+        collision_or_near reads the env's GROUND-TRUTH full-360 verdict off
+        self.last_collision / self.last_min_obstacle_dist_m (EnvInterface.
+        step()'s side-channel cache), not next_state[:environment_dim] (the
+        front-180 obs_state RL-input slice, a different array that merely
+        shares environment_dim's length with the full-360 environment_state
+        check_collision() actually evaluates)."""
+        stage = float(int(getattr(self, "_curriculum_stage", 0)))
+        human_min_dist = self._human_min_dist_m_from_label(self._aux_label_next)
+        human_event = human_min_dist is not None and human_min_dist < self._label_Dc
+
+        risk_positive = False
+        if action_risk_target is not None:
+            _ar = np.asarray(action_risk_target, dtype=np.float32).ravel()
+            if _ar.size >= 1:
+                risk_positive = bool(_ar[0] > self._risk_meta_positive_threshold)
+        elif human_min_dist is not None:
+            risk_positive = bool(human_min_dist < self._risk_meta_human_risk_distance_m)
+
+        collision_or_near = bool(self.last_collision) or bool(
+            float(self.last_min_obstacle_dist_m) < self._risk_meta_near_collision_dist_m)
+
+        return (stage, float(human_event), float(risk_positive), float(collision_or_near))
+
     def __init__(self):
         super().__init__()   # loads train_tqc_config.yaml, builds agent, etc.
 
         # Load curriculum advancement rules
-        cur_cfg_path = self._find_config_file("train_tqc_curriculum_config.yaml")
+        cur_cfg_path = self._find_config_file(
+            "train_tqc_curriculum_config.yaml", self._train_config_file_param)
         # Remember resolved path so the run manifest can hash the curriculum config.
         self._curriculum_cfg_path = cur_cfg_path or ""
         if cur_cfg_path:
@@ -503,6 +572,7 @@ class TrainTQCCurriculum(
         self._stage_restart_source_prefix = ""
         self._stage_restart_weights_dir = ""
         self._init_motion_logging_contract()
+        self._augment_profile_manifest_with_action_contract()
 
         # ROS2 parameter interaction with the gym_node (EnvironmentCurriculum) is
         # encapsulated in GymParameterClient. Node is named "gym_node" — matches
@@ -569,6 +639,15 @@ class TrainTQCCurriculum(
         _mdt = self.get_parameter("metric_time_delta").get_parameter_value().double_value
         _stl_ref = self.get_parameter("stl_ref_speed_mps").get_parameter_value().double_value
         _lcr = self.get_parameter("lidar_clearance_radius_m").get_parameter_value().double_value
+        # RISK_BALANCE: same reuse/threshold pattern as train_tqc_curriculum.py
+        # (see _compute_risk_meta below).
+        self._risk_meta_near_collision_dist_m = _ncd if _ncd > 0 else 0.5
+        _rm_meta_cfg = dict(
+            self.rl_agent.hyperparameters.get("replay_buffer", {}).get("risk_meta", {}) or {})
+        self._risk_meta_positive_threshold = float(
+            _rm_meta_cfg.get("risk_positive_threshold", 0.5))
+        self._risk_meta_human_risk_distance_m = float(
+            _rm_meta_cfg.get("human_risk_distance_m", 2.0))
         self._em = EpisodeMetrics(
             self.environment_dim,
             time_delta=_mdt if _mdt > 0 else 0.1,
@@ -683,7 +762,8 @@ class TrainTQCCurriculum(
         _env_cfg = _envp.get("loaded_config_path", "")
         if not _env_cfg:
             try:
-                _env_cfg = self._find_config_file("environment_curriculum.yaml") or ""
+                _env_cfg = self._find_config_file(
+                    "environment_curriculum.yaml", self._train_config_file_param) or ""
             except Exception:
                 _env_cfg = ""
 
@@ -1183,12 +1263,19 @@ class TrainTQCCurriculum(
                 reward -= 20.0
 
             done = float(ep_finished) if ep_timesteps < self.max_episode_steps else 0.0
+            # RISK_BALANCE: only bother computing metadata when the buffer
+            # actually stores it (store_risk_meta off -> add() ignores the
+            # kwarg anyway, but skip the (cheap but non-zero) computation too).
+            risk_meta = None
+            if getattr(self.rl_agent.replay_buffer, "risk_meta", None) is not None:
+                risk_meta = self._compute_risk_meta(action_risk_target)
             # AUX_PRED: store the auxiliary label paired with `state` (s_t, the
             # encoder input), then advance the label bookkeeping with the state.
             self.rl_agent.replay_buffer.add(
                 state, action, next_state, reward, done,
                 aux_target=self._aux_label_cur,
                 action_risk_target=action_risk_target,
+                risk_meta=risk_meta,
             )
             self._aux_label_cur = self._aux_label_next
 

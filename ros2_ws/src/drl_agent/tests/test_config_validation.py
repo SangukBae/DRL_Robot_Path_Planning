@@ -6,6 +6,7 @@ risk_map_reward source-of-truth recording, output_prefix vs base_file_name,
 and resume-state reporting (found / not found) against a synthetic run tree.
 """
 
+import json
 import os
 
 import pytest
@@ -158,6 +159,67 @@ def test_resume_without_checkpoint_is_error(tmp_path):
     assert not rep.ok
     assert any("resume requested but no checkpoint" in e for e in rep.errors)
     assert rep.info["resume.resumable"] is False
+
+
+# --------------------------------------------------------------------------- #
+#  action_mode contract check (speed_steering resume gate)                     #
+# --------------------------------------------------------------------------- #
+
+def _make_speed_steering_configs(tmp_path, **kw):
+    d, paths = _make_configs(tmp_path, **kw)
+    with open(paths["environment"], "r") as f:
+        doc = yaml.safe_load(f)
+    doc["environment"]["action_mode"] = "speed_steering"
+    doc["environment"]["action_dim"] = 2
+    _write_yaml(paths["environment"], doc)
+    return d, paths
+
+
+def _write_action_contract(run, action_mode, action_dim):
+    configs_dir = os.path.join(run, "configs")
+    os.makedirs(configs_dir, exist_ok=True)
+    with open(os.path.join(configs_dir, "profile_manifest.json"), "w") as f:
+        json.dump({"action_mode": action_mode, "action_dim": action_dim}, f)
+
+
+def test_speed_steering_resume_allowed_when_checkpoint_contract_matches(tmp_path):
+    d, paths = _make_speed_steering_configs(tmp_path)
+    root, run, _prefix = _fake_run(tmp_path)
+    _write_action_contract(run, "speed_steering", 2)
+    rep = ConfigValidator(_spec(d, paths)).validate(
+        resume=True, seed=0, package_root=root)
+    assert rep.ok, rep.summary()
+    assert rep.info["environment.action_mode"] == "speed_steering"
+
+
+def test_speed_steering_resume_rejected_when_checkpoint_contract_differs(tmp_path):
+    d, paths = _make_speed_steering_configs(tmp_path)
+    root, run, _prefix = _fake_run(tmp_path)
+    _write_action_contract(run, "waypoint_yield", 3)
+    rep = ConfigValidator(_spec(d, paths)).validate(
+        resume=True, seed=0, package_root=root)
+    assert not rep.ok
+    assert any("incompatible action contracts" in e for e in rep.errors)
+
+
+def test_speed_steering_resume_rejected_when_manifest_missing(tmp_path):
+    d, paths = _make_speed_steering_configs(tmp_path)
+    root, _run, _prefix = _fake_run(tmp_path)  # no configs/profile_manifest.json
+    rep = ConfigValidator(_spec(d, paths)).validate(
+        resume=True, seed=0, package_root=root)
+    assert not rep.ok
+    assert any("no action-contract record" in e for e in rep.errors)
+
+
+def test_waypoint_yield_resume_unaffected_by_action_mode_check(tmp_path):
+    """A non-speed_steering profile never even consults the manifest -- the
+    pre-existing curriculum resume checks (replay buffer / curriculum state)
+    are the only gate."""
+    d, paths = _make_configs(tmp_path)  # no action_dim set -> default action_mode "waypoint"
+    root, _run, _prefix = _fake_run(tmp_path)  # no action-contract manifest
+    rep = ConfigValidator(_spec(d, paths)).validate(
+        resume=True, seed=0, package_root=root)
+    assert rep.ok, rep.summary()
 
 
 def test_curriculum_resume_missing_replay_buffer_is_hard_error(tmp_path):
