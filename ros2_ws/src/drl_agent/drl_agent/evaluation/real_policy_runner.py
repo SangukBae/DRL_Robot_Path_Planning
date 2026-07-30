@@ -109,6 +109,14 @@ class RealPolicyRunner(Node):
         self.env_dim   = int(e.get("environment_state_dim", 80))
         self.agent_dim = int(e.get("agent_state_dim", 7))
         self.action_dim = int(e.get("action_dim", 2))
+        # action_mode: same inference rule / shared decoding as environment.py
+        # and the curriculum trainers (see pure_pursuit.py) -- default derived
+        # from action_dim, so an existing environment.yaml (no action_mode key)
+        # keeps the legacy 2D waypoint contract used below.
+        self.action_mode = str(e.get(
+            "action_mode",
+            "waypoint_yield" if self.action_dim >= 3 else "waypoint",
+        )).strip().lower()
         self.max_action = float(e.get("max_action", 1.0))
         self.actions_low  = list(e.get("actions_low",  [0.8, -0.524]))
         self.actions_high = list(e.get("actions_high", [2.0,  0.524]))
@@ -381,12 +389,18 @@ class RealPolicyRunner(Node):
         action = np.clip(np.asarray(action, dtype=np.float32).reshape(-1), -1.0, 1.0)
         self._prev_action = action
 
-        # Action → waypoint → Pure-Pursuit command (shared with environment.py).
-        _, _, x_wp, y_wp = pure_pursuit.action_to_waypoint(action, self.actions_low, self.actions_high)
-        v, steering = pure_pursuit.waypoint_to_command(
-            x_wp, y_wp, self.wheelbase, self.steer_limit,
-            self.cruise, self.min_speed, self.speed_steer_factor,
-            low_speed_distance_m=self.low_speed_distance)
+        # Action → command, using the SAME decoding function as environment.py
+        # for whichever action_mode this checkpoint was trained under.
+        if self.action_mode == "speed_steering":
+            v, steering = pure_pursuit.speed_steering_action_to_command(
+                action, self.cruise, self.steer_limit)
+        else:
+            # Legacy 2D waypoint contract (unchanged).
+            _, _, x_wp, y_wp = pure_pursuit.action_to_waypoint(action, self.actions_low, self.actions_high)
+            v, steering = pure_pursuit.waypoint_to_command(
+                x_wp, y_wp, self.wheelbase, self.steer_limit,
+                self.cruise, self.min_speed, self.speed_steer_factor,
+                low_speed_distance_m=self.low_speed_distance)
         self._publish(v, steering)
 
 

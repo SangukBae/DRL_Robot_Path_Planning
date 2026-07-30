@@ -258,6 +258,29 @@ class Environment(
         self.max_action = self.environment_config["max_action"]
         self.actions_low = self.environment_config["actions_low"]
         self.actions_high = self.environment_config["actions_high"]
+        # action_mode selects the action->command decoding used in
+        # _step_callback_impl. Default is INFERRED from action_dim exactly as
+        # the pre-existing dispatch did (action_dim>=3 -> the 3D hybrid
+        # waypoint+yield contract, else the legacy 2D waypoint contract), so
+        # every existing config (none of which sets this key) resolves to the
+        # same mode as before -- byte-identical default behaviour.
+        # "speed_steering" (new, opt-in): 2-D continuous speed/steering, no
+        # waypoint geometry, no binary yield channel -- see pure_pursuit.
+        # speed_steering_action_to_command.
+        self.action_mode = str(self.environment_config.get(
+            "action_mode",
+            "waypoint_yield" if self.action_dim >= 3 else "waypoint",
+        )).strip().lower()
+        if self.action_mode not in ("waypoint_yield", "waypoint", "speed_steering"):
+            raise ValueError(
+                f"environment.action_mode={self.action_mode!r} is not one of "
+                "'waypoint_yield', 'waypoint', 'speed_steering'."
+            )
+        if self.action_mode == "speed_steering" and self.action_dim != 2:
+            raise ValueError(
+                "environment.action_mode=speed_steering requires action_dim=2 "
+                f"(got action_dim={self.action_dim})."
+            )
         self.vehicle_wheelbase_m = float(
             self.environment_config.get("vehicle_wheelbase_m", 0.547696)
         )
@@ -643,6 +666,19 @@ class Environment(
             "risk_distance_scale": float(_dr.get("risk_distance_scale", 3.0)),
             "min_speed_for_motion": float(_dr.get("min_speed_for_motion", 0.05)),
         })
+        # speed_steering-only swept-path rollout dynamics (see pure_pursuit.
+        # ackermann_swept_path) -- MUST mirror hunter_se_gazebo/config/
+        # hunter_se_cmd_prefilter.yaml's accel_limit_mps2/brake_decel_mps2/
+        # steering_rate_deg_s (a stale copy here would silently make the risk
+        # target model a different vehicle than the one actually running).
+        # Defaults match that file exactly, so an environment_curriculum.yaml
+        # that never sets these keys still gets the REAL vehicle dynamics,
+        # not an instant-response assumption.
+        self._dr_rollout_accel_mps2 = float(_dr.get("rollout_accel_limit_mps2", 6.0))
+        self._dr_rollout_brake_decel_mps2 = float(_dr.get("rollout_brake_decel_mps2", 6.0))
+        self._dr_rollout_steering_rate_rad_s = math.radians(
+            float(_dr.get("rollout_steering_rate_deg_s", 200.0)))
+        self._dr_rollout_path_samples = int(_dr.get("rollout_path_samples", 15))
 
         # PRIVILEGED: risk_map_reward feeds the GT risk_map DIRECTLY into the
         # reward (training-time only; never an observation). Default OFF ->
@@ -2314,24 +2350,49 @@ class Environment(
     # ====================================Ignition Finish===========================================
     # ----------------------------------------------------------------------------------------------
 
-    def _compute_directional_risk(self, theta):
-        """PHASE2: pre-step GT risk in the sector the SELECTED waypoint
-        direction (theta, robot frame) points into. Shared by risk_map_reward
-        (fed straight into get_reward) and the Action-Risk Head's env-side
-        supervision target (wired onto the response) -- one privileged CV-
-        rollout computation, two independent consumers/switches.
+    def _compute_directional_risk(self, theta, target_v=0.0, target_cmd_steering=0.0):
+        """PHASE2: pre-step GT risk for the action just decoded. Shared by
+        risk_map_reward (fed straight into get_reward) and the Action-Risk
+        Head's env-side supervision target (wired onto the response) -- one
+        privileged CV-rollout computation, two independent consumers/
+        switches.
 
         MUST be called with self.human_states / GT robot pose as they stand
         BEFORE this step's motion (i.e. before propagate_state()) -- see the
         call site in _step_callback_impl -- so neither consumer ever sees
         post-step information leak into an action-credit signal.
 
-        Returns (risk_dir, min_dist_dir), both in [0, 1] and both about the
-        SAME sector (the one theta points into) -- min_dist_dir is the nearest
-        human WITHIN that sector, NOT the horizon-global nearest human over all
-        directions (that global quantity is a different, existing thing: see
-        aux_prediction_labels.compute_future_risk_labels's min_dist_norm, used
-        only by the AUX_PRED wire label).
+        Two DIFFERENT computations depending on self.action_mode, gated so
+        this change is ISOLATED to speed_steering (phase3) and never alters
+        phase2/waypoint_yield or the legacy waypoint contract's semantics,
+        regardless of what target_v/target_cmd_steering happen to be at the
+        call site:
+
+        * action_mode == "speed_steering": action-conditioned GLOBAL swept-
+          path risk (aux_prediction_labels.compute_action_conditioned_risk) --
+          the minimum distance between the robot's own Ackermann trajectory
+          and every human's own constant-velocity path, sampled at matching
+          times, with NO re-filtering by bearing sector (a per-sector lookup
+          would silently drop a crossing pedestrian whose OWN bearing sector
+          differs from the action's heading sector even though the two paths
+          nearly intersect). The robot's trajectory is built by
+          pure_pursuit.ackermann_swept_path from its CURRENT actual speed/
+          steering (self.latest_actual_signed_speed / self.
+          latest_center_steering) ramping toward (target_v,
+          target_cmd_steering) under hunter_se_cmd_prefilter's own accel/
+          brake/steering-rate limits -- NOT an instant jump to the target on
+          this same tick. This is what lets a decelerating/stopping action
+          genuinely read as lower risk than driving at full speed toward the
+          same person, while still crediting the real residual motion a stop
+          command doesn't instantly cancel (e.g. braking from 2 m/s covers
+          ~0.33 m before actually stopping, at this vehicle's tuned limits).
+        * every other action_mode (unchanged from before this feature
+          existed): per-SECTOR risk (aux_prediction_labels.
+          compute_directional_risk_map, current-pose-only, no target_v/
+          target_cmd_steering dependence at all), sliced at the sector
+          `theta` points into.
+
+        Returns (risk_dir, min_dist_dir), both in [0, 1].
         """
         with self._human_lock:
             humans = [
@@ -2340,6 +2401,19 @@ class Environment(
                 for s in self.human_states.values()
             ]
         cfg = self._directional_risk_cfg
+        if self.action_mode == "speed_steering":
+            horizon_sec = float(cfg.horizons_sec[0]) if cfg.horizons_sec else 0.0
+            robot_path = pure_pursuit.ackermann_swept_path(
+                self.latest_actual_signed_speed, self.latest_center_steering,
+                target_v, target_cmd_steering, self.vehicle_wheelbase_m, horizon_sec,
+                accel_limit_mps2=self._dr_rollout_accel_mps2,
+                brake_decel_mps2=self._dr_rollout_brake_decel_mps2,
+                steering_rate_rad_s=self._dr_rollout_steering_rate_rad_s,
+                num_samples=self._dr_rollout_path_samples,
+            )
+            risk, min_dist = aux_labels.compute_action_conditioned_risk(
+                humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg, robot_path)
+            return float(risk), float(min_dist)
         risk_row, min_dist_row = aux_labels.compute_directional_risk_map(
             humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg)
         sector = aux_labels.sector_index_for_theta(theta, cfg.num_sectors)
@@ -2486,12 +2560,31 @@ class Environment(
             self._sim_val_pre_motion = self._goal_metrics(
                 self.loc_est_x, self.loc_est_y, self.loc_est_yaw)
 
-        # 1) 액션 → Pure Pursuit 제어 명령.
-        #    action_dim >= 3 (3D hybrid): action=[r, theta, yield]. 비-yield(MOVE)
-        #    에서는 r>=L_min, speed>=v_move_min 으로 강제되어 물리적으로 정지 불가;
-        #    yield에서만 creep/정지 허용. action_dim == 2 (레거시): 기존 2-call 경로
-        #    그대로 사용 → 2D 계약은 byte-identical 유지.
-        if self.action_dim >= 3:
+        # 1) 액션 → 제어 명령. Dispatch is keyed on self.action_mode (not just
+        #    action_dim, since both "waypoint" and "speed_steering" are 2-D):
+        #    - "speed_steering" (new): action=[speed, steer], no waypoint
+        #      geometry, no binary yield channel -- speed 0 is a genuine
+        #      continuous stop. `theta`/`r` are repurposed as the Ackermann-
+        #      rollout heading/distance (see pure_pursuit.ackermann_rollout) so
+        #      the SAME downstream directional-risk / reward / CSV code below
+        #      (which only reads the shared v/cmd_steering/theta/r/yielding
+        #      variables) needs no further branching.
+        #    - "waypoint_yield" (3D hybrid): action=[r, theta, yield]. 비-yield
+        #      (MOVE)에서는 r>=L_min, speed>=v_move_min 으로 강제되어 물리적으로
+        #      정지 불가; yield에서만 creep/정지 허용.
+        #    - "waypoint" (legacy 2D ablation): 기존 2-call 경로 그대로 사용 →
+        #      2D 계약은 byte-identical 유지.
+        if self.action_mode == "speed_steering":
+            v, cmd_steering = pure_pursuit.speed_steering_action_to_command(
+                action, self.controller_cruise_speed_mps,
+                self.vehicle_steering_limit_rad,
+            )
+            theta, r = pure_pursuit.ackermann_rollout(
+                v, cmd_steering, self.vehicle_wheelbase_m,
+                float(self._directional_risk_cfg.horizons_sec[0]),
+            )
+            yielding = False
+        elif self.action_mode == "waypoint_yield":
             v, cmd_steering, theta, ctl = pure_pursuit.hybrid_action_to_command(
                 action, self.actions_low, self.actions_high,
                 self.vehicle_wheelbase_m, self.vehicle_steering_limit_rad,
@@ -2504,7 +2597,7 @@ class Environment(
             )
             r = float(ctl["r"])          # MOVE-floored / raw waypoint distance for logging
             yielding = bool(ctl["yielding"])
-        else:
+        else:  # "waypoint" (legacy 2D ablation)
             r, theta, x_wp, y_wp = self._map_action_to_waypoint(action)
             v, cmd_steering = self._controller_waypoint_to_command(x_wp, y_wp)
             yielding = False
@@ -2518,7 +2611,8 @@ class Environment(
         # its own independent enable switch.
         action_risk_dir = action_risk_min_dist = None
         if self.risk_map_reward_enabled or self.action_risk_head_env_enabled:
-            action_risk_dir, action_risk_min_dist = self._compute_directional_risk(theta)
+            action_risk_dir, action_risk_min_dist = self._compute_directional_risk(
+                theta, v, cmd_steering)
 
         # 2) Twist publish:
         #   linear.x  = speed from Pure Pursuit [m/s]
@@ -2770,6 +2864,16 @@ class Environment(
         response.reward = float(reward)
         response.done   = bool(done)
         response.target = bool(target)
+        # RISK_BALANCE: the FULL-360 collision verdict + min distance (the
+        # SAME `min_used` check_collision() itself used above), so a caller
+        # (e.g. the replay buffer's risk_meta) never has to approximate
+        # collision proximity from the front-180 obs_state slice of `state`
+        # (which shares environment_dim's length with, but is NOT, the
+        # full-360 environment_state check_collision() actually evaluates).
+        response.collision = bool(collision)
+        response.min_obstacle_dist_m = (
+            float(min_used) if math.isfinite(min_used) else float(self.lidar_max_range)
+        )
         # PHASE1B risk-map-dump (eval-only, default OFF): publish this step's
         # GT pose + selected waypoint + human summary for an external eval
         # script to pair with the aux label above. No-op cost when the flag

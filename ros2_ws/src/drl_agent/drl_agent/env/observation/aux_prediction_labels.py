@@ -274,6 +274,13 @@ def compute_directional_risk_map(humans, robot_pose, cfg: AuxLabelConfig):
     pairing a directional risk with a distance that could come from a human in
     a completely different direction.
 
+    Used for every action_mode EXCEPT speed_steering (see environment.py's
+    _compute_directional_risk) -- deliberately UNAWARE of the robot's own
+    swept path/speed (see compute_action_conditioned_risk for that), so
+    phase2/waypoint_yield and the legacy waypoint contract keep EXACTLY this
+    current-pose-only risk/reward semantics no matter what v/cmd_steering
+    happen to be computed at the call site.
+
     Returns (risk_row, min_dist_row), each length cfg.num_sectors, both in
     [0, 1] (min_dist_row[k]: 1 == no human in sector k within D_c).
     """
@@ -311,6 +318,75 @@ def compute_directional_risk_map(humans, robot_pose, cfg: AuxLabelConfig):
             min_dist_row[k] = dn
 
     return risk_row, min_dist_row
+
+
+def compute_action_conditioned_risk(humans, robot_pose, cfg: AuxLabelConfig, robot_path):
+    """PHASE2 (speed_steering ONLY, see environment.py's
+    _compute_directional_risk): GLOBAL action-conditioned (risk, min_dist)
+    pair -- the minimum distance between the robot's OWN Ackermann swept path
+    (``robot_path``, see pure_pursuit.ackermann_swept_path) and EVERY human's
+    own constant-velocity path, sampled at MATCHING times, with NO
+    re-filtering by bearing sector.
+
+    This is intentionally a DIFFERENT function from
+    compute_directional_risk_map, not a parameterisation of it: bucketing a
+    swept-path distance into "the sector the action's endpoint theta points
+    into" silently drops any human whose near-miss happens in a DIFFERENT
+    bearing sector than the action's own heading -- e.g. a robot driving
+    straight ahead into a pedestrian crossing perpendicular: the pedestrian's
+    OWN bearing sector (measured from the robot's CURRENT pose) is off to the
+    side, so a per-sector lookup at the FORWARD sector reads risk 0 even
+    though the swept paths nearly intersect a moment later. The selected
+    action's risk must be the true minimum over the WHOLE swept path, however
+    it's bucketed by other consumers.
+
+    ``robot_path``: list of (t, dx, dy) robot-LOCAL-frame offsets, t
+    ascending (see pure_pursuit.ackermann_swept_path -- t=0 is NOT included
+    there, so this function prepends it itself). Every sample time is
+    compared against each human's CV-projected position at that SAME time
+    (not a fixed horizon), including when the robot doesn't move at all
+    (ackermann_swept_path still returns samples at (t, 0, 0) for v==0) -- so
+    a stopped robot facing a pedestrian who is only close to it at some
+    INTERMEDIATE moment within the horizon is still caught, not just the
+    endpoints.
+
+    Returns (risk, min_dist), both plain floats in [0, 1] (min_dist == 1.0 ==
+    no human ever within D_c along the whole swept path, or no humans at
+    all).
+    """
+    Dc = max(cfg.risk_distance_scale, 1e-6)
+    rx, ry, ryaw = robot_pose
+
+    robot_pts = [(0.0, rx, ry)]
+    if robot_path:
+        cos_y, sin_y = math.cos(ryaw), math.sin(ryaw)
+        for (t, dx, dy) in robot_path:
+            robot_pts.append((t, rx + dx * cos_y - dy * sin_y,
+                               ry + dx * sin_y + dy * cos_y))
+
+    min_d = float("inf")
+    for (x, y, vx, vy) in _parse_humans(humans, cfg.min_speed_for_motion):
+        for (t, wx, wy) in robot_pts:
+            hx = x + vx * t
+            hy = y + vy * t
+            d = math.hypot(hx - wx, hy - wy)
+            if d < min_d:
+                min_d = d
+
+    if not math.isfinite(min_d):
+        return 0.0, 1.0
+
+    risk = 1.0 - min_d / Dc
+    if risk < 0.0:
+        risk = 0.0
+    elif risk > 1.0:
+        risk = 1.0
+    dn = min_d / Dc
+    if dn < 0.0:
+        dn = 0.0
+    elif dn > 1.0:
+        dn = 1.0
+    return risk, dn
 
 
 def compute_future_risk_labels(humans, robot_pose, cfg: AuxLabelConfig,
