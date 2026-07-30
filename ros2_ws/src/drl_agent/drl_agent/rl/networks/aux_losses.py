@@ -59,21 +59,51 @@ def compute_aux_loss(pred, label, cfg, device):
     risk_target, min_dist_target, ttc_target, hazard_target = _split_label(label, cfg)
 
     # --- v1: risk-map regression (always on) ---
-    # STAGE 4: risk_map_positive_weight > 1.0 up-weights cells whose target
-    # exceeds risk_map_positive_threshold (nonzero/positive risk), so rare
-    # near-risk events aren't washed out by the safe majority. Default 1.0 ->
-    # a uniform weight mask -> byte-identical to plain F.mse_loss.
+    # STAGE 4 / RISK_BALANCE: risk_map_positive_weight > 1.0 up-weights cells
+    # whose target exceeds risk_map_positive_threshold (nonzero/positive
+    # risk), so rare near-risk events aren't washed out by the safe majority.
+    # risk_map_loss_type selects the base elementwise loss ("mse", default, or
+    # "smooth_l1"). weight==1.0 AND loss_type=="mse" (both defaults) ->
+    # byte-identical to plain F.mse_loss.
+    risk_pos_mask = risk_target > cfg.risk_map_positive_threshold
+    risk_elementwise = (
+        F.smooth_l1_loss(pred["risk_map"], risk_target, reduction="none")
+        if cfg.risk_map_loss_type == "smooth_l1"
+        else F.mse_loss(pred["risk_map"], risk_target, reduction="none")
+    )
     if cfg.risk_map_positive_weight != 1.0:
         weight = torch.where(
-            risk_target > cfg.risk_map_positive_threshold,
+            risk_pos_mask,
             torch.full_like(risk_target, cfg.risk_map_positive_weight),
             torch.ones_like(risk_target),
         )
-        risk_loss = (weight * (pred["risk_map"] - risk_target).pow(2)).mean()
+        risk_loss = (weight * risk_elementwise).mean()
     else:
-        risk_loss = F.mse_loss(pred["risk_map"], risk_target)
+        risk_loss = risk_elementwise.mean()
     total = risk_loss
     logs = {"aux/risk_mse": float(risk_loss.detach().item())}
+    # RISK_BALANCE: positive/safe error breakdown so an "all-safe collapse"
+    # (great aggregate error, no signal on the rare risky cells) is visible
+    # even when risk_map_positive_weight == 1.0 (pure diagnostics, no effect
+    # on the loss itself).
+    with torch.no_grad():
+        n_pos = int(risk_pos_mask.sum().item())
+        n_tot = int(risk_pos_mask.numel())
+        if n_pos > 0:
+            logs["aux/risk_positive_error"] = float(risk_elementwise[risk_pos_mask].mean().item())
+        if n_pos < n_tot:
+            logs["aux/risk_safe_error"] = float(risk_elementwise[~risk_pos_mask].mean().item())
+        pred_pos = pred["risk_map"] > cfg.risk_map_positive_threshold
+        tp = int((pred_pos & risk_pos_mask).sum().item())
+        fp = int((pred_pos & ~risk_pos_mask).sum().item())
+        if n_pos > 0:
+            recall = tp / n_pos
+            precision = tp / max(tp + fp, 1)
+            logs["aux/risk_positive_recall"] = float(recall)
+            logs["aux/risk_positive_f1"] = (
+                float(2 * precision * recall / (precision + recall))
+                if (precision + recall) > 0 else 0.0
+            )
 
     # --- v2: future min-distance regression (optional) ---
     if "min_dist" in pred and cfg.min_distance_loss_weight > 0.0:

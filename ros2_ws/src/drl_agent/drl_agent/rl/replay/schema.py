@@ -33,6 +33,10 @@ when its flag is off):
   action_risk_target : (N, action_risk_dim)  PHASE2 Action-Risk Head
                        supervision (risk_dir, min_dist_dir), aligned with
                        ``state``+``action``. Enabled by ``action_risk_dim > 0``.
+  risk_meta          : (N, 4)  RISK_BALANCE per-transition metadata
+                       [stage, human_event, risk_positive, collision_or_near],
+                       used only by risk-balanced sampling (never by the core
+                       critic batch). Enabled by ``store_risk_meta=True``.
 
 Checkpoint layout (see ``LAP.save`` / ``LAP.load``):
 
@@ -70,13 +74,17 @@ OPTIONAL_FIELDS = (
     ReplayField("action_risk_target", "action_risk_target",
                 "action_risk_dim > 0", "action_risk_dim",
                 "PHASE2 action-risk label aligned with state+action"),
+    ReplayField("risk_meta", "risk_meta", "store_risk_meta", None,
+                "RISK_BALANCE [stage, human_event, risk_positive, "
+                "collision_or_near] metadata, used only by risk-balanced sampling"),
 )
 
 #: Bookkeeping keys always present in the .npz checkpoint.
 META_KEYS = ("meta", "max_priority")
 
 
-def expected_npz_keys(aux_dim=0, track_traj=False, action_risk_dim=0):
+def expected_npz_keys(aux_dim=0, track_traj=False, action_risk_dim=0,
+                       store_risk_meta=False):
     """Exact key set ``LAP.save`` writes for a buffer built with these flags."""
     keys = {f.npz_key for f in CORE_FIELDS} | set(META_KEYS)
     if int(aux_dim) > 0:
@@ -85,6 +93,8 @@ def expected_npz_keys(aux_dim=0, track_traj=False, action_risk_dim=0):
         keys.add("traj_end")
     if int(action_risk_dim) > 0:
         keys.add("action_risk_target")
+    if bool(store_risk_meta):
+        keys.add("risk_meta")
     return keys
 
 
@@ -94,10 +104,12 @@ def describe_buffer(buf):
         "aux_dim": int(getattr(buf, "aux_dim", 0) or 0),
         "track_traj": getattr(buf, "traj_end", None) is not None,
         "action_risk_dim": int(getattr(buf, "action_risk_dim", 0) or 0),
+        "store_risk_meta": getattr(buf, "risk_meta", None) is not None,
     }
 
 
-def validate_npz_keys(npz_files, aux_dim=0, track_traj=False, action_risk_dim=0):
+def validate_npz_keys(npz_files, aux_dim=0, track_traj=False, action_risk_dim=0,
+                       store_risk_meta=False):
     """Check a saved checkpoint's key set against this schema.
 
     Parameters
@@ -106,6 +118,6 @@ def validate_npz_keys(npz_files, aux_dim=0, track_traj=False, action_risk_dim=0)
         ``numpy.load(path).files`` of the checkpoint.
     Returns ``(missing, unexpected)`` key sets — both empty on an exact match.
     """
-    expected = expected_npz_keys(aux_dim, track_traj, action_risk_dim)
+    expected = expected_npz_keys(aux_dim, track_traj, action_risk_dim, store_risk_meta)
     actual = set(npz_files)
     return expected - actual, actual - expected

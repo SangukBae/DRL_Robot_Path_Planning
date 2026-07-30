@@ -170,12 +170,26 @@ class AuxPredConfig:
         self.hazard_pos_weight = (
             None if _hpw is None else min(float(_hpw), self.hazard_pos_weight_cap))
         # risk_map_positive_weight: extra multiplicative weight (>= 1.0) applied
-        # to risk-map MSE terms for cells whose target exceeds
+        # to risk-map loss terms for cells whose target exceeds
         # risk_map_positive_threshold (nonzero/positive risk). 1.0 -> uniform
-        # weighting, i.e. the original plain MSE.
-        self.risk_map_positive_weight = float(cfg.get("risk_map_positive_weight", 1.0))
+        # weighting, i.e. the original plain loss. RISK_BALANCE: capped (same
+        # rationale as hazard_pos_weight_cap above) so a raw data imbalance
+        # ratio is never applied unbounded.
+        self.risk_map_positive_weight_cap = float(cfg.get("risk_map_positive_weight_cap", 10.0))
+        _rmw = float(cfg.get("risk_map_positive_weight", 1.0))
+        self.risk_map_positive_weight = (
+            min(_rmw, self.risk_map_positive_weight_cap) if _rmw > 0 else 1.0)
         self.risk_map_positive_threshold = float(
             cfg.get("risk_map_positive_threshold", 0.0))
+        # RISK_BALANCE: base loss for the risk-map term -- "mse" (default,
+        # byte-identical to before) or "smooth_l1" (more stable once
+        # risk_map_positive_weight up-weights rare positive cells).
+        self.risk_map_loss_type = str(cfg.get("risk_map_loss_type", "mse")).strip().lower()
+        if self.risk_map_loss_type not in ("mse", "smooth_l1"):
+            raise ValueError(
+                f"aux_prediction.risk_map_loss_type={self.risk_map_loss_type!r} "
+                "must be 'mse' or 'smooth_l1'."
+            )
 
     # --- derived geometry -------------------------------------------------
     @property

@@ -4,6 +4,12 @@ import numpy as np
 import torch
 
 
+# RISK_BALANCE: fixed per-transition metadata layout (see LAP.risk_meta).
+# Columns: [curriculum_stage, human_event, risk_positive, collision_or_near].
+RISK_META_DIM = 4
+RISK_META_COLUMNS = ("stage", "human_event", "risk_positive", "collision_or_near")
+
+
 class LAP(object):
     def __init__(
         self,
@@ -18,6 +24,9 @@ class LAP(object):
         aux_dim=0,
         track_traj=False,
         action_risk_dim=0,
+        store_risk_meta=False,
+        risk_balanced_enabled=False,
+        risk_balanced_ratios=(0.5, 0.25, 0.25),
     ):
 
         max_size = int(max_size)
@@ -73,6 +82,31 @@ class LAP(object):
         else:
             self.action_risk_target = None
 
+        # RISK_BALANCE: optional fixed-width per-transition metadata (stage /
+        # human-event / risk-positive / collision-or-near-collision flags), used
+        # ONLY by risk-balanced sampling (get_last_aux / get_last_action_risk /
+        # the core sample() batch are completely unaffected). store_risk_meta
+        # =False (default) keeps the buffer identical to baseline -- no new
+        # array, no new npz key.
+        self.store_risk_meta = bool(store_risk_meta)
+        if self.store_risk_meta:
+            self.risk_meta = np.zeros((max_size, RISK_META_DIM), dtype=_dt)
+        else:
+            self.risk_meta = None
+
+        # RISK_BALANCE: stratified sampling for the risk-balanced AUX/action-risk
+        # supervision batch (sample_risk_balanced()). Default OFF -> that method
+        # always returns None and every caller falls back to the primary
+        # uniform/prioritized batch from sample(), byte-identical to baseline.
+        # Independent of store_risk_meta (balanced sampling REQUIRES metadata,
+        # enforced below) so a caller can store metadata for later analysis
+        # without turning sampling bias on.
+        self.risk_balanced_enabled = bool(risk_balanced_enabled) and self.store_risk_meta
+        r = [max(0.0, float(x)) for x in risk_balanced_ratios]
+        rsum = sum(r) or 1.0
+        self.risk_balanced_ratios = tuple(x / rsum for x in r)  # (uniform, human_risk, collision)
+        self.ind_balanced = None
+
         self.prioritized = prioritized
         if prioritized:
             self.priority = torch.zeros(max_size, device=device)
@@ -81,7 +115,7 @@ class LAP(object):
         self.normalize_actions = max_action if normalize_actions else 1
 
     def add(self, state, action, next_state, reward, done, aux_target=None,
-            traj_end=0.0, action_risk_target=None):
+            traj_end=0.0, action_risk_target=None, risk_meta=None):
         self.state[self.ptr] = state
         self.action[self.ptr] = action / self.normalize_actions
         self.next_state[self.ptr] = next_state
@@ -115,6 +149,16 @@ class LAP(object):
                 row[:n] = a[:n]
             self.action_risk_target[self.ptr] = row
 
+        # RISK_BALANCE: store the per-transition metadata aligned with `state`
+        # (same zero-pad-on-missing contract as aux_target/action_risk_target).
+        if self.risk_meta is not None:
+            row = np.zeros(RISK_META_DIM, dtype=self.risk_meta.dtype)
+            if risk_meta is not None:
+                m = np.asarray(risk_meta, dtype=self.risk_meta.dtype).reshape(-1)
+                n = min(RISK_META_DIM, m.shape[0])
+                row[:n] = m[:n]
+            self.risk_meta[self.ptr] = row
+
         if self.prioritized:
             self.priority[self.ptr] = self.max_priority
 
@@ -131,6 +175,7 @@ class LAP(object):
         self.ptr = 0
         self.size = 0
         self.ind = None
+        self.ind_balanced = None
         if self.prioritized:
             self.priority.zero_()
             self.max_priority = 1
@@ -155,8 +200,16 @@ class LAP(object):
             self.ind = torch.searchsorted(csum, val).cpu().data.numpy()
         else:
             self.ind = np.random.randint(0, self.size, size=self.batch_size)
+        return self.get_batch_by_indices(self.ind)
 
-        # STAGE 7: self.state[self.ind] (fancy/advanced indexing) already
+    def get_batch_by_indices(self, indices):
+        """Gather the (state, action, next_state, reward, not_done) 5-tuple for
+        an explicit index array -- the same tensor-conversion logic sample()
+        uses, factored out so RISK_BALANCE's sample_risk_balanced() batch can
+        reuse it without duplicating sample()'s body or touching self.ind
+        (which update_priority() and the get_last_* accessors rely on staying
+        exactly what the last core sample() call drew)."""
+        # STAGE 7: self.state[indices] (fancy/advanced indexing) already
         # allocates a fresh, C-contiguous NumPy copy -- unavoidable for random-
         # index sampling. torch.from_numpy() SHARES that copy's memory instead
         # of torch.tensor()'s own additional copy on top of it; now that the
@@ -165,40 +218,115 @@ class LAP(object):
         # already has). .to(self.device) is a no-op view on CPU or the one
         # unavoidable host->device copy on CUDA, same as before.
         return (
-            torch.from_numpy(self.state[self.ind]).to(self.device),
-            torch.from_numpy(self.action[self.ind]).to(self.device),
-            torch.from_numpy(self.next_state[self.ind]).to(self.device),
-            torch.from_numpy(self.reward[self.ind]).to(self.device),
-            torch.from_numpy(self.not_done[self.ind]).to(self.device),
+            torch.from_numpy(self.state[indices]).to(self.device),
+            torch.from_numpy(self.action[indices]).to(self.device),
+            torch.from_numpy(self.next_state[indices]).to(self.device),
+            torch.from_numpy(self.reward[indices]).to(self.device),
+            torch.from_numpy(self.not_done[indices]).to(self.device),
         )
 
-    def get_last_aux(self):
-        """AUX_PRED: auxiliary targets for the indices from the last sample().
+    def sample_risk_balanced(self, batch_size=None):
+        """RISK_BALANCE: draw a SEPARATE batch of indices stratified over three
+        pools -- uniform / human-risk-positive / collision-or-near-collision --
+        for aux / action-risk supervision ONLY (the core critic batch from
+        sample() is never touched by this method).
+
+        Returns an int64 index array of length ``batch_size`` (default
+        self.batch_size), or None when disabled / metadata isn't stored / the
+        buffer is still empty (caller should fall back to the primary sample()
+        batch's own aux/action-risk loss for that step, i.e. behave exactly
+        like the feature being off).
+
+        Ratios come from risk_balanced_ratios (uniform, human_risk, collision),
+        normalised to sum to 1 at construction time. If the human-risk or
+        collision pool is empty (or the whole buffer has no metadata yet, e.g.
+        early warmup), that pool's share is silently redistributed to the
+        uniform pool instead of erroring or shrinking the batch -- this can
+        never produce a duplicate-sampling error or an empty batch as long as
+        self.size > 0.
+        """
+        if not self.risk_balanced_enabled or self.risk_meta is None or self.size == 0:
+            return None
+        bs = int(batch_size) if batch_size else self.batch_size
+        meta = self.risk_meta[: self.size]
+        human_pool = np.nonzero(
+            (meta[:, 1] > 0.5) | (meta[:, 2] > 0.5)
+        )[0]
+        collision_pool = np.nonzero(meta[:, 3] > 0.5)[0]
+
+        _, ratio_human, ratio_collision = self.risk_balanced_ratios
+        n_col = int(round(bs * ratio_collision))
+        n_hum = int(round(bs * ratio_human))
+
+        def _draw(pool, n):
+            if n <= 0:
+                return np.empty(0, dtype=np.int64)
+            if pool.size == 0:
+                return None  # signals "redistribute to uniform"
+            replace = pool.size < n
+            return np.random.choice(pool, size=n, replace=replace).astype(np.int64)
+
+        # An empty pool draws None; its share is simply left out of col_idx/
+        # hum_idx, so the uniform draw below (bs - len(col_idx) - len(hum_idx))
+        # automatically absorbs the shortfall -- no explicit redistribution
+        # bookkeeping needed.
+        col_idx = _draw(collision_pool, n_col)
+        col_idx = np.empty(0, dtype=np.int64) if col_idx is None else col_idx
+        hum_idx = _draw(human_pool, n_hum)
+        hum_idx = np.empty(0, dtype=np.int64) if hum_idx is None else hum_idx
+        n_uni = bs - col_idx.shape[0] - hum_idx.shape[0]
+        uni_idx = np.random.randint(0, self.size, size=max(0, n_uni)).astype(np.int64)
+
+        ind = np.concatenate([uni_idx, hum_idx, col_idx])
+        np.random.shuffle(ind)
+        self.ind_balanced = ind
+        return ind
+
+    def describe_risk_meta_fractions(self, indices):
+        """RISK_BALANCE: fraction of `indices` carrying each metadata flag --
+        logging-only helper (sampled risk-positive / human-event / collision
+        fraction), never used in the loss/sampling path itself."""
+        if self.risk_meta is None or indices is None or len(indices) == 0:
+            return {}
+        m = self.risk_meta[np.asarray(indices)]
+        return {
+            "human_event_frac": float((m[:, 1] > 0.5).mean()),
+            "risk_positive_frac": float((m[:, 2] > 0.5).mean()),
+            "collision_frac": float((m[:, 3] > 0.5).mean()),
+        }
+
+    def get_last_aux(self, indices=None):
+        """AUX_PRED: auxiliary targets for the given indices (default: the
+        indices from the last sample()).
 
         Returns a (batch, aux_dim) float tensor, or None when auxiliary targets
-        are disabled.  sample() leaves self.ind set, so this mirrors that batch
-        without changing sample()'s return signature (baseline compatibility).
+        are disabled.  sample() leaves self.ind set, so the default mirrors
+        that batch without changing sample()'s return signature (baseline
+        compatibility). RISK_BALANCE: pass ``indices=ind_balanced`` explicitly
+        to fetch the aux target for the risk-balanced batch instead.
         """
         if self.aux_target is None:
             return None
-        ind = getattr(self, "ind", None)
+        ind = self.ind if indices is None else indices
         if ind is None:
             return None
         return torch.from_numpy(self.aux_target[ind]).to(self.device)
 
-    def get_last_action_risk(self):
-        """PHASE2: Action-Risk Head supervision targets for the indices from the
-        last sample(). Returns a (batch, action_risk_dim) float tensor, or None
-        when the feature is disabled. Mirrors get_last_aux()."""
+    def get_last_action_risk(self, indices=None):
+        """PHASE2: Action-Risk Head supervision targets for the given indices
+        (default: the indices from the last sample()). Returns a (batch,
+        action_risk_dim) float tensor, or None when the feature is disabled.
+        Mirrors get_last_aux()."""
         if self.action_risk_target is None:
             return None
-        ind = getattr(self, "ind", None)
+        ind = self.ind if indices is None else indices
         if ind is None:
             return None
         return torch.from_numpy(self.action_risk_target[ind]).to(self.device)
 
-    def get_last_future_actions(self, k_steps):
-        """AUX_PRED: future action sequence for the last sample()'s indices.
+    def get_last_future_actions(self, k_steps, indices=None):
+        """AUX_PRED: future action sequence for the given indices (default: the
+        last sample()'s indices).
 
         For each sampled index i returns the actions [a_i, a_{i+1}, ..., a_{i+K-1}]
         (a_j is the action stored in transition j), stopping at an episode
@@ -211,11 +339,13 @@ class LAP(object):
 
         Circular-buffer safe: a step is valid only if the previous index is not
         a trajectory end AND the next index is not the write head ``ptr`` (which
-        is either unwritten or the oldest, stale transition).
+        is either unwritten or the oldest, stale transition). RISK_BALANCE: pass
+        ``indices=ind_balanced`` to align this lookup with the risk-balanced
+        batch instead -- the same boundary rule applies unchanged.
         """
         if self.traj_end is None or k_steps < 1:
             return None
-        ind = getattr(self, "ind", None)
+        ind = self.ind if indices is None else indices
         if ind is None:
             return None
         ind = np.asarray(ind)
@@ -240,8 +370,9 @@ class LAP(object):
             torch.tensor(vlen, dtype=torch.long, device=self.device),
         )
 
-    def get_last_state_history(self, n_steps):
-        """AUX_PRED: REVERSE-time state window for the last sample()'s indices.
+    def get_last_state_history(self, n_steps, indices=None):
+        """AUX_PRED: REVERSE-time state window for the given indices (default:
+        the last sample()'s indices).
 
         For each sampled index i returns the states [s_i, s_{i-1}, ..., s_{i-N+1}]
         (index 0 == the current state, always valid), walking BACKWARD and
@@ -260,11 +391,13 @@ class LAP(object):
         (``prev == oldest`` stops, where oldest == ``ptr`` for a full buffer else
         0 — this is the circular seam) AND transition ``cur`` is not an episode
         end (``traj_end[cur]==0``; a 1 there means s_prev is a fresh reset state,
-        so s_cur is the PREVIOUS episode and must not be spliced in).
+        so s_cur is the PREVIOUS episode and must not be spliced in). RISK_BALANCE:
+        pass ``indices=ind_balanced`` to align this lookup with the risk-balanced
+        batch instead -- the same boundary rule applies unchanged.
         """
         if self.traj_end is None or n_steps < 1:
             return None
-        ind = getattr(self, "ind", None)
+        ind = self.ind if indices is None else indices
         if ind is None:
             return None
         ind = np.asarray(ind)
@@ -323,6 +456,9 @@ class LAP(object):
         # PHASE2: persist the Action-Risk Head target (optional key).
         if self.action_risk_target is not None:
             save_kwargs["action_risk_target"] = self.action_risk_target[: self.size]
+        # RISK_BALANCE: persist per-transition metadata (optional key).
+        if self.risk_meta is not None:
+            save_kwargs["risk_meta"] = self.risk_meta[: self.size]
         np.savez_compressed(path, **save_kwargs)
         if self.prioritized:
             torch.save(
@@ -423,6 +559,30 @@ class LAP(object):
             saved_ar = self._cast_loaded("action_risk_target", d["action_risk_target"])
             cols = min(self.action_risk_dim, saved_ar.shape[1])
             self.action_risk_target[: size, :cols] = saved_ar[: size, :cols]
+        # RISK_BALANCE: restore per-transition metadata when both sides carry
+        # it. DELIBERATELY graceful (unlike traj_end/aux_dim/action_risk_dim
+        # above, which fail-fast on a mismatch): an old checkpoint saved before
+        # this feature existed has no 'risk_meta' key, and the safe response is
+        # NOT to crash the resume or guess values -- restored rows simply stay
+        # all-zero, which sample_risk_balanced() already treats as "no event"
+        # (both the human-risk and collision pools are empty for those rows),
+        # so it transparently redistributes their share to the uniform pool
+        # until enough freshly-labelled transitions accumulate. A dim mismatch
+        # (shouldn't happen -- RISK_META_DIM is fixed -- but defensive) is
+        # handled the same way: restore whatever columns overlap, zero-pad rest.
+        if self.risk_meta is not None:
+            if "risk_meta" in d.files:
+                saved_rm = self._cast_loaded("risk_meta", d["risk_meta"])
+                cols = min(RISK_META_DIM, saved_rm.shape[1] if saved_rm.ndim == 2 else 0)
+                if cols > 0:
+                    self.risk_meta[: size, :cols] = saved_rm[: size, :cols]
+            else:
+                print(
+                    "[buffer] load(): checkpoint has no 'risk_meta' (saved before "
+                    "risk-balanced replay) -- restored transitions default to "
+                    "all-zero metadata; risk-balanced sampling falls back to the "
+                    "uniform pool until fresh labelled transitions accumulate."
+                )
         self.ptr  = ptr
         self.size = size
         if self.prioritized:

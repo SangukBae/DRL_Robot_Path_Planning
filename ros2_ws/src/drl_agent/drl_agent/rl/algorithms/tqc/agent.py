@@ -28,7 +28,9 @@ from drl_agent.rl.networks.aux_temporal import TemporalFusionEncoder
 
 # PHASE2: Critic-connected Action-Risk Head (default OFF). See
 # action_risk_head.py's module docstring for the gradient rule.
-from drl_agent.rl.networks.action_risk_head import ActionRiskConfig, ActionRiskHead
+from drl_agent.rl.networks.action_risk_head import (
+    ActionRiskConfig, ActionRiskHead, weighted_action_risk_loss,
+)
 
 # STAGE 8: fixed physical-range observation normalization (ISOLATED
 # experimental feature, default OFF -- see obs_normalization.py docstring).
@@ -308,6 +310,29 @@ class Agent(object):
                 "replay resume normally."
             )
 
+        # ----------------------------
+        # RISK_BALANCE: per-transition metadata storage + stratified
+        # aux/action-risk supervision sampling (default OFF, independent of
+        # action_risk_head / aux_prediction -- see buffer.py's LAP for the
+        # actual sampling/storage mechanics). replay_buffer.risk_meta.enabled
+        # stores the metadata; replay_buffer.risk_balanced_sampling.enabled
+        # additionally biases which transitions feed the aux/action-risk
+        # SUPERVISED loss (never the core critic batch). Turning on balanced
+        # sampling implicitly turns on metadata storage (sampling needs it) --
+        # the reverse is NOT implied (metadata can be collected for later
+        # analysis without changing what trains on it).
+        # ----------------------------
+        _rb_cfg = dict(self.hyperparameters.get("replay_buffer", {}) or {})
+        _rm_cfg = dict(_rb_cfg.get("risk_meta", {}) or {})
+        _rbs_cfg = dict(_rb_cfg.get("risk_balanced_sampling", {}) or {})
+        self.risk_balanced_enabled = bool(_rbs_cfg.get("enabled", False))
+        self.store_risk_meta = bool(_rm_cfg.get("enabled", False)) or self.risk_balanced_enabled
+        self.risk_balanced_ratios = (
+            float(_rbs_cfg.get("ratio_uniform", 0.5)),
+            float(_rbs_cfg.get("ratio_human_risk", 0.25)),
+            float(_rbs_cfg.get("ratio_collision", 0.25)),
+        )
+
         def _make_encoder():
             if not self.temporal_actor_enabled:
                 return SharedEncoder(state_dim, self.aux_cfg)
@@ -487,6 +512,11 @@ class Agent(object):
             # aux (future-action lookup) OR the temporal context (backward
             # state-history lookup) is on, so neither walk crosses an episode.
             track_traj=(self.aux_action_conditioned or self.aux_temporal_enabled),
+            # RISK_BALANCE: optional per-transition metadata + stratified
+            # aux/action-risk supervision sampling (both default OFF).
+            store_risk_meta=self.store_risk_meta,
+            risk_balanced_enabled=self.risk_balanced_enabled,
+            risk_balanced_ratios=self.risk_balanced_ratios,
         )
 
         # ----------------------------
@@ -726,17 +756,19 @@ class Agent(object):
             return self.aux_beta
         return self.aux_beta * min(1.0, max(0, self.training_steps - 1) / float(w))
 
-    def _compute_temporal_ctx(self):
-        """AUX_PRED (v2): temporal context for the just-sampled batch, or None.
+    def _compute_temporal_ctx(self, indices=None):
+        """AUX_PRED (v2): temporal context for the given batch (default: the
+        last sample()'s indices), or None.
 
         Walks the replay buffer backward (boundary-safe) for the last
         history_len in-episode states, encodes them through the SHARED encoder
         (so the temporal aux loss also shapes the encoder) and summarises the
         latent window with the temporal GRU. Returns (context, hist_valid_len) or
-        None when temporal is off / history is unavailable."""
+        None when temporal is off / history is unavailable. RISK_BALANCE: pass
+        ``indices=ind_rb`` to align this with the risk-balanced batch instead."""
         if self.temporal_encoder is None:
             return None
-        hist = self.replay_buffer.get_last_state_history(self.aux_cfg.history_len)
+        hist = self.replay_buffer.get_last_state_history(self.aux_cfg.history_len, indices=indices)
         if hist is None:
             return None
         hist_states, hist_valid = hist                 # (B, N, S), (B,)
@@ -879,6 +911,42 @@ class Agent(object):
         z = self.encoder(state)
         z_actor = z.detach()
 
+        # RISK_BALANCE: a SEPARATE, stratified batch (uniform / human-risk /
+        # collision pools) used ONLY for the aux / action-risk SUPERVISED loss
+        # below -- the critic loss above/below always uses the primary
+        # uniform/prioritized `state`/`action` batch, untouched. None (feature
+        # off, or the buffer is still empty) -> both use_rb_* flags below are
+        # False and every block falls back to its ORIGINAL primary-batch
+        # computation, byte-identical to before this feature existed.
+        # STAGE 3/AUX_PRED: compute the effective aux beta BEFORE deciding
+        # whether to draw+encode the balanced batch below -- beta==0 (aux
+        # loss disabled this stage / still in its warmup ramp) already skips
+        # the aux loss entirely further down (see the beta != 0.0 check
+        # further below), so drawing state_rb and running it through the
+        # encoder here would be pure waste: an extra forward pass that no
+        # loss ever reads. _current_aux_beta() is side-effect-free (reads
+        # only stage/step/config), so computing it here changes no numerics.
+        beta = self._current_aux_beta()
+        ind_rb = self.replay_buffer.sample_risk_balanced() if self.risk_balanced_enabled else None
+        use_rb_for_aux = (
+            ind_rb is not None and self.aux_enabled and self.aux_head is not None
+            and beta != 0.0
+        )
+        use_rb_for_risk = (
+            ind_rb is not None and self.action_risk_enabled and self._action_risk_active
+        )
+        z_rb = action_rb = state_rb = None
+        risk_balance_logs = {}
+        if use_rb_for_aux or use_rb_for_risk:
+            state_rb, action_rb, _ns_rb, _r_rb, _nd_rb = self.replay_buffer.get_batch_by_indices(ind_rb)
+            if self.obs_normalizer is not None:
+                state_rb = self.obs_normalizer.normalize(state_rb)
+            z_rb = self.encoder(state_rb)
+            risk_balance_logs.update(
+                {f"risk_balance/sampled_{k}": v
+                 for k, v in self.replay_buffer.describe_risk_meta_fractions(ind_rb).items()}
+            )
+
         """******************************************
         ** Entropy Coefficient Update (if auto)
         ******************************************"""
@@ -990,16 +1058,29 @@ class Agent(object):
         # current stage AND the pre-warmup window (aux_beta_warmup_steps not
         # yet elapsed) -- both cases already contribute nothing to the loss,
         # so skipping the compute changes no numerics, only wasted work.
-        aux_logs = {}
+        aux_logs = dict(risk_balance_logs)
         total_trunk_loss = critic_loss
-        beta = self._current_aux_beta()
-        if (self.aux_enabled and self.aux_head is not None and aux_target is not None
+        # beta already computed above (before the balanced-batch draw) so that
+        # use_rb_for_aux can skip the wasted encoder forward when beta == 0.
+        # RISK_BALANCE: when a balanced batch is available, the aux SUPERVISED
+        # loss trains on it (z_rb/action_rb/its own aux target) INSTEAD OF the
+        # primary uniform batch -- the encoder still gets exactly one aux
+        # gradient contribution per train() call, just sourced from the
+        # stratified batch. Falls back to the primary z/aux_target below
+        # whenever use_rb_for_aux is False (feature off, or no balanced draw
+        # this step), which is byte-identical to the pre-existing behaviour.
+        _aux_z = z_rb if use_rb_for_aux else z
+        _aux_target_src = (
+            self.replay_buffer.get_last_aux(ind_rb) if use_rb_for_aux else aux_target
+        )
+        _aux_indices = ind_rb if use_rb_for_aux else None
+        if (self.aux_enabled and self.aux_head is not None and _aux_target_src is not None
                 and beta != 0.0):
             # AUX_PRED (v2): aux-only temporal context (recent in-episode state
             # history). None when temporal is off -> the head ignores it and the
             # v1 path is unchanged. Shares the encoder graph so it shapes E_psi.
             temporal_ctx = None
-            tctx = self._compute_temporal_ctx()
+            tctx = self._compute_temporal_ctx(indices=_aux_indices)
             if tctx is not None:
                 temporal_ctx, hist_valid = tctx
                 aux_logs["aux/hist_len_mean"] = float(hist_valid.float().mean().item())
@@ -1008,39 +1089,59 @@ class Agent(object):
                 # Same target L_i (future risk from s_i), but conditioned on the
                 # upcoming in-episode action sequence [a_i, .., a_{i+K-1}].
                 fa = self.replay_buffer.get_last_future_actions(
-                    self.aux_cfg.action_conditioned_steps)
+                    self.aux_cfg.action_conditioned_steps, indices=_aux_indices)
                 aux_pred = None
                 if fa is not None:
                     future_actions, valid_len = fa
                     aux_pred = self.aux_head(
-                        z, future_actions, valid_len, temporal_ctx=temporal_ctx)
+                        _aux_z, future_actions, valid_len, temporal_ctx=temporal_ctx)
                     aux_logs["aux/valid_len_mean"] = float(valid_len.float().mean().item())
             else:
-                aux_pred = self.aux_head(z, temporal_ctx=temporal_ctx)
+                aux_pred = self.aux_head(_aux_z, temporal_ctx=temporal_ctx)
 
             if aux_pred is not None:
                 aux_loss, _logs = compute_aux_loss(
-                    aux_pred, aux_target, self.aux_cfg, self.device
+                    aux_pred, _aux_target_src, self.aux_cfg, self.device
                 )
                 aux_logs.update(_logs)
                 total_trunk_loss = critic_loss + beta * aux_loss
                 aux_logs["aux/beta"] = float(beta)
+                if use_rb_for_aux:
+                    aux_logs["risk_balance/aux_uses_balanced_batch"] = 1.0
 
-        # PHASE2: Action-Risk Head supervised loss (MSE against the PRIVILEGED
-        # GT target stored in the buffer, aligned with the sampled `action`).
-        # This is the head's ONLY gradient path -- added into the SAME trunk
-        # loss as the aux loss above, independent of whether critic_risk_input
-        # is on (the head can be trained standalone, condition 3 of the 4-way
-        # experiment matrix).
+        # PHASE2: Action-Risk Head supervised loss (weighted MSE/SmoothL1
+        # against the PRIVILEGED GT target stored in the buffer). This is the
+        # head's ONLY gradient path -- added into the SAME trunk loss as the
+        # aux loss above, independent of whether critic_risk_input is on (the
+        # head can be trained standalone, condition 3 of the 4-way experiment
+        # matrix). RISK_BALANCE: when a balanced batch is available, this
+        # SUPERVISED loss trains on a FRESH forward pass over (z_rb, action_rb)
+        # instead of reusing ar_pred_cur -- ar_pred_cur itself is untouched and
+        # still exclusively feeds critic_risk_input's extra_cur / the actor
+        # update's extra_pi below, so switching the loss source here changes
+        # NOTHING about the critic-feed / actor-gradient channel.
         action_risk_loss_val = 0.0
-        action_risk_logs = {}
+        action_risk_logs = dict(risk_balance_logs) if use_rb_for_risk else {}
         if self.action_risk_enabled and ar_pred_cur is not None:
-            ar_target = self.replay_buffer.get_last_action_risk()
+            if use_rb_for_risk:
+                ar_temporal_rb = (
+                    self.encoder.temporal_feature(state_rb)
+                    if self.action_risk_temporal_enabled else None
+                )
+                ar_pred_src = self.action_risk_head(
+                    z_rb, action_rb, temporal_feature=ar_temporal_rb)
+                ar_target = self.replay_buffer.get_last_action_risk(ind_rb)
+                action_risk_logs["risk_balance/action_risk_uses_balanced_batch"] = 1.0
+            else:
+                ar_pred_src = ar_pred_cur
+                ar_target = self.replay_buffer.get_last_action_risk()
             if ar_target is not None:
-                action_risk_loss = F.mse_loss(ar_pred_cur, ar_target)
+                action_risk_loss, _ar_logs = weighted_action_risk_loss(
+                    ar_pred_src, ar_target, self.action_risk_cfg)
                 total_trunk_loss = total_trunk_loss + self.action_risk_cfg.loss_weight * action_risk_loss
                 action_risk_loss_val = float(action_risk_loss.detach().item())
                 action_risk_logs["action_risk/loss"] = action_risk_loss_val
+                action_risk_logs.update(_ar_logs)
 
         self.critic_optimizer.zero_grad()
         total_trunk_loss.backward()
@@ -1182,6 +1283,11 @@ class Agent(object):
                 scalars.update(aux_logs)
             if self.action_risk_enabled and action_risk_logs:
                 scalars.update(action_risk_logs)
+            # RISK_BALANCE: sampled-pool fractions logged regardless of which
+            # consumer (aux / action-risk / both) used the balanced batch this
+            # step, so they're visible even if only one of the two is enabled.
+            if risk_balance_logs:
+                scalars.update(risk_balance_logs)
 
             if log_scalar_now:
                 for _k, _v in scalars.items():

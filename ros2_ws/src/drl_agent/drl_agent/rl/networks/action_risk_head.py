@@ -45,6 +45,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ActionRiskConfig:
@@ -55,6 +56,25 @@ class ActionRiskConfig:
         self.enabled = bool(cfg.get("enabled", False))
         self.hidden_dim = int(cfg.get("hidden_dim", 64))
         self.loss_weight = float(cfg.get("loss_weight", 0.1))
+        # RISK_BALANCE: optional up-weighting of positive-risk elements in the
+        # supervised loss (target > positive_threshold), same convention as
+        # aux_prediction's risk_map_positive_weight. Capped so a raw imbalance
+        # ratio from the data is never used unbounded (a wildly rare-event
+        # ratio would otherwise destabilise the trunk loss). Default 1.0 ->
+        # uniform weight -> byte-identical to the original plain F.mse_loss.
+        self.pos_weight_cap = float(cfg.get("pos_weight_cap", 10.0))
+        _pw = float(cfg.get("pos_weight", 1.0))
+        self.pos_weight = min(_pw, self.pos_weight_cap) if _pw > 0 else 1.0
+        self.positive_threshold = float(cfg.get("positive_threshold", 0.5))
+        # "mse" (default, byte-identical to before) or "smooth_l1" (more
+        # stable under the up-weighted rare-event regime -- less sensitive to
+        # the occasional large-error outlier than a squared term).
+        self.loss_type = str(cfg.get("loss_type", "mse")).strip().lower()
+        if self.loss_type not in ("mse", "smooth_l1"):
+            raise ValueError(
+                f"action_risk_head.loss_type={self.loss_type!r} must be "
+                "'mse' or 'smooth_l1'."
+            )
         # Default OFF -> the head's input width (and therefore its state_dict)
         # is unchanged from the original [z, action] contract; only tqc_agent.py
         # setting this true (which it only does when temporal_actor_context is
@@ -106,3 +126,70 @@ class ActionRiskHead(nn.Module):
             h = self.act(self.l1(torch.cat([z, action], dim=-1)))
         pred = torch.sigmoid(self.out(h))
         return pred  # (B, 2): [:, 0] = risk_dir, [:, 1] = min_dist_dir
+
+
+def weighted_action_risk_loss(pred, target, cfg: ActionRiskConfig):
+    """RISK_BALANCE: supervised loss for the Action-Risk Head's (risk_dir,
+    min_dist_dir) prediction, with optional up-weighting of positive-risk
+    target elements (cfg.pos_weight, already capped at construction) and a
+    configurable base loss (cfg.loss_type). cfg.pos_weight == 1.0 (default)
+    -> byte-identical to the previous plain F.mse_loss.
+
+    Also returns a log dict with the positive/safe loss breakdown and a
+    positive-class recall/F1 -- computed on risk_dir (column 0) ONLY, since
+    min_dist_dir (column 1) has the OPPOSITE polarity (low == risky) and
+    thresholding it the same way as risk_dir does not mean "predicted risky"
+    -- so an "all-safe collapse" -- great overall error, ~0 recall on the
+    rare positive-risk elements -- is visible instead of hidden behind a good
+    aggregate RMSE.
+    """
+    elementwise = (
+        F.smooth_l1_loss(pred, target, reduction="none")
+        if cfg.loss_type == "smooth_l1"
+        else F.mse_loss(pred, target, reduction="none")
+    )
+    # RISK_BALANCE fix: risk_dir (col 0) is the danger signal (higher = more
+    # risk); min_dist_dir (col 1) is a DISTANCE where 1 == far/safe. Masking
+    # elementwise on `target > threshold` up-weighted min_dist_dir==1 rows --
+    # i.e. up-weighted the SAFE, no-human-present case -- exactly backwards
+    # from the rare-risky-event intent. Base the positive mask on risk_dir
+    # ONLY and broadcast it across the row so both outputs of a genuinely
+    # risky transition share the up-weight.
+    pos_mask = (target[:, 0:1] > cfg.positive_threshold).expand_as(target)
+    if cfg.pos_weight != 1.0:
+        weight = torch.where(
+            pos_mask, torch.full_like(target, cfg.pos_weight), torch.ones_like(target))
+        loss = (weight * elementwise).mean()
+    else:
+        loss = elementwise.mean()
+
+    logs = {"action_risk/pos_weight_applied": float(cfg.pos_weight)}
+    with torch.no_grad():
+        n_pos = int(pos_mask.sum().item())
+        n_tot = int(pos_mask.numel())
+        if n_pos > 0:
+            logs["action_risk/positive_loss"] = float(elementwise[pos_mask].mean().item())
+        if n_pos < n_tot:
+            logs["action_risk/safe_loss"] = float(elementwise[~pos_mask].mean().item())
+        # RISK_BALANCE fix: recall/F1 must compare risk_dir ONLY (column 0).
+        # pos_mask's two columns are identical (broadcast from risk_dir), so
+        # pos_mask[:, 0] is exactly "target risk_dir > threshold" -- applying
+        # the same test to pred[:, 1] (min_dist_dir) does not mean "predicted
+        # risky" (opposite polarity), and mixing both columns' TP/FP counts
+        # produced a nonsensical recall (e.g. a perfectly correct
+        # [risk=0.9, min_dist=0.1] prediction scored recall=0.5, and a safe
+        # [0.1, 0.9] prediction generated a spurious false positive).
+        risk_dir_pos = pos_mask[:, 0]
+        n_risk_pos = int(risk_dir_pos.sum().item())
+        pred_risk_pos = pred[:, 0] > cfg.positive_threshold
+        tp = int((pred_risk_pos & risk_dir_pos).sum().item())
+        fp = int((pred_risk_pos & ~risk_dir_pos).sum().item())
+        if n_risk_pos > 0:
+            recall = tp / n_risk_pos
+            precision = tp / max(tp + fp, 1)
+            logs["action_risk/positive_recall"] = float(recall)
+            logs["action_risk/positive_f1"] = (
+                float(2 * precision * recall / (precision + recall))
+                if (precision + recall) > 0 else 0.0
+            )
+    return loss, logs
