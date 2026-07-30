@@ -1,0 +1,26 @@
+# PHASE3 experiment profile: speed_steering_risk_balanced
+# Loaded by drl_agent.config.loader (ProfileLoader). File paths are relative
+# to this directory. Flags below must MATCH the yaml contents — validated by
+# drl_agent.config.validation before training starts.
+#
+# FRESH-RUN ONLY: environment_curriculum.yaml sets action_mode=speed_steering
+# (continuous [speed, steering] action, action_dim=2 — no waypoint geometry,
+# no binary yield channel). This is a DIFFERENT action contract from every
+# phase2/* profile (waypoint_yield, action_dim=3) and from the legacy 2D
+# waypoint ablation — actor/critic/action-risk-head input widths differ, so a
+# phase2 (or any other) checkpoint CANNOT be resumed into this profile.
+# ConfigValidator._check_action_mode hard-rejects `-p resume:=true` /
+# `--resume` for this profile unconditionally (see drl_agent/config/
+# validation.py) — always start a fresh run.
+profile:
+  name: phase3/speed_steering_risk_balanced
+  algorithm: tqc
+  trainer: curriculum
+  environment: environment_curriculum.yaml
+  train: train_tqc_config.yaml
+  hparams: hyperparameters_tqc.yaml
+  curriculum: train_tqc_curriculum_config.yaml
+  output_prefix: tqc_phase3_speed_steering_risk_balanced
+  overrides:
+    risk_map_reward_enabled: true      # env-side reward shaping (same as phase2/both)
+    action_risk_head_enabled: true     # env+agent action-risk head (same as phase2/both)

@@ -64,6 +64,7 @@ DRL 로봇 경로계획 시스템 문서 인덱스. **무엇부터 읽을지**�
 | [aux_ablation_logging](experiments/aux_ablation_logging.md) | aux on/off 비교 로깅 |
 | [tqc_scaling_improvement_plan](experiments/tqc_scaling_improvement_plan.md) | GPU 사용률 저조 상황에서의 TQC/critic/aux 확장 우선순위 (A1~A4) |
 | [phase2_optimization_notes](experiments/phase2_optimization_notes.md) | `phase2/both` 학습 경로 처리량 개선 요약(무엇을 줄였는지 + 실측치) |
+| [phase3_speed_steering_risk_balanced](experiments/phase3_speed_steering_risk_balanced.md) | 연속 speed/steering action mode + risk-balanced replay/weighted loss (`phase3/speed_steering_risk_balanced`, fresh-run 전용) |
 | [simulation_validation](experiments/simulation_validation.md) | 시뮬레이션 검증 절차 |
 | [map_curriculum_plan](experiments/map_curriculum_plan.md) | 구조화 맵 상세 설계 원안 |
 | [paper_preparation_guide](experiments/paper_preparation_guide.md) | 논문화 작업 가이드(원 README) |
