@@ -1,15 +1,19 @@
 # `phase2/both` Throughput Optimization — Summary
 
 `environment_curriculum_node.py --ros-args -p profile:=phase2/both` +
-`train_node.py --ros-args -p profile:=phase2/both -p seed:=0` 학습 경로의 속도 개선 작업 요약.
+`train_node.py --ros-args -p profile:=phase2/both -p seed:=0` 학습 경로에서 검토한 속도 개선 작업 요약.
 **모델 크기는 축소하지 않았다**(`n_critics=5`, `n_quantiles=25`, hidden dim 불변) — 개선은 전부
 불필요한 연산/대기 제거·수치적으로 동일한 연산 재구성·메모리 표현 변경에서 나온다.
+
+주의: `gazebo_deterministic_stepping=true`는 처리량은 개선했지만 초기 학습 곡선 저하 가능성이 관측되어
+`phase2/both` 기본 profile에서는 다시 OFF(legacy stepping)로 되돌렸다. 논문 main run에는 별도 ablation
+없이 기본 ON으로 쓰지 않는다.
 
 ## 적용된 변경
 
 | 항목 | 무엇을 줄였나 | 기본값 | 체크포인트 영향 |
 |---|---|---|---|
-| Gazebo deterministic stepping (`gazebo_deterministic_stepping`) | `unpause→sleep→pause` 2회 호출 → `WorldControl(multi_step=N)` 1회 호출 | OFF(패키지 공통), `phase2/both` profile에서 **ON** | 없음 |
+| Gazebo deterministic stepping (`gazebo_deterministic_stepping`) | `unpause→sleep→pause` 2회 호출 → `WorldControl(multi_step=N)` 1회 호출 | OFF(패키지 공통, `phase2/both`도 OFF) | 없음 |
 | Human deterministic stepping (`human_deterministic_stepping`) | 보행자 이동 타이머를 wall-clock 독립 정수 tick으로 재구현 — **재현성 버그 수정**(기존엔 in-episode RNG draw 수가 wall-clock 속도에 의존) | OFF | 없음 |
 | Stage 기반 aux/action-risk 게이팅 | stage 0–2(사람 없음)에서 aux head·temporal encoder forward/loss를 통째로 스킵 (`aux_prediction.stagewise_loss_schedule=[0,0,0,0.1,...]`, `action_risk_head.enable_from_stage=3`) | `phase2/both`에 적용 | 없음(파라미터 shape 불변) |
 | TQC critic freeze + foreach polyak | actor 업데이트 시 critic gradient 계산 방지, Polyak 업데이트를 `torch._foreach_*`로 배치화 | 항상 적용(수학적으로 동일 연산) | 없음 |
@@ -22,7 +26,7 @@
 | 모드 | 평균 step 시간 | steps/s |
 |---|---|---|
 | Legacy (`gazebo_deterministic_stepping=false`) | 203.6–204.5 ms | 4.89–4.91 |
-| `gazebo_deterministic_stepping=true` | **152.3–154.6 ms** | **6.47–6.57**(≈25% 개선) |
+| `gazebo_deterministic_stepping=true`(opt-in ablation) | **152.3–154.6 ms** | **6.47–6.57**(≈25% 개선, 단 초기 학습 곡선 저하 가능성 관측) |
 | `human_deterministic_stepping`만, stage 3(실제 보행자) | ≈306 ms | ≈3.3 (아래 미해결 항목 때문에 legacy보다 느림) |
 | `human_deterministic_stepping` + `gazebo_deterministic_stepping`, stage 3 | 202.5–211.7 ms | ≈4.8 (legacy 수준 회복 — 재현성 확보가 주목적) |
 
@@ -49,7 +53,7 @@ fairness/스레드 기아 가설). 마찬가지로 Gazebo `multi_step` 완료를
 
 ## 남은 후속 작업
 
-1. `gazebo_deterministic_stepping`을 나머지 3개 phase2 profile(`baseline`/`reward_shaping_only`/`action_risk_head_only`)에도 적용(현재 `both`에만 적용).
+1. `gazebo_deterministic_stepping`은 처리량/성능 ablation을 먼저 끝낸 뒤, 성능 저하가 없을 때만 phase2 profile에 opt-in 적용.
 2. Stage 3 aux/action-risk 게이팅의 장기 학습 곡선 검증(이번엔 메커니즘 정확성만 확인).
 3. `risk_map_positive_weight`/`hazard_pos_weight`(sparse risk label을 위한 loss weighting 메커니즘, stage gate와 무관) 실제 값 튜닝 — sparse-event 통계 수집 후 결정.
 4. `obs_normalization`을 aux temporal-context 경로(`get_last_state_history()`)에도 적용할지 검토.
