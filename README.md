@@ -19,7 +19,7 @@ ROS2 Humble + Gazebo Ignition Fortress 기반 **AgileX Hunter SE** 자율주행 
 | CUDA | 11.8 |
 | Python | 3.10 |
 
-> RGL LiDAR 플러그인 설치 필요 → [Installation](docs/guides/installation.md#rgl-lidar-plugin)
+> RGL LiDAR 플러그인 설치 필요 → [Installation](docs/guides/installation.md#2-rgl-lidar-plugin)
 
 ---
 
@@ -163,7 +163,7 @@ ros2 run drl_agent generalization_eval.py --ros-args \
 | [Installation](docs/guides/installation.md) | 상세 빌드, Docker, RGL LiDAR 설치 |
 | [Training](docs/guides/training.md) | 커리큘럼 학습, 재개 방법 |
 | [Architecture](docs/design/environment_design.md) | 서비스 인터페이스, 상태/액션 공간, 파이프라인 |
-| [Algorithms](docs/overview/repository_map.md) | TQC, TD7, SAC, A3C 알고리즘 설명 |
+| [Algorithms](docs/overview/repository_map.md#알고리즘-drl_agentrlalgorithms-drl_agenttraining) | TQC, TD7, SAC, A3C 알고리즘 설명 |
 | [Configuration](docs/reference/config_reference.md) | config 파일별 파라미터 레퍼런스 |
 | [Map Curriculum](docs/design/map_curriculum_design.md) | structured map(lobby/corridor/intersection/clutter) 커리큘럼 설계·구현 |
 | [Aux Prediction Design](docs/design/aux_prediction_design.md) | 공유 인코더 + future-risk auxiliary head 설계 (single-step / action-conditioned) |

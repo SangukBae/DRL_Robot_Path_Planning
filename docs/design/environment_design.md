@@ -19,7 +19,7 @@
 
 ## How — 한 step의 내부 (`environment.py::step_callback`)
 1. action(3D 하이브리드, 정규화) → waypoint(r,θ) + yield 판정 → Pure Pursuit → `cmd_vel` publish
-   (MOVE 모드는 속도 바닥값 보정, YIELD 모드는 정지/creep — [state/action 표](../reference/state_action_reference.md#action--3d-하이브리드-stopyield-pure-pursuit))
+   (MOVE 모드는 속도 바닥값 보정, YIELD 모드는 정지/creep — [state/action 표](../reference/state_action_reference.md#action-3d-하이브리드-stopyield-pure-pursuit))
 2. Gazebo를 `time_delta`(0.1s) 진행, 보행자 20Hz 타이머가 사람 이동
 3. LiDAR(`/scan`) → `obs_state`(전방 180° 80빈, 정책 입력) + 충돌용 360° 80빈 `environment_state`
 4. odom/joint → 실제 속도·요레이트·조향, 목표 거리/방향 계산
