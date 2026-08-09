@@ -13,16 +13,19 @@
 | `load_model` | false | fresh start (특정 run 이어갈 때만 true) |
 | `use_checkpoints` | false | step-wise off-policy update |
 | `eval_freq` | 12,000 | |
-| `eval_eps` | 10 | |
+| `eval_eps` | 40 | 현재 canonical phase2/phase3 profile 기준 |
 | `timesteps_before_training` | 12,000 | warmup |
 
-curriculum 공통 설정(10-stage → 9-entry 진급 게이트, 인덱스 = stage 번호; **6개 비교군 동일**):
-`min_stage_steps=30000`, `min_stage_episodes=20`, `consecutive_eval_passes=2`,
+curriculum 공통 설정(10-stage → 9-entry 진급 게이트, 인덱스 = stage 번호; **canonical profile 공통**):
+`min_stage_steps=30000`, `min_stage_episodes=20`, `consecutive_eval_passes=1`,
 `pass_eval_success_rate=[0.90,0.88,0.86,0.80,0.80,0.76,0.74,0.72,0.70]`,
 `pass_eval_collision_rate=[0.10,0.10,0.10,0.12,0.12,0.15,0.20,0.20,0.20]`.
 success/collision 게이트와 **Stage 5 계약 변경 처리는 6개 baseline 모두 동일**하다: yield 해제(Stage 5)
 시 리플레이 버퍼 리셋 + 재워밍업(`reset_buffer_on_promote_to:[5]` + `rewarmup_steps=5000`)을 공통 적용해
 off-contract transition이 critic을 오염시키지 않게 한다.
+
+`phase2/both_legacy`는 이전 실행 호환을 위한 예외 profile이다. 이 profile만
+`eval_eps=20`, `consecutive_eval_passes=2`를 유지한다.
 
 > **TQC 전용(미이식):** SPL 품질 게이트 `pass_eval_spl=[0.55,0.55,0.54,0.50,0.50,0.48,0.47,0.45,0.44]`는
 > 현재 `train_tqc_curriculum.py`만 읽는다. 다른 baseline은 success/collision 게이트만 사용한다.
@@ -42,17 +45,17 @@ CSV에 aux 메타·stage-aware cmd/motion 컬럼을 더 붙인다(§2.2 주석 �
 공유 모듈 `training/episode_metrics.py`가 `(state, action)` 스트림에서 안전/네비/제어 지표를
 계산한다 (ROS·env·TQC 변경 없음). path length는 속도 적분, CTE는 odom dead-reckoning 추정.
 
-- **`eval_metrics_*.csv`** (19컬럼, **논문 표의 1순위 소스** — 결정론적 eval):
+- **`eval_metrics_*.csv`** (21컬럼, **논문 표의 1순위 소스** — 결정론적 eval):
   `epoch, global_t, curriculum_stage, eval_eps, mean_reward, std_reward,
    success_rate, collision_rate, timeout_rate, mean_goal_dist,
    path_length_m, spl, mean_heading_error_rad, mean_cross_track_error_m,
    mean_action_jerk, mean_steering_change_rad, near_collision_count,
-   travel_time_s, mean_speed_mps`
-- **`episode_metrics_*.csv`** (17컬럼, 학습 곡선·sample-efficiency용 — 매 학습 episode):
+   travel_time_s, mean_speed_mps, stl, lidar_clearance_rate`
+- **`episode_metrics_*.csv`** (19컬럼, 학습 곡선·sample-efficiency용 — 매 학습 episode):
   `episode, global_t, curriculum_stage, success, collision, timeout,
-   total_reward, steps,` + 위 9개 지표.
+   total_reward, steps,` + 위 11개 지표.
 
-`evaluate_and_print()`는 위 9개 지표(eval episodes 평균)를 반환 dict에 추가로 포함한다.
+`evaluate_and_print()`는 위 11개 지표(eval episodes 평균)를 반환 dict에 추가로 포함한다.
 
 ### 2.2 기존 CSV (유지)
 
