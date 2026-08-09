@@ -61,67 +61,37 @@ ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 # [터미널 2] 커리큘럼 환경 노드
 ros2 run drl_agent environment_curriculum.py
 
-# [터미널 3] TQC 커리큘럼 학습 — 실행 모드별 명령어
-# 1) 새 학습 (다중 seed: -p seed:=N 또는 DRL_AGENT_SEED=N 환경변수로 sweep)
+# [터미널 3] TQC 커리큘럼 학습
 ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
 
-# 2) 자동 재개 — train_tqc_config.yaml(커리큘럼 config 아님)의 train_settings에서
-#    load_model:true 설정 후 동일 명령 재실행. base_file_name+seed가 일치하는 최신
-#    체크포인트 + replay buffer (+ curriculum_state.json 있으면 스테이지/글로벌 스텝도) 복원.
-#    상세: docs/guides/training.md#학습-재개
+# 자동 재개
 ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
 
-# 3) 특정 체크포인트에서 지정 스테이지로 재시작 — 모델 가중치만 로드하고
-#    replay buffer/optimizer/커리큘럼 진행도는 새로 시작 (A3/A4 fresh-run-only 아키텍처는 불가)
+# 특정 체크포인트에서 재시작
 ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p resume_weight_prefix:=<prefix> -p resume_stage:=<0-9> \
-  -p resume_weights_dir:=<run_dir>/pytorch_models   # 생략 시 이번 run의 pytorch_models_dir
+  -p resume_weights_dir:=<run_dir>/pytorch_models
 
-# 4) run_dir / train config 커스터마이징 (예: A1-A4 스케일링 실험, UTD 비율 override)
+# run_dir / train config override
 ros2 run drl_agent train_tqc_curriculum.py --ros-args \
   -p run_dir:=<경로> -p train_config_file:=<경로> -p updates_per_env_step:=4
 
-# 5) PHASE2 실험 (candidate1=risk_map_reward, candidate2=action_risk_head)
-#    — profile 기반 실행 (권장). profile은 config 4종 + 플래그 선언을 한 폴더로 묶고
-#    실행 전 ConfigValidator가 env/agent 플래그 일치, base_file_name 일관성,
-#    resume 가능 여부를 강하게 검증한다.
-#    profile 위치: ros2_ws/src/drl_experiments/profiles/phase2/<variant>/
-#
-#    모드별 의미:
-#      phase2/baseline              : candidate1 OFF, candidate2 OFF
-#      phase2/reward_shaping_only   : candidate1 ON,  candidate2 OFF
-#      phase2/action_risk_head_only : candidate1 OFF, candidate2 ON
-#      phase2/both                  : candidate1 ON,  candidate2 ON + trajectory risk/RBS
-#      phase2/both_legacy           : 이전 phase2/both 의미 보존
-#      phase2/both_trajrisk_rbs     : trajectory risk/RBS variant를 명시한 이름
-#      phase2/tqc_vanilla           : TQC 확장 플래그 전체 OFF
-#      phase3/speed_steering_risk_balanced : 2D speed/steering action + trajectory risk/RBS
-#
-#    [터미널 2] 환경 노드 / [터미널 3] 학습 노드 — 같은 profile 사용:
+# Profile 기반 실행
 ros2 run drl_agent environment_curriculum_node.py --ros-args -p profile:=phase2/both
 ros2 run drl_agent train_node.py --ros-args -p profile:=phase2/both -p seed:=0
 
-#    profile 기반 재개 (checkpoint/replay/curriculum_state 존재를 사전 검증):
+# Profile 기반 재개
 ros2 run drl_agent train_node.py --ros-args -p profile:=phase2/both -p seed:=0 -p resume:=true
 
-#    config-only 사전 검증 (ROS/Gazebo 불필요):
+# Profile 검증 / 목록 / sweep
 python3 ros2_ws/src/drl_experiments/scripts/run_profile.py phase2/both --validate-only
-python3 ros2_ws/src/drl_experiments/scripts/run_profile.py --list        # profile 목록
+python3 ros2_ws/src/drl_experiments/scripts/run_profile.py --list
 python3 ros2_ws/src/drl_experiments/scripts/run_profile.py \
-  --sweep ros2_ws/src/drl_experiments/sweeps/phase2_seeds.yaml           # seed sweep 명령 출력
+  --sweep ros2_ws/src/drl_experiments/sweeps/phase2_seeds.yaml
 
-#    (profile 없이) 개별 config 경로를 직접 지정하는 방식도 그대로 동작한다:
-#      ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=<dir>/environment_curriculum.yaml
-#      ros2 run drl_agent train_tqc_curriculum.py --ros-args -p train_config_file:=<dir> -p seed:=0
-#    (runtime/phase2_configs/<MODE>/ 디렉터리도 보존됨 — 현재 canonical은 profiles/phase2/)
-
-# 동일 프로토콜로 다른 baseline도 비교 가능 (모두 canonical 모듈, 자기 파일명으로 설치됨):
-#   sac_curriculum.py / td7_curriculum.py
-#   sb3_sac_curriculum.py / sb3_td3_curriculum.py
-#   tqc_ieqn_curriculum.py / a3c_curriculum.py
-# 알고리즘을 파라미터 하나로 선택하려면 train_rl.py (레지스트리 방식, tqc_curriculum은 content-identical):
+# Registry 기반 학습
 ros2 run drl_agent train_rl.py --ros-args -p rl_model:=tqc_curriculum
-ros2 run drl_agent train_rl.py --list-models   # 사용 가능한 알고리즘 목록 (Gazebo 불필요)
+ros2 run drl_agent train_rl.py --list-models
 
 # TensorBoard 모니터링
 tensorboard --logdir <run_dir>/logs
@@ -130,19 +100,15 @@ tensorboard --logdir <run_dir>/logs
 논문 비교 실험용 후처리/평가:
 
 ```bash
-# 다중 seed 결과 집계 (eval_metrics_*.csv → mean±std 표 / 학습곡선 / sample efficiency)
+# 다중 seed 결과 집계
 python3 -m drl_agent.evaluation.analysis.aggregate_results \
   --runtime-root ros2_ws/src/drl_agent/runtime
-# (동일 기능, runtime-root 자동 지정): python3 ros2_ws/src/drl_experiments/scripts/aggregate.py
-# (manifest 기반 그룹 표):            python3 ros2_ws/src/drl_experiments/scripts/export_tables.py --help
 
-# profile 기반 일반화 평가 (아래 generalization_eval 파라미터 그대로 통과):
+# Profile 기반 일반화 평가
 ros2 run drl_agent eval_node.py --ros-args -p profile:=phase2/both \
   -p weight_prefix:=<model_prefix> -p world:=aws_hospital
 
-# 일반화 평가 (학습된 모델을 stage/world 별로 재학습 없이 평가) — 현재 TQC 전용
-#   weights_dir 는 기본적으로 해당 run 의 pytorch_models/ 를 보지만,
-#   final_models/ 등 다른 위치의 모델을 쓰려면 -p weights_dir:=<경로> 로 지정
+# 일반화 평가
 ros2 run drl_agent generalization_eval.py --ros-args \
   -p weight_prefix:=<model_prefix> -p weights_dir:=<run_dir>/final_models \
   -p world:=aws_hospital -p eval_eps_override:=20
