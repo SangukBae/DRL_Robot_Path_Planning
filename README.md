@@ -54,6 +54,20 @@ Profile config 주요 기능:
 - **Localization noise**: Stage 4부터 ramp-up · off: `localization.enabled=false`
 - **Auxiliary future-risk prediction**: 공유 인코더 + aux head · off: `hyperparameters_tqc.yaml`의 `aux_prediction.enabled=false` · [문서](docs/design/aux_prediction_design.md) · [지표](docs/reference/metrics_reference.md)
 
+사용 가능한 profile:
+
+| Phase | Profile | 용도 | Action mode |
+|------|---------|------|-------------|
+| phase2 | `phase2/tqc_vanilla` | TQC 확장 플래그 전체 OFF 기준선 | `waypoint_yield` |
+| phase2 | `phase2/baseline` | risk reward/head 모두 OFF | `waypoint_yield` |
+| phase2 | `phase2/reward_shaping_only` | risk_map_reward만 ON | `waypoint_yield` |
+| phase2 | `phase2/action_risk_head_only` | action_risk_head만 ON | `waypoint_yield` |
+| phase2 | `phase2/both` | risk_map_reward + action_risk_head + trajectory risk/RBS | `waypoint_yield` |
+| phase2 | `phase2/both_legacy` | 이전 `phase2/both` 의미 보존 | `waypoint_yield` |
+| phase2 | `phase2/both_trajrisk_rbs` | trajectory risk/RBS variant 명시 | `waypoint_yield` |
+| phase2 | `phase2/obs_norm_optim_split` | 관측 정규화 + optimizer split 실험 | `waypoint_yield` |
+| phase3 | `phase3/speed_steering_risk_balanced` | 연속 speed/steering + trajectory risk/RBS | `speed_steering` |
+
 ```bash
 PROFILE=phase2/both
 
