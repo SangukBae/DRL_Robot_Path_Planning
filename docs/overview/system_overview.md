@@ -25,8 +25,10 @@
             │                                                            
             ▼  cmd_vel → prefilter → Gazebo (로봇이 실제로 움직임)
 ```
-- **환경 노드**가 Gazebo를 돌리고, 로봇 관측을 **state 벡터(87차원)**로 만들어 준다.
-- **에이전트 노드**가 state를 받아 **action(3차원: 전진 waypoint 거리·각도 + yield/정지 축)**을 정하고, 환경에 `step`으로 보낸다.
+- **환경 노드**가 Gazebo를 돌리고, 로봇 관측을 **기본 state 벡터(87차원)**로 만들어 준다.
+- **에이전트 노드**가 state를 받아 profile별 action을 정하고, 환경에 `step`으로 보낸다. 기본 curriculum은
+  **3차원 waypoint_yield**(전진 waypoint 거리·각도 + yield/정지 축), phase3 speed_steering profile은
+  **2차원 speed/steering** action을 쓴다.
 - 환경은 action을 실행해 다음 state·보상·종료여부를 돌려준다. 이 과정을 수백만 번 반복하며 정책이 좋아진다.
 
 ## 핵심 개념 5가지 (어디서 더 읽나)

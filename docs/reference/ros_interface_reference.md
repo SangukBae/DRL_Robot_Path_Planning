@@ -11,7 +11,7 @@
 | `/seed` | 랜덤 시드 설정 |
 | `/action_space_sample` | 랜덤 action 샘플(워밍업) |
 
-- 정의: `ros2_ws/src/drl_agent/srv/` (`drl_agent_interfaces`)
+- 정의: `ros2_ws/src/drl_agent_interfaces/srv/`
 - 토픽이 아닌 **서비스**라 한 스텝씩 동기 제어 가능.
 - 커리큘럼/평가 제어용 ROS 파라미터: `curriculum_stage`(쓰기), `curriculum_num_stages`(읽기), `current_map_type`(읽기), `curriculum_eval_mode`(쓰기).
 
