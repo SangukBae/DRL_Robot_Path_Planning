@@ -47,7 +47,7 @@ xhost +local:
 
 ## Quick Start
 
-`environment_curriculum.yaml` 기본 활성 기능:
+Profile config 주요 기능:
 
 - **Structured map curriculum**: lobby/corridor/intersection/clutter 4종을 **10-stage**로 한 단계씩 도입(구조→사람→위치추정 노이즈→지형→proprio 노이즈→새 맵·군중→통합), stage·맵별 개수는 `*_by_map` (예: Stage 9 `static C5/I7/Cl8/L9`, `humans C3/I4/Cl4/L6`) · off: `map_layout_enabled=false` · [문서](docs/design/map_curriculum_design.md)
 - **Profile별 action mode**: 기본 curriculum은 3D waypoint_yield, phase3 profile은 2D speed_steering
@@ -55,43 +55,34 @@ xhost +local:
 - **Auxiliary future-risk prediction**: 공유 인코더 + aux head · off: `hyperparameters_tqc.yaml`의 `aux_prediction.enabled=false` · [문서](docs/design/aux_prediction_design.md) · [지표](docs/reference/metrics_reference.md)
 
 ```bash
+PROFILE=phase2/both
+
 # [터미널 1] Gazebo 시뮬레이션
 ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 
 # [터미널 2] 커리큘럼 환경 노드
-ros2 run drl_agent environment_curriculum.py
+ros2 run drl_agent environment_curriculum_node.py --ros-args -p profile:=$PROFILE
 
-# [터미널 3] TQC 커리큘럼 학습
-ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
+# [터미널 3] 학습 노드
+ros2 run drl_agent train_node.py --ros-args -p profile:=$PROFILE -p seed:=0
 
 # 자동 재개
-ros2 run drl_agent train_tqc_curriculum.py --ros-args -p seed:=0
+ros2 run drl_agent train_node.py --ros-args -p profile:=$PROFILE -p seed:=0 -p resume:=true
 
 # 특정 체크포인트에서 재시작
-ros2 run drl_agent train_tqc_curriculum.py --ros-args \
+ros2 run drl_agent train_node.py --ros-args -p profile:=$PROFILE \
   -p resume_weight_prefix:=<prefix> -p resume_stage:=<0-9> \
   -p resume_weights_dir:=<run_dir>/pytorch_models
 
-# run_dir / train config override
-ros2 run drl_agent train_tqc_curriculum.py --ros-args \
-  -p run_dir:=<경로> -p train_config_file:=<경로> -p updates_per_env_step:=4
-
-# Profile 기반 실행
-ros2 run drl_agent environment_curriculum_node.py --ros-args -p profile:=phase2/both
-ros2 run drl_agent train_node.py --ros-args -p profile:=phase2/both -p seed:=0
-
-# Profile 기반 재개
-ros2 run drl_agent train_node.py --ros-args -p profile:=phase2/both -p seed:=0 -p resume:=true
+# run_dir / 학습 파라미터 override
+ros2 run drl_agent train_node.py --ros-args -p profile:=$PROFILE \
+  -p seed:=0 -p run_dir:=<경로> -p updates_per_env_step:=4
 
 # Profile 검증 / 목록 / sweep
-python3 ros2_ws/src/drl_experiments/scripts/run_profile.py phase2/both --validate-only
+python3 ros2_ws/src/drl_experiments/scripts/run_profile.py $PROFILE --validate-only
 python3 ros2_ws/src/drl_experiments/scripts/run_profile.py --list
 python3 ros2_ws/src/drl_experiments/scripts/run_profile.py \
   --sweep ros2_ws/src/drl_experiments/sweeps/phase2_seeds.yaml
-
-# Registry 기반 학습
-ros2 run drl_agent train_rl.py --ros-args -p rl_model:=tqc_curriculum
-ros2 run drl_agent train_rl.py --list-models
 
 # TensorBoard 모니터링
 tensorboard --logdir <run_dir>/logs
@@ -100,12 +91,14 @@ tensorboard --logdir <run_dir>/logs
 논문 비교 실험용 후처리/평가:
 
 ```bash
+PROFILE=phase2/both
+
 # 다중 seed 결과 집계
 python3 -m drl_agent.evaluation.analysis.aggregate_results \
   --runtime-root ros2_ws/src/drl_agent/runtime
 
 # Profile 기반 일반화 평가
-ros2 run drl_agent eval_node.py --ros-args -p profile:=phase2/both \
+ros2 run drl_agent eval_node.py --ros-args -p profile:=$PROFILE \
   -p weight_prefix:=<model_prefix> -p world:=aws_hospital
 
 # 일반화 평가
