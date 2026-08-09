@@ -1,6 +1,6 @@
 """torch-gated tests for:
 
-  * action_dim=2 (the PHASE3 speed_steering contract) flows generically into
+  * action_dim=2 (the speed_steering action contract) flows generically into
     Actor / Critic / ActionRiskHead / aux AuxiliaryHead input widths and the
     auto target_entropy = -action_dim, with NO code branching needed for the
     new mode (Agent has always been action_dim-generic).
@@ -225,7 +225,8 @@ def test_weighted_loss_neutralized_when_risk_balanced_sampling_disabled(tmp_path
 def test_weighted_loss_passes_through_when_risk_balanced_sampling_enabled(tmp_path):
     """Guard against over-correcting: with the master flag ON, the configured
     weight/loss_type values must reach AuxPredConfig/ActionRiskConfig
-    unchanged (this is phase2/both's and phase3's actual shipped config)."""
+    unchanged (this is phase2/both's and the speed_steering action mode's
+    actual shipped config)."""
     agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
                    _hp(aux_prediction={"enabled": True,
                                         "risk_map_positive_weight": 5.0,

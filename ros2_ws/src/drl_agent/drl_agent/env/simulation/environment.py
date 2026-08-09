@@ -706,14 +706,15 @@ class Environment(
         self.risk_map_reward_gate_eps      = float(_rmr.get("progress_positive_gate_eps", 0.0))
         self._prev_risk_dir = None  # reset per episode; None on episode start
 
-        # PHASE3: speed_steering-only continuous-control shaping (reward_
+        # speed_steering-only continuous-control shaping (reward_
         # calculator's continuous_control_reward_enabled block) -- heading-
         # error-delta reward + steering/speed continuous-control penalty.
         # reward_calculator itself re-gates on action_mode=="speed_steering",
         # so leaving this enabled for waypoint/waypoint_yield configs would
-        # still be a no-op, but every profile that isn't phase3 simply omits
-        # the block (default OFF) -> reward byte-identical to before this
-        # feature. Per-episode prev-state mirrors the _prev_risk_dir pattern.
+        # still be a no-op, but every profile that doesn't use speed_steering
+        # simply omits the block (default OFF) -> reward byte-identical to
+        # before this feature. Per-episode prev-state mirrors the
+        # _prev_risk_dir pattern.
         _ccr = dict(self.environment_config.get("continuous_control_reward", {}) or {})
         self.continuous_control_reward_enabled = bool(_ccr.get("enabled", False))
         self.ccr_heading_delta_weight       = float(_ccr.get("heading_delta_weight", 0.2))
@@ -2380,7 +2381,7 @@ class Environment(
     def _swept_path_risk(self, target_v, target_cmd_steering):
         """TRAJ_RISK: action-conditioned GLOBAL swept-path (risk, min_dist) for
         an arbitrary candidate command (target_v, target_cmd_steering), reused
-        by both speed_steering (phase3) and, when
+        by both the speed_steering action mode and, when
         directional_risk.waypoint_trajectory_risk_enabled is on,
         waypoint_yield/legacy waypoint. NOT tied to any one action_mode or a
         single "selected" action -- a future counterfactual-label caller
@@ -2449,7 +2450,7 @@ class Environment(
           {"waypoint_yield", "waypoint"} AND
           self._waypoint_trajectory_risk_enabled): action-conditioned GLOBAL
           swept-path risk -- see _swept_path_risk's docstring for the full
-          rationale. Isolated to speed_steering by default (phase3) so
+          rationale. Isolated to speed_steering by default so
           phase2/waypoint_yield and the legacy waypoint contract's semantics
           are UNCHANGED unless the profile explicitly opts in via that flag.
         * every other case (unchanged from before either feature existed):
@@ -2864,7 +2865,7 @@ class Environment(
             risk_bonus_weight=self.risk_map_reward_bonus_w,
             risk_bonus_max=self.risk_map_reward_bonus_max,
             progress_positive_gate_eps=self.risk_map_reward_gate_eps,
-            # PHASE3: speed_steering continuous-control shaping (0 unless
+            # speed_steering continuous-control shaping (0 unless
             # enabled AND action_mode=="speed_steering").
             continuous_control_reward_enabled=self.continuous_control_reward_enabled,
             action_mode=self.action_mode,
@@ -2887,7 +2888,7 @@ class Environment(
         # comparison (None on episode start / when risk_map_reward is off and
         # action_risk_head didn't compute it either).
         self._prev_risk_dir = action_risk_dir
-        # PHASE3: carry this step's heading error / commanded steering+speed
+        # carry this step's heading error / commanded steering+speed
         # into the next step's continuous-control shaping (None on episode
         # start / no-op unless continuous_control_reward_enabled).
         self._prev_theta_err = theta_err
@@ -3004,7 +3005,7 @@ class Environment(
             )
 
     def _reset_continuous_control_reward_state(self):
-        """PHASE3: clear continuous_control_reward's per-episode carry state
+        """Clear continuous_control_reward's per-episode carry state
         (heading error + commanded steering/speed from the PREVIOUS step) so
         the new episode's first step sees them as None -- this is what makes
         reward_calculator.compute_reward's heading-delta/change-penalty terms

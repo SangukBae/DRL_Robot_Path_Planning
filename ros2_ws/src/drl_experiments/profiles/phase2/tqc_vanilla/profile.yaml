@@ -7,8 +7,8 @@
 # quantile critic is OFF, on BOTH the env side and the agent side --
 # aux_prediction (shared encoder + future-risk aux head), observation_time_
 # context (scan-history frame stacking), risk_map_reward / action_risk_head /
-# critic_risk_input (PHASE2 candidate1/2), continuous_control_reward (PHASE3-
-# only, inert here), directional_risk.waypoint_trajectory_risk_enabled, and
+# critic_risk_input (PHASE2 candidate1/2), continuous_control_reward
+# (speed_steering-only, inert here), directional_risk.waypoint_trajectory_risk_enabled, and
 # replay_buffer.risk_meta / risk_balanced_sampling. The action contract
 # (waypoint_yield, action_dim=3), 10-stage curriculum, map/human/reward
 # configuration are otherwise IDENTICAL to phase2/baseline.

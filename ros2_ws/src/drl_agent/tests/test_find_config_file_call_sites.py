@@ -14,8 +14,8 @@ and falls through to drl_agent's generic package-default config (source-tree
 search order) -- a DIFFERENT file than the one the profile actually names.
 
 This was silently benign for phase2 profiles (whose action_dim=3 matches the
-generic default's), but reproduced as an ACTUAL CRASH for
-phase3/speed_steering_risk_balanced (action_dim=2): the trainer read the
+generic default's), but reproduced as an ACTUAL CRASH for a
+speed_steering-action profile (action_dim=2): the trainer read the
 generic action_dim=3 config for its motion-telemetry mirror, then crashed
 calling pure_pursuit.hybrid_action_to_command with a 2-D action against
 3-element actions_low/high arrays (ValueError: operands could not be

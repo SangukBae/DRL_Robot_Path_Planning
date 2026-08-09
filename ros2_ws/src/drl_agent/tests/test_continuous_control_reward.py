@@ -1,4 +1,4 @@
-"""ROS-free unit tests for PHASE3's speed_steering-only continuous-control
+"""ROS-free unit tests for the speed_steering-only continuous-control
 reward shaping (reward_calculator.compute_reward's continuous_control_
 reward_* params) plus its config/CSV wiring.
 
@@ -410,7 +410,7 @@ def test_validator_disabled_block_skips_all_checks():
     assert rep.info["continuous_control_reward.enabled"] is False
 
 
-def test_validator_passes_for_valid_phase3_style_config():
+def test_validator_passes_for_valid_speed_steering_style_config():
     rep = _validator_check(_env_docs())
     assert rep.errors == []
     assert rep.warnings == []

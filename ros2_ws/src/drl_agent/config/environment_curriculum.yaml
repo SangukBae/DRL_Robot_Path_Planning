@@ -380,7 +380,7 @@ environment:
     bonus_max: 0.1
     progress_positive_gate_eps: 0.0
 
-  # PHASE3: speed_steering-only continuous-control shaping (reward_
+  # speed_steering-only continuous-control shaping (reward_
   # calculator.compute_reward's continuous_control_reward_* params). Two
   # sub-terms under ONE toggle, applied ONLY when environment.action_mode ==
   # "speed_steering" -- compute_reward enforces this itself, so leaving this

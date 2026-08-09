@@ -118,7 +118,7 @@ class ConfigValidator:
                 f"config says {rmr} — fix the profile or environment yaml")
 
     def _check_continuous_control_reward(self, rep, docs):
-        """PHASE3: fail-fast checks for continuous_control_reward.
+        """speed_steering action mode: fail-fast checks for continuous_control_reward.
 
         reward_calculator.compute_reward normalises its penalty terms by
         vehicle_steering_limit_rad / controller_cruise_speed_mps, falling
@@ -197,7 +197,7 @@ class ConfigValidator:
         read (compute_action_conditioned_risk treats an empty robot_path as
         "robot never moves") -- no crash, just a silently degraded target.
         Only checked when the rollout is actually reachable: action_mode==
-        speed_steering (phase3), or waypoint_trajectory_risk_enabled=true
+        speed_steering, or waypoint_trajectory_risk_enabled=true
         (phase2/both) -- irrelevant/inert for every other profile.
         """
         env_cfg = (docs.get("environment") or {}).get("environment", docs.get("environment") or {})

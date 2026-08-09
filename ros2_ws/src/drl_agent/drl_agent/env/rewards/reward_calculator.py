@@ -262,7 +262,7 @@ def compute_reward(
     risk_bonus_max=0.1,
     progress_positive_gate_eps=0.0,
 
-    # ---- PHASE3: speed_steering continuous-control shaping (opt-in; default
+    # ---- speed_steering continuous-control shaping (opt-in; default
     # OFF -> byte-identical reward). Two sub-terms under ONE toggle, gated on
     # BOTH continuous_control_reward_enabled AND action_mode=="speed_steering"
     # (enforced HERE, not just by the caller, so this function is safe even if
@@ -362,7 +362,7 @@ def compute_reward(
         "risk_map_bonus": 0.0,
         "risk_dir": 0.0,
         "min_dist_dir": 1.0,
-        # PHASE3: speed_steering continuous-control shaping (0 unless
+        # speed_steering continuous-control shaping (0 unless
         # continuous_control_reward_enabled and action_mode=="speed_steering").
         "reward_heading_delta": 0.0,
         "penalty_steering_magnitude": 0.0,
@@ -563,7 +563,7 @@ def compute_reward(
     terms["risk_dir"] = float(risk_dir) if risk_dir is not None else 0.0
     terms["min_dist_dir"] = float(min_dist_dir) if min_dist_dir is not None else 1.0
 
-    # 5g) PHASE3: speed_steering continuous-control shaping (opt-in). See the
+    # 5g) speed_steering continuous-control shaping (opt-in). See the
     # continuous_control_reward_enabled parameter docstring above.
     reward_heading_delta = 0.0
     penalty_steering_magnitude = 0.0

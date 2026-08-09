@@ -1,4 +1,4 @@
-"""ROS-free tests for the PHASE3 continuous speed/steering action mode
+"""ROS-free tests for the continuous speed/steering action mode
 (pure_pursuit.speed_steering_action_to_command / ackermann_rollout) and a
 backward-compatibility pin on the pre-existing action-decoding functions this
 change did NOT modify (hybrid_action_to_command / action_to_waypoint /

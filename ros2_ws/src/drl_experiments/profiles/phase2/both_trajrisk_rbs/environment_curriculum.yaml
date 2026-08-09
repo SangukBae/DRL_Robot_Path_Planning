@@ -137,7 +137,7 @@ environment:
     min_speed_for_motion: 0.05
     # TRAJ_RISK: waypoint_yield's action-risk target (and risk_map_reward's
     # selected-action term) uses the action-conditioned Ackermann swept-path
-    # rollout (same computation phase3/speed_steering uses), not the current-
+    # rollout (same computation the speed_steering action mode uses), not the current-
     # pose-only per-sector lookup. rollout_* MUST mirror hunter_se_gazebo/
     # config/hunter_se_cmd_prefilter.yaml's accel_limit_mps2/brake_decel_mps2/
     # steering_rate_deg_s exactly (see
