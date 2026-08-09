@@ -18,7 +18,7 @@ Covers:
     min_stage_episodes=20) are in effect;
   * output_prefix / base_file_name are tqc_phase2_vanilla on both sides;
   * this profile does not perturb phase2/baseline, phase2/both, or any
-    other existing phase2/phase3 profile;
+    other existing phase2 profile;
   * the profile's ACTUAL hyperparameters_tqc.yaml constructs a real
     drl_agent.rl.algorithms.tqc.agent.Agent without raising -- a config-only
     (YAML flag / ConfigValidator) check is not enough: a prior revision of
@@ -54,7 +54,6 @@ _OTHER_PROFILES = (
     "phase2/reward_shaping_only",
     "phase2/action_risk_head_only",
     "phase2/obs_norm_optim_split",
-    "phase3/speed_steering_risk_balanced",
 )
 
 
@@ -279,10 +278,3 @@ def test_phase2_both_unchanged_by_tqc_vanilla():
     assert env.get("action_risk_head", {}).get("enabled") is True
     assert env.get("directional_risk", {}).get(
         "waypoint_trajectory_risk_enabled") is True
-
-
-def test_phase3_profile_unchanged_by_tqc_vanilla():
-    spec = ProfileLoader().load("phase3/speed_steering_risk_balanced")
-    env = _load_env_yaml(spec)
-    assert env.get("action_dim") == 2
-    assert str(env.get("action_mode", "")).strip().lower() == "speed_steering"

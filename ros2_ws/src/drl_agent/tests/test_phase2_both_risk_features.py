@@ -11,14 +11,11 @@ Covers:
   * phase2/both_trajrisk_rbs's action_dim/state_dim/actions_low/actions_high
     (the Pure Pursuit control contract) are UNCHANGED by either feature;
   * phase2/both_trajrisk_rbs's directional_risk.rollout_* mirrors
-    hunter_se_cmd_prefilter.yaml exactly (config-drift regression, mirroring
-    test_phase3_speed_steering_profile.py's identical check);
+    hunter_se_cmd_prefilter.yaml exactly (config-drift regression);
   * a fresh (non-resume) validate of phase2/both_trajrisk_rbs is clean.
 
 Resume-hard-reject-on-feature-contract-mismatch is covered generically in
-test_config_validation.py (not profile-specific); phase3 regression /
-speed_steering isolation is covered by test_phase3_speed_steering_profile.py
-and test_directional_risk_env.py -- neither is touched by this file.
+test_config_validation.py (not profile-specific) -- not touched by this file.
 """
 
 import os
@@ -99,9 +96,8 @@ def test_phase2_both_weighted_losses_enabled_within_conservative_range():
 #  Feature 2: waypoint trajectory risk -- ON, rollout dynamics match prefilter
 # --------------------------------------------------------------------------- #
 def _hunter_se_prefilter_yaml_path():
-    """Mirrors test_phase3_speed_steering_profile.py's identically-named
-    helper (kept self-contained per this repo's test-file convention rather
-    than cross-importing another test module)."""
+    """Kept self-contained per this repo's test-file convention rather than
+    cross-importing another test module."""
     root = compat.package_source_root()
     src_root_found = bool(root)
     if root:
@@ -121,10 +117,8 @@ def _hunter_se_prefilter_yaml_path():
 
 
 def test_phase2_both_rollout_dynamics_match_prefilter_config():
-    """Same config-drift regression as
-    test_phase3_rollout_dynamics_match_prefilter_config, for
-    phase2/both_trajrisk_rbs's waypoint_trajectory_risk_enabled rollout
-    instead of speed_steering's."""
+    """Config-drift regression for phase2/both_trajrisk_rbs's
+    waypoint_trajectory_risk_enabled rollout."""
     prefilter_path, src_root_found = _hunter_se_prefilter_yaml_path()
     if prefilter_path is None:
         if src_root_found:
@@ -206,14 +200,3 @@ def test_phase2_both_legacy_keeps_old_both_feature_contract():
     assert rep.info["action_risk_head.agent_enabled"] is True
     assert rep.info["directional_risk.waypoint_trajectory_risk_enabled"] is False
     assert rep.info["replay_buffer.risk_balanced_sampling.enabled"] is False
-
-
-def test_phase3_profile_unaffected():
-    """phase3/speed_steering_risk_balanced is a completely separate profile
-    file this task must not touch -- spot-check it still validates and still
-    uses speed_steering (not waypoint_yield's trajectory-risk flag at all,
-    since that branch is action_mode-gated ahead of the flag check)."""
-    spec = ProfileLoader().load("phase3/speed_steering_risk_balanced")
-    rep = ConfigValidator(spec).validate(resume=False)
-    assert not rep.errors, rep.errors
-    assert rep.info["environment.action_mode"] == "speed_steering"

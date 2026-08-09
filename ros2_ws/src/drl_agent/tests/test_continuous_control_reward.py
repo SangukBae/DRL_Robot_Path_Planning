@@ -13,9 +13,8 @@ Covers:
     change penalties (0 when unchanged / on first step, positive on change),
     and that constant nonzero steering keeps costing the magnitude term
     every step (it does not decay/disappear).
-  * the phase3/speed_steering_risk_balanced profile carries the block with
-    enabled: true and the documented conservative defaults; the canonical
-    environment_curriculum.yaml and phase2/both carry it OFF (or absent).
+  * the canonical environment_curriculum.yaml and phase2/both carry the
+    block OFF (or absent).
   * the env-side debug CSV schema: _rotate_debug_csv's header contains the
     4 new columns in the documented position, and the (separately, inline)
     per-step row-write references the same 4 reward_terms keys in the same
@@ -362,30 +361,6 @@ def test_canonical_config_has_continuous_control_reward_off():
 
 
 @pytestmark_profiles
-def test_phase3_profile_enables_continuous_control_reward_with_conservative_defaults():
-    spec = ProfileLoader().load("phase3/speed_steering_risk_balanced")
-    env = _load_env_block(spec.config_paths["environment"])
-    ccr = env.get("continuous_control_reward", {})
-    assert ccr.get("enabled") is True
-    assert env.get("action_mode") == "speed_steering"
-    # Conservative initial weights: small vs. progress_clip=0.25/k_p=0.5 and
-    # the terminal +-20/-30 scale.
-    assert 0.0 < ccr.get("heading_delta_weight", 0.0) <= 0.5
-    assert 0.0 < ccr.get("steering_magnitude_weight", 0.0) <= 0.05
-    assert 0.0 < ccr.get("steering_change_weight", 0.0) <= 0.05
-    assert 0.0 < ccr.get("speed_change_weight", 0.0) <= 0.05
-
-
-@pytestmark_profiles
-def test_phase3_profile_validates():
-    from drl_agent.config.validation import ConfigValidator
-
-    spec = ProfileLoader().load("phase3/speed_steering_risk_balanced")
-    rep = ConfigValidator(spec).validate(resume=False)
-    assert not rep.errors, rep.errors
-
-
-@pytestmark_profiles
 def test_phase2_both_config_unaffected():
     """phase2/both must not carry (or need) the new block, and its action_mode
     stays the pre-existing waypoint_yield contract."""
@@ -475,17 +450,6 @@ def test_validator_warns_when_enabled_but_action_mode_not_speed_steering():
     rep = _validator_check(docs)
     assert rep.errors == []
     assert any("action_mode" in w for w in rep.warnings), rep.warnings
-
-
-@pytestmark_profiles
-def test_phase3_profile_passes_the_new_validator_check_end_to_end():
-    from drl_agent.config.validation import ConfigValidator
-
-    spec = ProfileLoader().load("phase3/speed_steering_risk_balanced")
-    rep = ConfigValidator(spec).validate(resume=False)
-    assert rep.info["continuous_control_reward.enabled"] is True
-    assert not rep.errors, rep.errors
-    assert not rep.warnings, rep.warnings
 
 
 # --------------------------------------------------------------------------- #
