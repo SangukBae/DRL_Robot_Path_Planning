@@ -38,8 +38,7 @@
 ## 각 단계 설명 (짧게)
 - **reset**: 에피소드 초기화. 환경이 stage에 맞춰 장애물·맵·noise를 세팅하고 초기 state를 준다.
 - **state (기본 87D)**: 전방 180° LiDAR 80빈 + 목표거리/방향 + 이전 action 2축 + 실제 속도/요레이트/조향. → [state 구조](../reference/state_action_reference.md)
-- **action (profile별)**: 기본 curriculum은 3D `waypoint_yield`(거리 r, 각도 θ + yield 축)를 쓰고,
-  `phase3/speed_steering_risk_balanced`는 2D `speed_steering`(목표 속도 + 조향)을 쓴다. 정책은
+- **action (profile별)**: 기본 curriculum은 3D `waypoint_yield`(거리 r, 각도 θ + yield 축)를 쓴다. 정책은
   `[-1,1]`로 내고, 환경이 profile action mode에 맞춰 물리 명령으로 바꾼다.
 - **step**: action 실행 → 0.1초 시뮬레이션 → 다음 state·보상·done.
 - **replay buffer**: 경험 `(s,a,s',r,done)`을 저장. off-policy 학습이라 과거 경험을 재사용한다. (`rl/replay/buffer.py`, LAP 우선순위)

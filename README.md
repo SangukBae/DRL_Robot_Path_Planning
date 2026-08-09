@@ -50,7 +50,6 @@ xhost +local:
 Profile config 주요 기능:
 
 - **Structured map curriculum**: lobby/corridor/intersection/clutter 4종을 **10-stage**로 한 단계씩 도입(구조→사람→위치추정 노이즈→지형→proprio 노이즈→새 맵·군중→통합), stage·맵별 개수는 `*_by_map` (예: Stage 9 `static C5/I7/Cl8/L9`, `humans C3/I4/Cl4/L6`) · off: `map_layout_enabled=false` · [문서](docs/design/map_curriculum_design.md)
-- **Profile별 action mode**: 기본 curriculum은 3D waypoint_yield, phase3 profile은 2D speed_steering
 - **Localization noise**: Stage 4부터 ramp-up · off: `localization.enabled=false`
 - **Auxiliary future-risk prediction**: 공유 인코더 + aux head · off: `hyperparameters_tqc.yaml`의 `aux_prediction.enabled=false` · [문서](docs/design/aux_prediction_design.md) · [지표](docs/reference/metrics_reference.md)
 
@@ -66,7 +65,6 @@ Profile config 주요 기능:
 | phase2 | `phase2/both_legacy` | 이전 `phase2/both` 의미 보존 | `waypoint_yield` |
 | phase2 | `phase2/both_trajrisk_rbs` | trajectory risk/RBS variant 명시 | `waypoint_yield` |
 | phase2 | `phase2/obs_norm_optim_split` | 관측 정규화 + optimizer split 실험 | `waypoint_yield` |
-| phase3 | `phase3/speed_steering_risk_balanced` | 연속 speed/steering + trajectory risk/RBS | `speed_steering` |
 
 ```bash
 PROFILE=phase2/both

@@ -12,7 +12,7 @@ DRL 로봇 경로계획 시스템 문서 인덱스. **무엇부터 읽을지**�
 - **localization noise만 보고 싶은 사람** → [design/localization_noise_design](design/localization_noise_design.md) → [guides/real_robot_deployment](guides/real_robot_deployment.md) → [experiments/simulation_validation](experiments/simulation_validation.md)
 - **논문 실험을 하려는 사람** → [experiments/experiment_protocol](experiments/experiment_protocol.md) → [experiments/paper_preparation_guide](experiments/paper_preparation_guide.md)
 - **TQC 모델 내부 구조(block diagram)를 보고 싶은 사람** → [design/tqc_curriculum_model_architecture](design/tqc_curriculum_model_architecture.md)
-- **phase2/phase3 profile 실행·최적화 상태를 보고 싶은 사람** → [overview/package_structure](overview/package_structure.md#profile-시스템) → [experiments/phase2_optimization_notes](experiments/phase2_optimization_notes.md) → [experiments/phase3_speed_steering_risk_balanced](experiments/phase3_speed_steering_risk_balanced.md)
+- **phase2 profile 실행·최적화 상태를 보고 싶은 사람** → [overview/package_structure](overview/package_structure.md#profile-시스템) → [experiments/phase2_optimization_notes](experiments/phase2_optimization_notes.md)
 
 ## 강화학습 시스템 이해의 핵심 문서 (이 5개면 큰 그림이 잡힌다)
 1. [overview/system_overview.md](overview/system_overview.md) — 시스템 전체가 무엇인지
@@ -64,7 +64,6 @@ DRL 로봇 경로계획 시스템 문서 인덱스. **무엇부터 읽을지**�
 | [aux_ablation_logging](experiments/aux_ablation_logging.md) | aux on/off 비교 로깅 |
 | [tqc_scaling_improvement_plan](experiments/tqc_scaling_improvement_plan.md) | GPU 사용률 저조 상황에서의 TQC/critic/aux 확장 우선순위 (A1~A4) |
 | [phase2_optimization_notes](experiments/phase2_optimization_notes.md) | `phase2/both` 학습 경로 처리량 개선 요약(무엇을 줄였는지 + 실측치) |
-| [phase3_speed_steering_risk_balanced](experiments/phase3_speed_steering_risk_balanced.md) | 연속 speed/steering action mode + risk-balanced replay/weighted loss (`phase3/speed_steering_risk_balanced`) |
 | [simulation_validation](experiments/simulation_validation.md) | 시뮬레이션 검증 절차 |
 | [map_curriculum_plan](experiments/map_curriculum_plan.md) | 구조화 맵 상세 설계 원안 |
 | [paper_preparation_guide](experiments/paper_preparation_guide.md) | 논문화 작업 가이드(원 README) |

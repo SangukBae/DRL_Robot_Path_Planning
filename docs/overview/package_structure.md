@@ -44,11 +44,9 @@ ros2_ws/src/
 │   └── runtime/                   # 학습 산출물 (gitignored, 보존)
 └── drl_experiments/               # 실험 정의 패키지
     ├── profiles/
-    │   ├── phase2/{tqc_vanilla,baseline,reward_shaping_only,action_risk_head_only,both,
-    │   │           both_legacy,both_trajrisk_rbs,obs_norm_optim_split}/
-    │   │                          #   profile.yaml + config 4종 (self-contained)
-    │   └── phase3/speed_steering_risk_balanced/
-    │                              #   2D speed/steering + trajectory risk/RBS profile
+    │   └── phase2/{tqc_vanilla,baseline,reward_shaping_only,action_risk_head_only,both,
+    │               both_legacy,both_trajrisk_rbs,obs_norm_optim_split}/
+    │                              #   profile.yaml + config 4종 (self-contained)
     ├── sweeps/                    # phase2_seeds.yaml / paper_main.yaml
     ├── scripts/                   # run_profile.py / resume_profile.py / aggregate.py / export_tables.py
     └── outputs/                   # gitignored 결과물 공간

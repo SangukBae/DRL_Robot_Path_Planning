@@ -124,7 +124,7 @@ stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/m
 
 ---
 
-## PHASE2 / PHASE3 profile flags
+## PHASE2 profile flags
 
 | 플래그 | 위치 | 의미 |
 |------|-----|------|
@@ -143,7 +143,6 @@ stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/m
 - `phase2/both_legacy`: 이전 `phase2/both` 의미 보존(`eval_eps=20`, 연속 eval pass 2회).
 - `phase2/both_trajrisk_rbs`: `phase2/both`에 trajectory-risk target과 risk-balanced supervised loss를 추가한 명시적 variant.
 - `phase2/obs_norm_optim_split`: 관측 정규화와 optimizer param group 실험용 fresh-run profile.
-- `phase3/speed_steering_risk_balanced`: 2D `speed_steering` action 계약 + trajectory risk + risk-balanced replay.
 
 상세는 [package_structure](../overview/package_structure.md#profile-시스템).
 빈 문자열(기본값)은 "override 없음, YAML이 이긴다"는 뜻(`drl_agent.config.paths.parse_bool_override`) — 두

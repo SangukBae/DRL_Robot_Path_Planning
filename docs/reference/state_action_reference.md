@@ -1,7 +1,7 @@
 # State / Action Reference
 
 정책이 보는 **state(기본 87차원)**와 profile별 **action 계약**의 정확한 정의표. 기본 curriculum은
-3D waypoint_yield이고, `phase3/speed_steering_risk_balanced`는 2D speed_steering을 쓴다.
+3D waypoint_yield을 쓴다.
 (개념 설명은 [../overview/training_pipeline.md](../overview/training_pipeline.md))
 
 ## State — 87D
@@ -55,7 +55,7 @@ state가 `80×N + 7`이 된다(기본 N=4 → **327D**). 현재 87D 프레임이
 
 yield 축이 없으므로 항상 MOVE 계약이다. 전진 속도는 `controller_v_move_min_mps` 바닥값 보정을 받는다.
 
-### `speed_steering` — 2D (phase3)
+### `speed_steering` — 2D
 | 인덱스 | 내용 | 물리 범위 |
 |--|--|--|
 | `action[0]` | 목표 speed | [0.0, `controller_cruise_speed_mps`] m/s |
@@ -72,5 +72,4 @@ aux prediction이 켜지면 env가 state 뒤에 **미래 위험 라벨**을 임�
 - state 조립: `env/observation/observation_builder.py`(obs_state 360°/180°), `env/simulation/environment.py`(`_rebuild_agent_state`, `step_callback`), `env/observation/obs_time_context.py`(프레임 스택)
 - action→cmd: `env/simulation/environment.py::_step_callback_impl` + `common/pure_pursuit.py`
   (`action_to_waypoint`, `hybrid_action_to_command`, `speed_steering_action_to_command`)
-- 차원/범위 설정: `config/environment.yaml`(2D waypoint baseline), `config/environment_curriculum.yaml`(3D 하이브리드),
-  `drl_experiments/profiles/phase3/speed_steering_risk_balanced/environment_curriculum.yaml`(2D speed_steering)
+- 차원/범위 설정: `config/environment.yaml`(2D waypoint baseline), `config/environment_curriculum.yaml`(3D 하이브리드)

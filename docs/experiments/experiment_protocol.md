@@ -13,7 +13,7 @@
 | `load_model` | false | fresh start (특정 run 이어갈 때만 true) |
 | `use_checkpoints` | false | step-wise off-policy update |
 | `eval_freq` | 12,000 | |
-| `eval_eps` | 40 | 현재 canonical phase2/phase3 profile 기준 |
+| `eval_eps` | 40 | 현재 canonical phase2 profile 기준 |
 | `timesteps_before_training` | 12,000 | warmup |
 
 curriculum 공통 설정(10-stage → 9-entry 진급 게이트, 인덱스 = stage 번호; **canonical profile 공통**):
