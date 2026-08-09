@@ -1,6 +1,7 @@
 # Configuration
 
-모든 설정 파일은 `drl_agent/config/`에 위치한다.
+기본 설정 파일은 `drl_agent/config/`에 있고, 논문/ablation 실행용 self-contained profile은
+`drl_experiments/profiles/` 아래에 있다. 현재 실행 기준은 profile 쪽 YAML을 우선 확인한다.
 
 ---
 
@@ -9,7 +10,7 @@
 | 파일 | 설명 |
 |------|------|
 | `environment.yaml` | 상태/액션 차원, 충돌 임계값, 장애물 카탈로그, height filter |
-| `environment_curriculum.yaml` | 커리큘럼 환경 설정 (10단계 정의, 3D 하이브리드 액션, 맵별 장애물/휴먼 구성) |
+| `environment_curriculum.yaml` | 커리큘럼 환경 설정 (10단계 정의, action mode, 맵별 장애물/휴먼 구성) |
 | `train_tqc_curriculum_config.yaml` | 커리큘럼 진급 규칙 (임계값, 연속 통과 횟수) |
 | `train_tqc_config.yaml` | TQC 단일 학습 파라미터 |
 | `train_td7_config.yaml` | TD7 학습 파라미터 |
@@ -123,16 +124,28 @@ stage는 그대로 동작(하위호환). 자세한 설계는 `docs/experiments/m
 
 ---
 
-## PHASE2 directional risk shaping (기본 OFF, 서로 독립)
+## PHASE2 / PHASE3 profile flags
 
 | 플래그 | 위치 | 의미 |
 |------|-----|------|
 | `risk_map_reward_enabled`(candidate1) | env config + `-p risk_map_reward_enabled:=...` (env 노드) | privileged GT 기준 위험 방향 진입에 페널티 |
 | `action_risk_head_enabled`(candidate2) | `hyperparameters_tqc.yaml` + `-p action_risk_head_enabled:=...` (env 노드 **와** train 노드 둘 다) | 선택된 action의 방향별 위험을 예측하는 critic 연결 head(자체 supervised loss로만 학습, actor 업데이트 forward에서는 critic처럼 freeze) |
 | `critic_risk_input` | `hyperparameters_tqc.yaml`만 (CLI override 없음, fresh-run 전용) | action-risk head의 (detached) 예측을 critic 입력에도 추가(`extra_dim=2`) |
+| `directional_risk.waypoint_trajectory_risk_enabled` | env config | waypoint_yield/waypoint action에도 Ackermann swept-path 기반 action-risk target 적용 |
+| `continuous_control_reward.enabled` | env config | `speed_steering`용 연속 제어 shaping. 꺼져 있으면 기존 reward 항목 유지 |
+| `replay_buffer.risk_meta.enabled` | `hyperparameters_tqc.yaml` | replay buffer에 stage/human/risk/collision metadata 저장 |
+| `replay_buffer.risk_balanced_sampling.enabled` | `hyperparameters_tqc.yaml` | aux/action-risk supervised loss용 risk-balanced batch 샘플링 |
 
-`drl_experiments/profiles/phase2/{baseline,reward_shaping_only,action_risk_head_only,both}/`가 이 두
-플래그의 4가지 조합을 profile로 미리 묶어 둔 것 — 상세는 [package_structure](../overview/package_structure.md#profile-시스템).
+`drl_experiments/profiles/phase2/`의 기본 candidate 조합은
+`baseline`, `reward_shaping_only`, `action_risk_head_only`, `both`다. 현재 추가 profile은 다음 의미다:
+
+- `phase2/tqc_vanilla`: TQC 확장 플래그를 모두 끈 순수 TQC 기준선.
+- `phase2/both_legacy`: 이전 `phase2/both` 의미 보존(`eval_eps=20`, 연속 eval pass 2회).
+- `phase2/both_trajrisk_rbs`: `phase2/both`에 trajectory-risk target과 risk-balanced supervised loss를 추가한 명시적 variant.
+- `phase2/obs_norm_optim_split`: 관측 정규화와 optimizer param group 실험용 fresh-run profile.
+- `phase3/speed_steering_risk_balanced`: 2D `speed_steering` action 계약 + trajectory risk + risk-balanced replay.
+
+상세는 [package_structure](../overview/package_structure.md#profile-시스템).
 빈 문자열(기본값)은 "override 없음, YAML이 이긴다"는 뜻(`drl_agent.config.paths.parse_bool_override`) — 두
 플래그 모두 노드에 **STRING** 파라미터(`declare_parameter(name, "")`)로 선언되어 있다.
 

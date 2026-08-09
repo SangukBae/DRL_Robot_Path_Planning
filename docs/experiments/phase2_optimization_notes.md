@@ -5,20 +5,22 @@
 **모델 크기는 축소하지 않았다**(`n_critics=5`, `n_quantiles=25`, hidden dim 불변) — 개선은 전부
 불필요한 연산/대기 제거·수치적으로 동일한 연산 재구성·메모리 표현 변경에서 나온다.
 
-주의: `gazebo_deterministic_stepping=true`는 처리량은 개선했지만 초기 학습 곡선 저하 가능성이 관측되어
-`phase2/both` 기본 profile에서는 다시 OFF(legacy stepping)로 되돌렸다. 논문 main run에는 별도 ablation
-없이 기본 ON으로 쓰지 않는다.
+현재 `phase2/both` profile은 처리량 개선 경로를 검증하기 위해
+`gazebo_deterministic_stepping=true`를 켠다. 패키지 공통 기본값과 legacy 보존 profile
+`phase2/both_legacy`는 legacy stepping을 유지하므로, deterministic stepping 자체의 성능 영향은
+`phase2/both_legacy` 또는 별도 ablation과 비교해 해석해야 한다.
 
 ## 적용된 변경
 
 | 항목 | 무엇을 줄였나 | 기본값 | 체크포인트 영향 |
 |---|---|---|---|
-| Gazebo deterministic stepping (`gazebo_deterministic_stepping`) | `unpause→sleep→pause` 2회 호출 → `WorldControl(multi_step=N)` 1회 호출 | OFF(패키지 공통, `phase2/both`도 OFF) | 없음 |
+| Gazebo deterministic stepping (`gazebo_deterministic_stepping`) | `unpause→sleep→pause` 2회 호출 → `WorldControl(multi_step=N)` 1회 호출 | 패키지 공통 OFF, `phase2/both` ON | 없음 |
 | Human deterministic stepping (`human_deterministic_stepping`) | 보행자 이동 타이머를 wall-clock 독립 정수 tick으로 재구현 — **재현성 버그 수정**(기존엔 in-episode RNG draw 수가 wall-clock 속도에 의존) | OFF | 없음 |
 | Stage 기반 aux/action-risk 게이팅 | stage 0–2(사람 없음)에서 aux head·temporal encoder forward/loss를 통째로 스킵 (`aux_prediction.stagewise_loss_schedule=[0,0,0,0.1,...]`, `action_risk_head.enable_from_stage=3`) | `phase2/both`에 적용 | 없음(파라미터 shape 불변) |
 | TQC critic freeze + foreach polyak | actor 업데이트 시 critic gradient 계산 방지, Polyak 업데이트를 `torch._foreach_*`로 배치화 | 항상 적용(수학적으로 동일 연산) | 없음 |
 | 로깅 interval화 | 매 step 동기 TensorBoard/JSON write → `scalar/json_log_interval`, `json_flush_interval`로 배치 | `phase2/both`: interval=10, flush=100 (기본은 1=byte-identical) | 없음 |
 | Replay buffer float32 | `np.zeros(...)` dtype 미지정(float64) → 명시적 float32, 실제 checkpoint 기준 메모리 **50% 감소** | 항상 적용 | 없음 — 기존 float64 checkpoint는 로드 시 자동 cast(로그 남김) |
+| Trajectory risk target + risk-balanced replay | waypoint_yield action도 Ackermann swept-path target을 쓰고, aux/action-risk supervised loss에 risk-balanced batch를 추가 | `phase2/both`, `phase2/both_trajrisk_rbs`에 적용 (`phase2/both_legacy`는 미적용) | 없음(체크포인트에 optional `risk_meta`만 추가) |
 | 관측 정규화 + optimizer param groups | 고정 물리 범위 정규화 + critic/encoder/aux별 LR — **`phase2/both`에는 미적용**, 별도 실험 profile(`phase2/obs_norm_optim_split`)로만 시연 | OFF | 활성화 시 **fresh-run 전용**(manifest 불일치 시 fail-fast) |
 
 ## 측정치 (Docker, RTX 4080)
@@ -53,7 +55,7 @@ fairness/스레드 기아 가설). 마찬가지로 Gazebo `multi_step` 완료를
 
 ## 남은 후속 작업
 
-1. `gazebo_deterministic_stepping`은 처리량/성능 ablation을 먼저 끝낸 뒤, 성능 저하가 없을 때만 phase2 profile에 opt-in 적용.
+1. `phase2/both`와 `phase2/both_legacy`의 장기 학습 곡선을 비교해 deterministic stepping과 trajectory-risk/RBS 추가 효과를 분리해서 해석.
 2. Stage 3 aux/action-risk 게이팅의 장기 학습 곡선 검증(이번엔 메커니즘 정확성만 확인).
 3. `risk_map_positive_weight`/`hazard_pos_weight`(sparse risk label을 위한 loss weighting 메커니즘, stage gate와 무관) 실제 값 튜닝 — sparse-event 통계 수집 후 결정.
 4. `obs_normalization`을 aux temporal-context 경로(`get_last_state_history()`)에도 적용할지 검토.

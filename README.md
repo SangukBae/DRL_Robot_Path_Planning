@@ -50,7 +50,7 @@ xhost +local:
 `environment_curriculum.yaml` 기본 활성 기능:
 
 - **Structured map curriculum**: lobby/corridor/intersection/clutter 4종을 **10-stage**로 한 단계씩 도입(구조→사람→위치추정 노이즈→지형→proprio 노이즈→새 맵·군중→통합), stage·맵별 개수는 `*_by_map` (예: Stage 9 `static C5/I7/Cl8/L9`, `humans C3/I4/Cl4/L6`) · off: `map_layout_enabled=false` · [문서](docs/design/map_curriculum_design.md)
-- **3D hybrid stop/yield 액션**: 전진 waypoint + 전용 yield 축
+- **Profile별 action mode**: 기본 curriculum은 3D waypoint_yield, phase3 profile은 2D speed_steering
 - **Localization noise**: Stage 4부터 ramp-up · off: `localization.enabled=false`
 - **Auxiliary future-risk prediction**: 공유 인코더 + aux head · off: `hyperparameters_tqc.yaml`의 `aux_prediction.enabled=false` · [문서](docs/design/aux_prediction_design.md) · [지표](docs/reference/metrics_reference.md)
 
@@ -91,7 +91,11 @@ ros2 run drl_agent train_tqc_curriculum.py --ros-args \
 #      phase2/baseline              : candidate1 OFF, candidate2 OFF
 #      phase2/reward_shaping_only   : candidate1 ON,  candidate2 OFF
 #      phase2/action_risk_head_only : candidate1 OFF, candidate2 ON
-#      phase2/both                  : candidate1 ON,  candidate2 ON
+#      phase2/both                  : candidate1 ON,  candidate2 ON + trajectory risk/RBS
+#      phase2/both_legacy           : 이전 phase2/both 의미 보존
+#      phase2/both_trajrisk_rbs     : trajectory risk/RBS variant를 명시한 이름
+#      phase2/tqc_vanilla           : TQC 확장 플래그 전체 OFF
+#      phase3/speed_steering_risk_balanced : 2D speed/steering action + trajectory risk/RBS
 #
 #    [터미널 2] 환경 노드 / [터미널 3] 학습 노드 — 같은 profile 사용:
 ros2 run drl_agent environment_curriculum_node.py --ros-args -p profile:=phase2/both
@@ -109,7 +113,7 @@ python3 ros2_ws/src/drl_experiments/scripts/run_profile.py \
 #    (profile 없이) 개별 config 경로를 직접 지정하는 방식도 그대로 동작한다:
 #      ros2 run drl_agent environment_curriculum.py --ros-args -p config_file:=<dir>/environment_curriculum.yaml
 #      ros2 run drl_agent train_tqc_curriculum.py --ros-args -p train_config_file:=<dir> -p seed:=0
-#    (runtime/phase2_configs/<MODE>/ 디렉터리도 보존됨 — profiles/phase2/가 canonical)
+#    (runtime/phase2_configs/<MODE>/ 디렉터리도 보존됨 — 현재 canonical은 profiles/phase2/)
 
 # 동일 프로토콜로 다른 baseline도 비교 가능 (모두 canonical 모듈, 자기 파일명으로 설치됨):
 #   sac_curriculum.py / td7_curriculum.py

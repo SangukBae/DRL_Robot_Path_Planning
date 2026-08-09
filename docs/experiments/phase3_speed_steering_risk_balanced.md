@@ -1,9 +1,11 @@
 # `phase3/speed_steering_risk_balanced` — 연속 speed/steering action + risk-balanced replay
 
 `phase2/both`(TQC curriculum, waypoint+yield 3D action, risk_map_reward + action_risk_head 둘 다 ON)를
-기반으로 두 가지를 새로 추가한 신규 profile. **`phase2/both`를 포함한 기존 phase2 파일은 전혀 수정하지
-않았다** — 새 코드 경로는 모두 config 기반 분기(`environment.action_mode`, `hyperparameters.replay_buffer`)로
-추가했고, 기본값은 기존 동작과 byte-identical.
+기반으로 연속 speed/steering action과 risk-balanced replay를 결합한 신규 profile.
+현재 phase2 profile은 분리되어 있다. `phase2/both_legacy`가 예전 phase2/both 의미를 보존하고,
+`phase2/both`와 `phase2/both_trajrisk_rbs`는 waypoint_yield 계약을 유지한 채 trajectory-risk target과
+risk-balanced supervised loss를 켠다. `phase3/speed_steering_risk_balanced`는 여기에
+`environment.action_mode: speed_steering`을 더해 action 계약 자체를 2D speed/steering으로 바꾼다.
 
 ## 1. 연속 speed/steering action mode
 
@@ -23,7 +25,8 @@
   action, 이전 steering action"을 의미하게 된다.
 - Actor/Critic/replay buffer/action-risk head/aux head는 전부 `action_dim`을 생성자 인자로 받는
   구조라 `action_dim=2`가 자동으로 전파된다(target_entropy도 `-action_dim`이 기본값이라 자동으로 `-2`).
-  **에이전트 쪽 코드는 이 기능을 위해 전혀 수정하지 않았다.**
+  speed_steering의 action_dim 전파 자체는 생성자 계약을 그대로 사용한다. 별도 risk-balanced replay와
+  weighted-loss 처리는 `rl/algorithms/tqc/agent.py`의 supervised aux/action-risk 학습 경로에 추가되어 있다.
 
 ### 1.2 기존 mode와의 차이
 
@@ -55,10 +58,11 @@ Stage별 `yield_reward.action_enabled` override는 전부 제거했고(전 stage
 
 Human-risk / TTC / stall / anti-freeze reward는 유지된다 — 이들은 waypoint `action[0]`/`action[1]`
 raw 값이 아니라 실제 GT odometry 속도(`latest_actual_signed_speed`)·commanded 속도(`v`)·progress
-delta에서 계산되므로 action mode에 무관하게 그대로 동작한다(`env/rewards/reward_calculator.py`는
-이번에 전혀 수정하지 않았다).
+delta에서 계산되므로 action mode에 무관하게 그대로 동작한다. `env/rewards/reward_calculator.py`에는
+speed_steering 전용 continuous-control shaping(`continuous_control_reward`)도 추가되어 있으며,
+해당 config가 꺼져 있으면 기존 reward 항목은 그대로 유지된다.
 
-### 1.4 Action-risk target: Ackermann swept-path (speed_steering 전용)
+### 1.4 Action-risk target: Ackermann swept-path
 
 `_compute_directional_risk(theta, target_v, target_cmd_steering)`는 `self.action_mode`로
 분기한다(`environment.py`):
@@ -116,12 +120,15 @@ delta에서 계산되므로 action mode에 무관하게 그대로 동작한다(`
     ackermann_rollout`의 닫힌형 원호 끝점과 비교)와 sample 경계에 걸치지 않는 초기 속도의 제동거리
     테스트(`test_swept_path_braking_from_off_grid_speed_still_close_to_analytic`)로 회귀
     테스트됨 — 둘 다 `tests/test_pure_pursuit_speed_steering.py`.
-- **`waypoint_yield`/`waypoint`(phase2 전체 + legacy 2D ablation)**: `aux_prediction_labels.
-  compute_directional_risk_map()` — 로봇 **현재 위치**만 쓰는 기존 per-sector 조회, `target_v`/
-  `target_cmd_steering`에 전혀 의존하지 않는다. `_step_callback_impl`이 모든 action_mode에 대해
-  `v`/`cmd_steering`을 계산해서 넘기지만, speed_steering이 아닌 mode에서는 이 값들이 완전히
-  무시되어 **phase2의 reward/target 의미는 이 기능 추가 전과 byte-identical** —
-  `test_phase2_waypoint_yield_ignores_v_and_cmd_steering`으로 회귀 테스트됨.
+- **`waypoint_yield`/`waypoint` 기본 경로**: `directional_risk.waypoint_trajectory_risk_enabled=false`
+  이면 `aux_prediction_labels.compute_directional_risk_map()`으로 로봇 **현재 위치**만 쓰는 기존
+  per-sector 조회를 사용한다. `target_v`/`target_cmd_steering`에 의존하지 않으며, 이 의미는
+  `phase2/both_legacy`, `phase2/baseline`, `phase2/reward_shaping_only`,
+  `phase2/action_risk_head_only`, `phase2/obs_norm_optim_split`에 유지된다.
+- **`waypoint_yield` trajectory-risk 경로**: `phase2/both`와 `phase2/both_trajrisk_rbs`는
+  `directional_risk.waypoint_trajectory_risk_enabled=true`로 waypoint_yield action에도 Ackermann
+  swept-path target을 적용한다. action 계약은 3D waypoint+yield 그대로지만, action-risk/aux target은
+  선택된 waypoint가 유도하는 속도·조향 rollout을 반영한다.
 
 ### 1.5 Fresh-run 필요성
 
@@ -249,13 +256,12 @@ ros2 run drl_agent train_node.py --ros-args -p profile:=phase3/speed_steering_ri
 `base_file_name`/`output_prefix`는 `tqc_phase3_speed_steering_risk_balanced` — `runtime/experiments/`
 아래 run 디렉터리와 체크포인트 파일명이 `tqc_phase2_*`와 절대 충돌하지 않는다.
 
-## 4. 진행 중인 학습 때문에 생략한 검증
+## 4. 검증 방법
 
-`phase2/both` 실행 중(GPU ~86% util, 시스템 메모리 62Gi 중 가용 ~1-3Gi, swap 거의 소진)이라
-GPU/메모리 부하가 있는 검증은 생략했다. 학습 종료 후 아래를 실행해 확인할 것:
+profile/config 변경 뒤에는 아래 테스트 묶음으로 speed_steering action 계약, trajectory-risk target,
+risk-balanced replay, resume validation을 확인한다.
 
 ```bash
-# torch-gated unit test (buffer/agent/action_risk_head) — 호스트에는 torch가 없어 스킵됨
 cd ros2_ws/src/drl_agent
 CUDA_VISIBLE_DEVICES="" OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 nice -n 15 \
   python3 -m pytest -q -p no:cacheprovider \

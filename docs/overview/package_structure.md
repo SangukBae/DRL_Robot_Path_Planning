@@ -43,8 +43,12 @@ ros2_ws/src/
 │   ├── config/                    # 기본 config (보존)
 │   └── runtime/                   # 학습 산출물 (gitignored, 보존)
 └── drl_experiments/               # 실험 정의 패키지
-    ├── profiles/phase2/{baseline,reward_shaping_only,action_risk_head_only,both}/
-    │                              #   profile.yaml + config 4종 (self-contained)
+    ├── profiles/
+    │   ├── phase2/{tqc_vanilla,baseline,reward_shaping_only,action_risk_head_only,both,
+    │   │           both_legacy,both_trajrisk_rbs,obs_norm_optim_split}/
+    │   │                          #   profile.yaml + config 4종 (self-contained)
+    │   └── phase3/speed_steering_risk_balanced/
+    │                              #   2D speed/steering + trajectory risk/RBS profile
     ├── sweeps/                    # phase2_seeds.yaml / paper_main.yaml
     ├── scripts/                   # run_profile.py / resume_profile.py / aggregate.py / export_tables.py
     └── outputs/                   # gitignored 결과물 공간
@@ -125,7 +129,7 @@ ros2 run drl_agent train_rl.py --ros-args -p rl_model:=td7_curriculum   # 또는
 | 항목 | 상태 |
 |------|------|
 | `-p train_config_file:=<file 또는 dir>` / `-p config_file:=...` | 그대로 동작 |
-| `runtime/phase2_configs/<MODE>/` | 보존 (canonical은 `profiles/phase2/` — 내용 동일 복사본) |
+| `runtime/phase2_configs/<MODE>/` | 보존된 legacy runtime snapshot. 현재 canonical은 `profiles/phase2/`이며 내용이 항상 같다고 가정하지 않는다. |
 | `runtime/experiments/`, `runtime/tqc/seed_N/` 기존 run/checkpoint | 보존 — resume 우선순위 로직 불변 (`run_layout.py`), checkpoint/replay 포맷 무변경 |
 | 논문 비교군/ablation 모델 구현 (SAC, TD7, A3C, TQC+IEQn, SB3-SAC/TD3/PPO) | 전부 `drl_agent/training/baselines/`·`drl_agent/rl/algorithms/`에 canonical 코드로 보존, 삭제된 것 없음 |
 
@@ -135,5 +139,6 @@ ros2 run drl_agent train_rl.py --ros-args -p rl_model:=td7_curriculum   # 또는
 | `ros2 run drl_agent train_tqc_curriculum_agent.py` 등 옛 파일명 | `ros2 run drl_agent train_tqc_curriculum.py` (또는 `train_node.py -p profile:=...`, `train_rl.py -p rl_model:=...`) |
 | `scripts/{policy,environment,utils}/` 디렉터리 | 삭제됨 — 전체 내용이 `drl_agent/drl_agent/` 아래 canonical 위치로 이관 |
 
-주의: `runtime/phase2_configs/`와 `profiles/phase2/`는 별도 파일이므로 config를
-수정할 땐 `profiles/phase2/`(canonical)를 수정할 것.
+주의: `runtime/phase2_configs/`와 `profiles/phase2/`는 별도 파일이므로 현재 실험 config를
+수정할 땐 `profiles/phase2/`(canonical)를 수정할 것. `runtime/phase2_configs/`는 기존 run 호환용으로
+남겨 둔 snapshot이며 새 profile split(`both_legacy`, `both_trajrisk_rbs`, `tqc_vanilla`)을 대표하지 않는다.
