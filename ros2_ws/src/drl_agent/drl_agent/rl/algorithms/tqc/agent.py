@@ -144,6 +144,31 @@ class Agent(object):
         self.max_action = float(max_action)
 
         # ----------------------------
+        # RISK_BALANCE: read replay_buffer.risk_balanced_sampling.enabled EARLY
+        # (before AuxPredConfig/ActionRiskConfig below) -- it is the single
+        # master activation flag for the WHOLE risk-balance feature, including
+        # the sparse-positive loss weighting knobs
+        # (aux_prediction.risk_map_positive_weight/risk_map_loss_type/
+        # hazard_pos_weight, action_risk_head.pos_weight/loss_type), not just
+        # the balanced batch draw. Those weight/loss_type keys otherwise parse
+        # independently of this flag (reviewed HIGH finding: setting
+        # risk_balanced_sampling.enabled=false alone did NOT restore byte-
+        # identical unweighted-MSE loss when a profile still set e.g.
+        # risk_map_positive_weight=3.0/loss_type=smooth_l1) -- see the
+        # neutralisation below, just before each config is constructed.
+        # ----------------------------
+        _rb_cfg = dict(self.hyperparameters.get("replay_buffer", {}) or {})
+        _rm_cfg = dict(_rb_cfg.get("risk_meta", {}) or {})
+        _rbs_cfg = dict(_rb_cfg.get("risk_balanced_sampling", {}) or {})
+        self.risk_balanced_enabled = bool(_rbs_cfg.get("enabled", False))
+        self.store_risk_meta = bool(_rm_cfg.get("enabled", False)) or self.risk_balanced_enabled
+        self.risk_balanced_ratios = (
+            float(_rbs_cfg.get("ratio_uniform", 0.5)),
+            float(_rbs_cfg.get("ratio_human_risk", 0.25)),
+            float(_rbs_cfg.get("ratio_collision", 0.25)),
+        )
+
+        # ----------------------------
         # AUX_PRED: Shared encoder (E_psi)
         # ----------------------------
         # The encoder sits between the raw 87-D state and the actor/critic.
@@ -151,7 +176,19 @@ class Agent(object):
         # actor/critic see the raw state exactly as in baseline TQC.  When
         # enabled it maps 87 -> hidden -> latent (ELU) and the actor consumes a
         # DETACHED latent so the actor loss never updates the encoder.
-        self.aux_cfg = AuxPredConfig(self.hyperparameters.get("aux_prediction", {}))
+        _aux_pred_dict = dict(self.hyperparameters.get("aux_prediction", {}) or {})
+        if not self.risk_balanced_enabled:
+            # RISK_BALANCE: neutralise the sparse-positive weighting knobs so
+            # risk_balanced_sampling.enabled=false is byte-identical to this
+            # feature never having existed, REGARDLESS of what these keys are
+            # set to in the YAML (weight=1.0 makes the weighted branch in
+            # compute_aux_loss inert, but loss_type must ALSO be forced back
+            # to "mse" -- smooth_l1 vs mse differ numerically even at
+            # weight==1.0).
+            _aux_pred_dict["risk_map_positive_weight"] = 1.0
+            _aux_pred_dict["risk_map_loss_type"] = "mse"
+            _aux_pred_dict["hazard_pos_weight"] = None
+        self.aux_cfg = AuxPredConfig(_aux_pred_dict)
         self.aux_enabled = self.aux_cfg.enabled
         self.aux_beta = self.aux_cfg.loss_weight
 
@@ -244,8 +281,14 @@ class Agent(object):
         # feed the critic otherwise) and, when on, changes the critic's input
         # width -> FRESH-RUN ONLY (an old checkpoint's critic will not strict-load).
         # ----------------------------
-        self.action_risk_cfg = ActionRiskConfig(
-            self.hyperparameters.get("action_risk_head", {}))
+        _action_risk_dict = dict(self.hyperparameters.get("action_risk_head", {}) or {})
+        if not self.risk_balanced_enabled:
+            # RISK_BALANCE: same neutralisation as aux_cfg above, applied to
+            # the Action-Risk Head's own (risk_dir, min_dist_dir) supervised
+            # loss weighting.
+            _action_risk_dict["pos_weight"] = 1.0
+            _action_risk_dict["loss_type"] = "mse"
+        self.action_risk_cfg = ActionRiskConfig(_action_risk_dict)
         self.action_risk_enabled = self.action_risk_cfg.enabled
         self.critic_risk_input_enabled = bool(
             dict(self.hyperparameters.get("critic_risk_input", {}) or {}).get(
@@ -310,28 +353,12 @@ class Agent(object):
                 "replay resume normally."
             )
 
-        # ----------------------------
-        # RISK_BALANCE: per-transition metadata storage + stratified
-        # aux/action-risk supervision sampling (default OFF, independent of
-        # action_risk_head / aux_prediction -- see buffer.py's LAP for the
-        # actual sampling/storage mechanics). replay_buffer.risk_meta.enabled
-        # stores the metadata; replay_buffer.risk_balanced_sampling.enabled
-        # additionally biases which transitions feed the aux/action-risk
-        # SUPERVISED loss (never the core critic batch). Turning on balanced
-        # sampling implicitly turns on metadata storage (sampling needs it) --
-        # the reverse is NOT implied (metadata can be collected for later
-        # analysis without changing what trains on it).
-        # ----------------------------
-        _rb_cfg = dict(self.hyperparameters.get("replay_buffer", {}) or {})
-        _rm_cfg = dict(_rb_cfg.get("risk_meta", {}) or {})
-        _rbs_cfg = dict(_rb_cfg.get("risk_balanced_sampling", {}) or {})
-        self.risk_balanced_enabled = bool(_rbs_cfg.get("enabled", False))
-        self.store_risk_meta = bool(_rm_cfg.get("enabled", False)) or self.risk_balanced_enabled
-        self.risk_balanced_ratios = (
-            float(_rbs_cfg.get("ratio_uniform", 0.5)),
-            float(_rbs_cfg.get("ratio_human_risk", 0.25)),
-            float(_rbs_cfg.get("ratio_collision", 0.25)),
-        )
+        # NOTE: replay_buffer.risk_meta / risk_balanced_sampling (self.
+        # risk_balanced_enabled / self.store_risk_meta / self.
+        # risk_balanced_ratios) are parsed EARLY, right after self.max_action
+        # above -- required there so the weighted-loss neutralisation for
+        # aux_cfg/action_risk_cfg can see risk_balanced_enabled before those
+        # configs are constructed. Kept as a single read, not duplicated here.
 
         def _make_encoder():
             if not self.temporal_actor_enabled:
@@ -919,22 +946,36 @@ class Agent(object):
         # False and every block falls back to its ORIGINAL primary-batch
         # computation, byte-identical to before this feature existed.
         # STAGE 3/AUX_PRED: compute the effective aux beta BEFORE deciding
-        # whether to draw+encode the balanced batch below -- beta==0 (aux
-        # loss disabled this stage / still in its warmup ramp) already skips
-        # the aux loss entirely further down (see the beta != 0.0 check
-        # further below), so drawing state_rb and running it through the
-        # encoder here would be pure waste: an extra forward pass that no
-        # loss ever reads. _current_aux_beta() is side-effect-free (reads
-        # only stage/step/config), so computing it here changes no numerics.
+        # whether to draw the balanced batch below -- beta==0 (aux loss
+        # disabled this stage / still in its warmup ramp) already skips the
+        # aux loss entirely further down (see the beta != 0.0 check further
+        # below), so drawing+encoding state_rb here would be pure waste: an
+        # extra forward pass that no loss ever reads. _current_aux_beta() is
+        # side-effect-free (reads only stage/step/config), so computing it
+        # here changes no numerics.
+        #
+        # need_rb_for_{aux,risk} mirror the use_rb_* conditions below EXACTLY,
+        # but computed BEFORE calling sample_risk_balanced() -- that call
+        # itself rescans the ENTIRE risk_meta array to rebuild the human-risk
+        # / collision pools every time it's invoked (see buffer.py's
+        # sample_risk_balanced), so calling it on a stage/step where NEITHER
+        # consumer would use the result (e.g. stage 0-2, before aux_beta or
+        # action_risk_head.enable_from_stage kick in) wastes a full-buffer
+        # scan every train() call for nothing.
         beta = self._current_aux_beta()
-        ind_rb = self.replay_buffer.sample_risk_balanced() if self.risk_balanced_enabled else None
-        use_rb_for_aux = (
-            ind_rb is not None and self.aux_enabled and self.aux_head is not None
+        need_rb_for_aux = (
+            self.risk_balanced_enabled and self.aux_enabled and self.aux_head is not None
             and beta != 0.0
         )
-        use_rb_for_risk = (
-            ind_rb is not None and self.action_risk_enabled and self._action_risk_active
+        need_rb_for_risk = (
+            self.risk_balanced_enabled and self.action_risk_enabled and self._action_risk_active
         )
+        ind_rb = (
+            self.replay_buffer.sample_risk_balanced()
+            if (need_rb_for_aux or need_rb_for_risk) else None
+        )
+        use_rb_for_aux = ind_rb is not None and need_rb_for_aux
+        use_rb_for_risk = ind_rb is not None and need_rb_for_risk
         z_rb = action_rb = state_rb = None
         risk_balance_logs = {}
         if use_rb_for_aux or use_rb_for_risk:
@@ -1288,6 +1329,20 @@ class Agent(object):
             # step, so they're visible even if only one of the two is enabled.
             if risk_balance_logs:
                 scalars.update(risk_balance_logs)
+            # RISK_BALANCE: RAW (whole-buffer) pool fractions alongside the
+            # sampled_* ones above -- lets a run's actual positive-class share
+            # (the imbalance risk-balanced sampling / pos_weight are
+            # correcting for) be read directly off TensorBoard/JSON instead of
+            # inferred only from the balanced batch's own composition. Only
+            # computed when metadata storage is on (store_risk_meta implies
+            # replay_buffer.risk_meta.enabled) and only at the log interval
+            # (never every train() call) -- an O(buffer_size) reduction is
+            # cheap at this cadence but wasteful every step.
+            if self.store_risk_meta:
+                scalars.update({
+                    f"risk_balance/raw_{k}": v
+                    for k, v in self.replay_buffer.describe_risk_meta_fractions_raw().items()
+                })
 
             if log_scalar_now:
                 for _k, _v in scalars.items():

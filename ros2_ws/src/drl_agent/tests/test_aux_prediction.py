@@ -532,6 +532,23 @@ def test_risk_map_positive_weight_upweights_positive_cells_more():
     assert logs_base0["aux/risk_mse"] == pytest.approx(logs_w0["aux/risk_mse"], abs=1e-6)
 
 
+def test_risk_map_pos_weight_applied_logged():
+    """RISK_BALANCE: aux/risk_map_pos_weight_applied mirrors action_risk_head's
+    action_risk/pos_weight_applied -- the ACTUAL (already-capped) weight this
+    call used must be visible on TensorBoard/JSON without cross-referencing
+    the YAML, for both the default (1.0, unweighted) and a configured value."""
+    c_default = _cfg()
+    c_weighted = _cfg(risk_map_positive_weight=5.0, risk_map_positive_weight_cap=10.0)
+    torch.manual_seed(3)
+    head = ap.AuxiliaryHead(c_default.latent_dim, c_default)
+    pred = head(torch.randn(4, c_default.latent_dim))
+    label = torch.rand(4, c_default.label_dim)
+    _, logs_default = apl.compute_aux_loss(pred, label, c_default, torch.device("cpu"))
+    _, logs_weighted = apl.compute_aux_loss(pred, label, c_weighted, torch.device("cpu"))
+    assert logs_default["aux/risk_map_pos_weight_applied"] == pytest.approx(1.0)
+    assert logs_weighted["aux/risk_map_pos_weight_applied"] == pytest.approx(5.0)
+
+
 def test_hazard_pos_weight_none_matches_plain_bce():
     c = _cfg(hazard_sector_head_enabled=True, hazard_sector_bins=3,
              hazard_sector_loss_weight=1.0)

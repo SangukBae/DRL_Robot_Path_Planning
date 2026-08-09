@@ -15,6 +15,19 @@ import math
 
 import numpy as np
 
+import drl_agent.common.geometry_utils as geom
+
+
+def _safe_float(x):
+    """``float(x)``, or ``None`` on anything that doesn't convert (wrong
+    type, non-numeric string, etc.) -- lets a caller test-and-raise with one
+    clean error message instead of risking a bare ``TypeError`` from a raw
+    comparison against a non-numeric value (e.g. ``"bad" > 0.0``)."""
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return None
+
 
 def compute_human_risk_penalty(
     robot_x, robot_y, robot_yaw, robot_speed,
@@ -248,6 +261,71 @@ def compute_reward(
     risk_bonus_weight=0.15,
     risk_bonus_max=0.1,
     progress_positive_gate_eps=0.0,
+
+    # ---- PHASE3: speed_steering continuous-control shaping (opt-in; default
+    # OFF -> byte-identical reward). Two sub-terms under ONE toggle, gated on
+    # BOTH continuous_control_reward_enabled AND action_mode=="speed_steering"
+    # (enforced HERE, not just by the caller, so this function is safe even if
+    # mis-wired for waypoint/waypoint_yield):
+    #   (a) heading-error-delta: an UNDISCOUNTED potential-DIFFERENCE term,
+    #       NOT a clipped raw delta and NOT strict Ng/Harada/Russell (1999)
+    #       potential-based shaping. potential(theta) = |wrap(theta)| / pi in
+    #       [0, 1]; reward = weight * (prev_potential - curr_potential), which
+    #       is naturally bounded to [-weight, +weight] with NO extra clipping.
+    #       This matters beyond bounding the range: a clipped RAW delta (e.g.
+    #       clip(|prev|-|curr|, -c, +c)) can pay out net-positive reward over
+    #       a round trip back to the SAME heading error whenever any single
+    #       worsening step's delta exceeds the clip -- e.g. error
+    #       0->1.0->0.75->0.50->0.25->0 clips the one +1.0 rad worsening step
+    #       down to -c while the four recovery steps are paid out in full,
+    #       netting a positive sum for a path that ends exactly where it
+    #       started. This potential-difference form cannot do that: summed
+    #       over ANY path, the per-step terms telescope to
+    #       weight * (potential_start - potential_end) regardless of the path
+    #       taken, so a round trip nets EXACTLY 0 in the UNDISCOUNTED
+    #       step-reward sum ONLY (this is what the round-trip regression test
+    #       below checks -- plain arithmetic sum of per-step terms, no gamma
+    #       applied). NOTE: this is weaker than Ng et al.'s
+    #       F(s,a,s')=gamma*Phi(s')-Phi(s), which is proven optimal-policy-
+    #       INVARIANT under the RL algorithm's OWN DISCOUNTED return (TQC
+    #       applies gamma<1 across the whole composite step reward this term
+    #       is summed into, not to this term alone) -- that would need a
+    #       gamma factor threaded in from the agent's hyperparameters, which
+    #       this env-side reward function has no access to. Under an ACTUAL
+    #       gamma<1 discounted return the same round trip is NOT guaranteed
+    #       to net to 0 -- it becomes position-dependent (an early-episode
+    #       round trip contributes a different discounted sum than a late-
+    #       episode one), so do not describe this as "round-trip-neutral"
+    #       without the undiscounted qualifier. Treat this as "a bounded
+    #       heading-realignment reward whose UNDISCOUNTED per-episode sum is
+    #       round-trip-neutral", not a formal (discounted-return) policy-
+    #       invariance guarantee; verify circling-suppression empirically via
+    #       a smoke run rather than by proof. Rewards
+    #       realigning toward the goal heading even on a step where goal_dist
+    #       momentarily regresses (independent of the existing progress-gated
+    #       `heading` bonus above). 0 on the episode's first step
+    #       (prev_theta_err is None, caller-owned/reset per episode).
+    #   (b) continuous-control penalty: steering magnitude + steering-change
+    #       + speed-change, each normalised by steering_limit_rad /
+    #       cruise_speed_mps. Targets the constant-steering circling local
+    #       optimum (steady nonzero steering keeps costing the magnitude
+    #       term) and left/right or speed chattering (the change terms). All
+    #       three are naturally bounded in [0, ~2] by the speed_steering
+    #       action contract (speed in [0, cruise], steering in
+    #       [-limit, +limit]), so no extra clipping is applied. change terms
+    #       are 0 on the episode's first step (prev_cmd_* is None).
+    continuous_control_reward_enabled=False,
+    action_mode=None,
+    heading_delta_weight=0.2,
+    prev_theta_err=None,        # caller-owned; None on episode start
+    cmd_steering=None,          # commanded steering angle this step [rad]
+    prev_cmd_steering=None,     # caller-owned; None on episode start
+    prev_cmd_speed=None,        # caller-owned; None on episode start (current speed is `v`)
+    steering_limit_rad=None,    # normalizer for the steering terms
+    steering_magnitude_weight=0.005,
+    steering_change_weight=0.01,
+    speed_change_weight=0.005,
+
     return_terms=False,
 ):
     terms = {
@@ -284,6 +362,12 @@ def compute_reward(
         "risk_map_bonus": 0.0,
         "risk_dir": 0.0,
         "min_dist_dir": 1.0,
+        # PHASE3: speed_steering continuous-control shaping (0 unless
+        # continuous_control_reward_enabled and action_mode=="speed_steering").
+        "reward_heading_delta": 0.0,
+        "penalty_steering_magnitude": 0.0,
+        "penalty_steering_change": 0.0,
+        "penalty_speed_change": 0.0,
         "terminal": 0.0,
     }
     # 터미널
@@ -479,9 +563,77 @@ def compute_reward(
     terms["risk_dir"] = float(risk_dir) if risk_dir is not None else 0.0
     terms["min_dist_dir"] = float(min_dist_dir) if min_dist_dir is not None else 1.0
 
+    # 5g) PHASE3: speed_steering continuous-control shaping (opt-in). See the
+    # continuous_control_reward_enabled parameter docstring above.
+    reward_heading_delta = 0.0
+    penalty_steering_magnitude = 0.0
+    penalty_steering_change = 0.0
+    penalty_speed_change = 0.0
+    if continuous_control_reward_enabled and action_mode == "speed_steering":
+        # (a) heading-error-delta: potential-based shaping, potential(theta) =
+        # |wrap(theta)|/pi in [0, 1] -- see the parameter docstring above for
+        # why this (not a clipped raw delta) is required to make a round trip
+        # back to the same heading error net exactly 0.
+        if theta_err is not None and prev_theta_err is not None:
+            curr_potential = abs(geom.wrap_to_pi(theta_err)) / math.pi
+            prev_potential = abs(geom.wrap_to_pi(prev_theta_err)) / math.pi
+            reward_heading_delta = heading_delta_weight * float(prev_potential - curr_potential)
+
+        # (b) continuous-control penalty: steering magnitude/change, speed
+        # change. ConfigValidator._check_continuous_control_reward already
+        # fails a profile fast if steering_limit_rad/cruise_speed_mps would
+        # resolve to <=0 here -- but that guard only runs on the profile
+        # launch path. A direct/experimental compute_reward() call that
+        # bypasses it (e.g. a notebook, a standalone script) would otherwise
+        # silently fall back to a near-zero divisor and blow the penalty up
+        # instead of erroring, so raise HERE too (defense in depth), but only
+        # when the term that actually needs the normalizer is being computed
+        # (mirrors the existing `is not None` gating below).
+        if cmd_steering is not None:
+            _steer_limit = _safe_float(steering_limit_rad)
+            if _steer_limit is None or not math.isfinite(_steer_limit) or _steer_limit <= 0.0:
+                raise ValueError(
+                    "continuous_control_reward: cmd_steering was provided but "
+                    f"steering_limit_rad={steering_limit_rad!r} is not a positive "
+                    "finite number -- refusing to silently fall back to a "
+                    "near-zero divisor (would blow up the steering penalties). "
+                    "ConfigValidator._check_continuous_control_reward should "
+                    "catch this before a profile launches; fix the caller if "
+                    "you are calling compute_reward() directly."
+                )
+            penalty_steering_magnitude = (
+                steering_magnitude_weight * abs(float(cmd_steering)) / _steer_limit)
+            if prev_cmd_steering is not None:
+                penalty_steering_change = (
+                    steering_change_weight
+                    * abs(float(cmd_steering) - float(prev_cmd_steering)) / _steer_limit)
+        if prev_cmd_speed is not None:
+            _cruise_val = _safe_float(cruise_speed_mps)
+            _vmax_val = _safe_float(v_max)
+            _cruise_ccr = (_cruise_val if (_cruise_val is not None and _cruise_val > 0.0)
+                           else _vmax_val)
+            if _cruise_ccr is None or not math.isfinite(_cruise_ccr) or _cruise_ccr <= 1e-6:
+                raise ValueError(
+                    "continuous_control_reward: prev_cmd_speed was provided but "
+                    f"neither cruise_speed_mps={cruise_speed_mps!r} nor its v_max="
+                    f"{v_max!r} fallback is a positive number -- refusing to "
+                    "silently fall back to a near-zero divisor (would blow up "
+                    "the speed-change penalty). ConfigValidator._check_"
+                    "continuous_control_reward should catch this before a "
+                    "profile launches; fix the caller if you are calling "
+                    "compute_reward() directly."
+                )
+            penalty_speed_change = (
+                speed_change_weight * abs(float(v) - float(prev_cmd_speed)) / _cruise_ccr)
+    terms["reward_heading_delta"] = float(reward_heading_delta)
+    terms["penalty_steering_magnitude"] = float(penalty_steering_magnitude)
+    terms["penalty_steering_change"] = float(penalty_steering_change)
+    terms["penalty_speed_change"] = float(penalty_speed_change)
+
     # 6) 시간 페널티 및 합산
-    reward = (progress + heading + yield_bonus + risk_map_bonus
+    reward = (progress + heading + yield_bonus + risk_map_bonus + reward_heading_delta
               - curv_pen - obstacle - step_pen - smooth - wp_smooth - human_pen - idle_pen
-              - freeze_pen - bad_yield_pen - stall_pen - risk_map_penalty)
+              - freeze_pen - bad_yield_pen - stall_pen - risk_map_penalty
+              - penalty_steering_magnitude - penalty_steering_change - penalty_speed_change)
 
     return (float(reward), terms) if return_terms else float(reward)

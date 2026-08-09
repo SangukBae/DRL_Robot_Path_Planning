@@ -257,6 +257,13 @@ class TrainTQCCurriculum(
             _yr = dict(env_cfg.get("yield_reward", {}) or {})
             self._motion_yield_action_enabled = bool(_yr.get("action_enabled", True))
             self._motion_yield_action_threshold = float(_yr.get("action_threshold", 0.3))
+            # TRAJ_RISK: env-side flag mirror, read here (not from a running
+            # gym_node param) so it's available for the manifest feature-
+            # contract augmentation below even before the env node connects.
+            self._motion_waypoint_trajectory_risk_enabled = bool(
+                dict(env_cfg.get("directional_risk", {}) or {}).get(
+                    "waypoint_trajectory_risk_enabled", False)
+            )
             # Per-stage effective yield gate: mirror the env's stage override
             # (environment_curriculum._apply_curriculum_stage) so telemetry reflects
             # the ACTUAL contract per stage (early stages seal yield). Index i = the
@@ -279,8 +286,9 @@ class TrainTQCCurriculum(
             )
 
     def _augment_profile_manifest_with_action_contract(self):
-        """RESUME-SAFETY: append action_mode/action_dim to the run's already-
-        written configs/profile_manifest.json (see train_tqc_base.py's
+        """RESUME-SAFETY: append action_mode/action_dim (and the RISK_BALANCE /
+        TRAJ_RISK feature-contract flags below) to the run's already-written
+        configs/profile_manifest.json (see train_tqc_base.py's
         _write_profile_manifest_if_requested, which runs earlier in
         super().__init__() -- before _init_motion_logging_contract has parsed
         these values, hence this separate augmentation pass instead of
@@ -288,11 +296,20 @@ class TrainTQCCurriculum(
 
         This is what lets a LATER resume attempt verify the checkpoint's
         action contract before loading it (see config/validation.py's
-        _check_action_mode) instead of unconditionally rejecting every
-        speed_steering resume. No-op (never raises) when no manifest was
-        written this run (non-profile launch, or the manifest write itself
-        already failed) -- the resume gate then falls back to rejecting
-        outright, which is the pre-existing, safe behaviour.
+        _check_action_mode / _check_risk_feature_contract) instead of
+        unconditionally rejecting every speed_steering resume, or silently
+        resuming into a checkpoint whose replay/target semantics changed.
+        No-op (never raises) when no manifest was written this run (non-
+        profile launch, or the manifest write itself already failed) -- the
+        resume gate then falls back to rejecting outright, which is the
+        pre-existing, safe behaviour.
+
+        risk_balanced_sampling_enabled / waypoint_trajectory_risk_enabled
+        both change what a stored transition's replay_meta / action_risk_
+        target MEAN (not just their shape), so a shape-only checkpoint-load
+        check would not catch a semantic mismatch across a resume boundary --
+        these are recorded explicitly so config/validation.py can hard-reject
+        instead.
         """
         target_dir = getattr(self, "configs_dir", None) or self.log_dir
         path = os.path.join(target_dir, "profile_manifest.json")
@@ -303,6 +320,12 @@ class TrainTQCCurriculum(
                 manifest = json.load(f)
             manifest["action_mode"] = str(getattr(self, "_motion_action_mode", "waypoint"))
             manifest["action_dim"] = int(getattr(self, "_motion_action_dim", 2))
+            manifest["waypoint_trajectory_risk_enabled"] = bool(
+                getattr(self, "_motion_waypoint_trajectory_risk_enabled", False)
+            )
+            manifest["risk_balanced_sampling_enabled"] = bool(
+                getattr(self.rl_agent, "risk_balanced_enabled", False)
+            )
             with open(path, "w") as f:
                 json.dump(manifest, f, indent=2)
         except Exception as e:

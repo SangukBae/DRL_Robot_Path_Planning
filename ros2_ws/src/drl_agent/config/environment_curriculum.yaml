@@ -351,6 +351,17 @@ environment:
     horizon_sec: 1.0
     risk_distance_scale: 3.0
     min_speed_for_motion: 0.05
+    # RISK_BALANCE / TRAJ_RISK: when true, waypoint/waypoint_yield action modes
+    # ALSO use the action-conditioned Ackermann-swept-path risk target (the
+    # same pure_pursuit.ackermann_swept_path + aux_prediction_labels.
+    # compute_action_conditioned_risk computation speed_steering already uses,
+    # see environment.py::_compute_directional_risk) instead of the current-
+    # pose-only per-sector lookup. DEFAULT OFF -> byte-identical to the
+    # existing sector-lookup target. rollout_* keys (optional; default to the
+    # SAME hunter_se_cmd_prefilter-matching values environment.py already
+    # hardcodes) MUST mirror hunter_se_gazebo/config/hunter_se_cmd_prefilter
+    # .yaml's accel_limit_mps2/brake_decel_mps2/steering_rate_deg_s when set.
+    waypoint_trajectory_risk_enabled: false
 
   # PHASE2 candidate 1 (priority): Directional Risk-map Reward Shaping.
   # PRIVILEGED: risk_dir/min_dist_dir come straight from the GT pedestrian state
@@ -368,6 +379,45 @@ environment:
     bonus_weight: 0.15
     bonus_max: 0.1
     progress_positive_gate_eps: 0.0
+
+  # PHASE3: speed_steering-only continuous-control shaping (reward_
+  # calculator.compute_reward's continuous_control_reward_* params). Two
+  # sub-terms under ONE toggle, applied ONLY when environment.action_mode ==
+  # "speed_steering" -- compute_reward enforces this itself, so leaving this
+  # enabled under waypoint/waypoint_yield is still a no-op:
+  #   (a) heading_delta_weight: an undiscounted potential-DIFFERENCE reward
+  #       (NOT strict Ng/Harada/Russell 1999 potential-based shaping, which
+  #       needs a gamma*Phi(next)-Phi(curr) form this env-side function has
+  #       no access to the agent's gamma to compute -- see reward_calculator.
+  #       compute_reward's docstring for the precise caveat). potential(theta)
+  #       = |wrap(theta_err)| / pi in [0, 1]; reward = weight *
+  #       (prev_potential - curr_potential), rewarding realigning toward the
+  #       goal heading even on a step where goal_dist momentarily regresses
+  #       (independent of the existing progress-gated `heading` bonus above).
+  #       Naturally bounded to [-weight, +weight] with no extra clipping --
+  #       unlike a clipped raw delta, a round trip back to the same heading
+  #       error nets EXACTLY 0 in the UNDISCOUNTED per-episode sum (telescoping;
+  #       see compute_reward's docstring -- this does NOT hold for TQC's actual
+  #       gamma<1 discounted return, where the same round trip becomes
+  #       position-dependent), so oscillating heading cannot farm an
+  #       undiscounted-sum exploit.
+  #   (b) steering_magnitude/steering_change/speed_change weights: penalise
+  #       constant-nonzero steering (the circling local optimum) and
+  #       left/right or speed chattering, each normalised by
+  #       vehicle_steering_limit_rad / controller_cruise_speed_mps. Both
+  #       normalizers MUST be positive when this block is enabled (checked
+  #       by ConfigValidator._check_continuous_control_reward for the profile
+  #       path; compute_reward ALSO raises ValueError directly if a term that
+  #       needs a normalizer is actually being computed with one missing/<=0
+  #       -- defense in depth for direct/experimental compute_reward() calls
+  #       that bypass the validator).
+  # DEFAULT OFF -> reward byte-identical to before this feature.
+  continuous_control_reward:
+    enabled: false
+    heading_delta_weight: 0.2
+    steering_magnitude_weight: 0.005
+    steering_change_weight: 0.01
+    speed_change_weight: 0.005
 
   # PHASE2 candidate 2: Critic-connected Action-Risk Head (env-side mirror).
   # When true, the env appends a tiny action-conditioned (risk_dir, min_dist_dir)

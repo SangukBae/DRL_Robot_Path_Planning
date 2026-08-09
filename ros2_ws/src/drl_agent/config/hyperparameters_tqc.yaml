@@ -44,6 +44,33 @@ hyperparameters:
   alpha: 0.4                      # prioritized replay 확률 분포의 sharpness
   min_priority: 1.0               # priority update 시 보장할 최소 priority
 
+  # ── RISK_BALANCE: per-transition metadata + stratified risk-balanced sampling
+  # for the aux_prediction / action_risk_head SUPERVISED loss only -- the core
+  # TQC critic/actor batch (LAP.sample()) is NEVER affected by either sub-key
+  # below (see rl/replay/buffer.py's LAP.sample_risk_balanced() and tqc/agent.py's
+  # train()). risk_balanced_sampling.enabled is the master activation flag for
+  # this whole feature. DEFAULT OFF (both enabled:false) -> replay buffer /
+  # training loop byte-identical to baseline (no risk_meta array allocated,
+  # sample_risk_balanced() always returns None).
+  replay_buffer:
+    risk_meta:
+      enabled: false
+      # "risk_positive" metadata threshold on the env's action-risk_dir target
+      # (see train_tqc_curriculum.py's _compute_risk_meta).
+      risk_positive_threshold: 0.5
+      # Fallback human-risk gate distance [m], used ONLY when action_risk_head
+      # is disabled (then there is no risk_dir target to threshold instead).
+      human_risk_distance_m: 2.0
+    risk_balanced_sampling:
+      enabled: false
+      # Target pool mix (uniform / human-risk-positive / collision-or-near-
+      # collision). An empty pool's share is automatically redistributed to
+      # the uniform pool (see sample_risk_balanced()) -- never errors, never
+      # shrinks the batch.
+      ratio_uniform: 0.5
+      ratio_human_risk: 0.25
+      ratio_collision: 0.25
+
   # AUX_PRED: auxiliary prediction network (agent side).
   #   enabled=false  -> SharedEncoder is an identity passthrough; actor/critic
   #                     consume the raw 87-D state -> baseline TQC, unchanged.

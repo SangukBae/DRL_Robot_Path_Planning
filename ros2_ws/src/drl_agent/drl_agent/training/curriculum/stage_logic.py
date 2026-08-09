@@ -54,13 +54,13 @@ def should_advance_stage(
 
     Additional gates (all default-disabled, so omitting them reproduces the
     legacy behaviour):
-      * ``pass_psc``        — min Personal-Space-Compliance fraction. Active only
-                              when its per-stage threshold is > 0 AND a PSC value
-                              exists (``metrics["psc"]`` is not None); a missing
-                              value (labels off) never blocks.
-      * ``pass_h_coll``     — max human-collision episode rate. Active only when
-                              its per-stage threshold is < 1.0 AND a value exists
-                              (``metrics["h_coll_rate"]`` is not None).
+      * ``pass_psc``        — min Personal-Space-Compliance fraction. Active when
+                              its per-stage threshold is > 0. A missing value is
+                              fail-closed because an enabled safety gate must not
+                              silently pass when label telemetry is unavailable.
+      * ``pass_h_coll``     — max human-collision episode rate. Active when its
+                              per-stage threshold is < 1.0, with the same
+                              fail-closed rule for missing telemetry.
       * ``pass_per_map_sr`` /
         ``pass_per_map_cr`` — per-map_type success floor / collision cap. EVERY
                               map in ``metrics["per_map"]`` must pass. Active only
@@ -105,20 +105,25 @@ def should_advance_stage(
     if req_clear > 0.0 and clear < req_clear:
         reasons.append(f"clearance {clear:.3f}<{req_clear:.2f}")
 
-    # ── Human-safety HARD gates (only when configured AND the metric exists) ──
-    # PSC / H-Coll are label-derived: when the env emits no labels they are None,
-    # and a None value must NEVER block promotion (a label-free run keeps the
-    # legacy success/collision behaviour).
+    # ── Human-safety HARD gates ────────────────────────────────────────────────
+    # Empty/default threshold lists leave legacy profiles unchanged. Once a
+    # profile explicitly enables a human-safety gate, however, missing telemetry
+    # must block promotion: otherwise a broken/disabled label path would silently
+    # look safer than a measured bad value.
     req_psc = per_stage_threshold(pass_psc, stage_idx, 0.0)        # 0.0 → disabled
     if req_psc > 0.0:
         psc_val = metrics.get("psc")
-        if psc_val is not None and float(psc_val) < req_psc:
+        if psc_val is None:
+            reasons.append("PSC unavailable while gate is enabled")
+        elif float(psc_val) < req_psc:
             reasons.append(f"PSC {float(psc_val):.3f}<{req_psc:.2f}")
 
     req_hc = per_stage_threshold(pass_h_coll, stage_idx, 1.0)      # 1.0 → disabled
     if req_hc < 1.0:
         hc_val = metrics.get("h_coll_rate")
-        if hc_val is not None and float(hc_val) > req_hc:
+        if hc_val is None:
+            reasons.append("H-Coll unavailable while gate is enabled")
+        elif float(hc_val) > req_hc:
             reasons.append(f"H-Coll {float(hc_val)*100:.1f}%>{req_hc*100:.1f}%")
 
     # ── Per-map FAIL-FAST gates: EVERY eval map_type must clear its floor/cap ──

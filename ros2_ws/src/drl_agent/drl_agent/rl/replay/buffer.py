@@ -282,6 +282,37 @@ class LAP(object):
         self.ind_balanced = ind
         return ind
 
+    @staticmethod
+    def _risk_meta_fraction_dict(m):
+        """RISK_BALANCE: shared fraction computation for a risk_meta slice
+        `m` (rows x RISK_META_DIM), used by both describe_risk_meta_fractions
+        and its _raw whole-buffer variant.
+
+        collision_{human_event,risk_positive}_frac: of the rows tagged
+        collision_or_near, what fraction are ALSO human_event / risk_positive
+        -- collision_or_near itself is sourced from the env's full-360
+        collision/near-collision verdict, which fires on STATIC obstacles
+        too, not just humans. If a run's collision pool turns out to be
+        mostly static-obstacle collisions, the "collision" pool feeding the
+        (human-risk-focused) aux/action-risk supervised loss is diluted with
+        safe-for-humans rows -- these two fractions make that observable
+        without changing the pool definition itself. Omitted (not just 0.0)
+        when the collision pool is empty, so a 0/0 doesn't silently read as
+        "no overlap"."""
+        out = {
+            "human_event_frac": float((m[:, 1] > 0.5).mean()),
+            "risk_positive_frac": float((m[:, 2] > 0.5).mean()),
+            "collision_frac": float((m[:, 3] > 0.5).mean()),
+        }
+        collision_mask = m[:, 3] > 0.5
+        n_collision = int(collision_mask.sum())
+        if n_collision > 0:
+            out["collision_human_event_frac"] = float(
+                (m[collision_mask, 1] > 0.5).mean())
+            out["collision_risk_positive_frac"] = float(
+                (m[collision_mask, 2] > 0.5).mean())
+        return out
+
     def describe_risk_meta_fractions(self, indices):
         """RISK_BALANCE: fraction of `indices` carrying each metadata flag --
         logging-only helper (sampled risk-positive / human-event / collision
@@ -289,11 +320,18 @@ class LAP(object):
         if self.risk_meta is None or indices is None or len(indices) == 0:
             return {}
         m = self.risk_meta[np.asarray(indices)]
-        return {
-            "human_event_frac": float((m[:, 1] > 0.5).mean()),
-            "risk_positive_frac": float((m[:, 2] > 0.5).mean()),
-            "collision_frac": float((m[:, 3] > 0.5).mean()),
-        }
+        return self._risk_meta_fraction_dict(m)
+
+    def describe_risk_meta_fractions_raw(self):
+        """RISK_BALANCE: same fractions as describe_risk_meta_fractions, but
+        over the ENTIRE current buffer contents (self.risk_meta[:self.size])
+        instead of one sampled batch's indices -- the raw replay distribution
+        that risk-balanced sampling is correcting for. Logging-only; never
+        used in the loss/sampling path."""
+        if self.risk_meta is None or self.size == 0:
+            return {}
+        m = self.risk_meta[: self.size]
+        return self._risk_meta_fraction_dict(m)
 
     def get_last_aux(self, indices=None):
         """AUX_PRED: auxiliary targets for the given indices (default: the

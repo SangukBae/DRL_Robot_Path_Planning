@@ -5,6 +5,10 @@
 curriculum_settings:
   enabled: true                  # trainer가 stage promotion 로직을 사용할지 여부
 
+  # Keep the 30k dwell even though promotion now needs one 40-episode eval
+  # instead of two 20-episode evals. Lowering this to 24k at the same time would
+  # halve the effective minimum dwell (48k -> 24k) and make the combined change
+  # unnecessarily aggressive.
   min_stage_steps: 30000         # 이 step 수를 넘기기 전에는 stage 승급 금지
   min_stage_episodes: 20         # 이 episode 수를 넘기기 전에는 stage 승급 금지
 
@@ -15,17 +19,12 @@ curriculum_settings:
   # Curriculum is now 10 stages (0..9) → 9 promotable transitions (0→1 … 8→9).
   # curriculum_stage_logic clamps an out-of-range stage index to the LAST entry,
   # so a shorter list still runs without crashing.
-  # NOTE: eval runs 10 episodes, so collision_rate is quantized to 0.1 steps —
-  # 0.10 = "1 collision allowed", 0.20 = "2 collisions". Anything in 0.10–0.19 is
-  # the same bucket (1), 0.20–0.29 the same (2); gates are set on these breakpoints.
-  # Consequences of that quantization for the gates below:
-  #   • stage 3 collision 0.11→0.12 is notation-only (both = 1-collision bucket);
-  #     the REAL stage-3 relaxation is success 0.82→0.80 (9/10→8/10) + SPL 0.52→0.50.
-  #   • stages 3,4,5 (0.12,0.12,0.15) are ALL the 1-collision bucket; only stages
-  #     6–8 (0.20) actually allow 2 collisions.
+  # Evaluation uses 40 episodes, so rates are quantized in 1/40 = 2.5% steps.
+  # The thresholds have an exact episode-count meaning: 0.10 permits 4/40
+  # collisions and 0.15 permits 6/40.
   #   stage idx:               0     1     2     3     4     5     6     7     8
   pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.80, 0.80, 0.76, 0.74, 0.72, 0.70] # stage별 최소 성공률 gate
-  pass_eval_collision_rate: [0.10, 0.10, 0.10, 0.12, 0.12, 0.15, 0.20, 0.20, 0.20] # stage별 최대 전체 충돌률 gate
+  pass_eval_collision_rate: [0.10, 0.10, 0.10, 0.10, 0.10, 0.15, 0.15, 0.15, 0.15] # stage별 최대 전체 충돌률 gate
 
   # Quality gate (conservative): minimum SPL (Success weighted by Path Length)
   # required to PROMOTE, per stage. This stops "arrived but wandered" policies
@@ -40,18 +39,25 @@ curriculum_settings:
   # Kept off by default to introduce one quality metric (SPL) at a time.
   pass_eval_lidar_clearance_rate: [] # 비우면 LiDAR clearance gate 비활성
 
-  # Rollback to the older promotion behaviour: keep advancement driven by the
-  # global success / collision / SPL gates only. The newer human-safety hard
-  # gates and per-map fail-fast gates stay available in code, but are disabled
-  # here so the run promotes like the pre-tightening curriculum.
-  pass_eval_psc: []                     # 비우면 PSC hard gate 비활성
-  pass_eval_h_coll_rate: []             # 비우면 H-Coll hard gate 비활성
-  pass_eval_per_map_success_rate: []    # 비우면 per-map success fail-fast 비활성
-  pass_eval_per_map_collision_rate: []  # 비우면 per-map collision fail-fast 비활성
+  # Human-safety gates begin at stage 3, where pedestrians first appear.
+  # Disabled sentinels for stages 0-2 are PSC=0.0 / H-Coll=1.0. Once active,
+  # missing label telemetry is fail-closed in curriculum/stage_logic.py.
+  #   stage idx:           0    1    2     3     4     5     6     7     8
+  pass_eval_psc:         [0.0, 0.0, 0.0, 0.85, 0.85, 0.82, 0.82, 0.80, 0.80]
+  pass_eval_h_coll_rate: [1.0, 1.0, 1.0, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
 
-  # How many consecutive evaluations must pass the threshold before promotion.
-  # Set to 1 for faster iteration, 2-3 for more conservative advancement.
-  consecutive_eval_passes: 2      # 연속 몇 번 eval gate를 통과해야 실제 승급할지
+  # Per-map fail-fast starts at stage 5. Evaluation is deterministic round-robin:
+  # 40 episodes give 14/13/13 episodes across the 3-map stages 5-6 and exactly
+  # 10/map in the 4-map stages 7-8. A single collapsing map can no longer hide
+  # behind the global mean.
+  #   stage idx:                         0    1    2    3    4    5     6     7     8
+  pass_eval_per_map_success_rate:       [0.0, 0.0, 0.0, 0.0, 0.0, 0.50, 0.50, 0.50, 0.50]
+  pass_eval_per_map_collision_rate:     [1.0, 1.0, 1.0, 1.0, 1.0, 0.20, 0.20, 0.20, 0.20]
+
+  # A single 40-episode evaluation replaces the old 20-episode × 2 consecutive
+  # protocol. The 30k minimum stage dwell remains, and promotion now also requires
+  # global + SPL + human-safety + (stage 5+) per-map gates simultaneously.
+  consecutive_eval_passes: 1
 
   # Replay-buffer reset on promotion INTO these stages. Only needed where the
   # normalized action / control contract CHANGES between stages (off-contract

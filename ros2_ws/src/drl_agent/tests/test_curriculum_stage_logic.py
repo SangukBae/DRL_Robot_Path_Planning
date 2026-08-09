@@ -108,18 +108,21 @@ def test_psc_gate_passes_when_met():
     assert advance is True and reasons == []
 
 
-def test_psc_gate_skips_when_value_missing():
-    # psc absent / None (labels off) must NOT block, even with a strict gate.
+def test_psc_gate_blocks_when_value_missing():
+    # An explicitly enabled safety gate is fail-closed: broken/missing labels
+    # must not be interpreted as safe enough to promote.
     advance, reasons = csl.should_advance_stage(
         **_base(pass_psc=[0.99],
                 metrics={"success_rate": 0.95, "collision_rate": 0.0, "psc": None})
     )
-    assert advance is True and reasons == []
-    advance2, _ = csl.should_advance_stage(
+    assert advance is False
+    assert any("PSC unavailable" in r for r in reasons)
+    advance2, reasons2 = csl.should_advance_stage(
         **_base(pass_psc=[0.99],
                 metrics={"success_rate": 0.95, "collision_rate": 0.0})  # no psc key
     )
-    assert advance2 is True
+    assert advance2 is False
+    assert any("PSC unavailable" in r for r in reasons2)
 
 
 def test_h_coll_gate_blocks_on_any_human_collision():
@@ -131,18 +134,19 @@ def test_h_coll_gate_blocks_on_any_human_collision():
     assert any("H-Coll" in r for r in reasons)
 
 
-def test_h_coll_gate_passes_at_zero_and_skips_when_missing():
+def test_h_coll_gate_passes_at_zero_and_blocks_when_missing():
     advance, reasons = csl.should_advance_stage(
         **_base(pass_h_coll=[0.0],
                 metrics={"success_rate": 0.95, "collision_rate": 0.0, "h_coll_rate": 0.0})
     )
     assert advance is True and reasons == []
-    # Missing value → gate self-disables (no block).
-    advance2, _ = csl.should_advance_stage(
+    # Missing value with an enabled gate is a telemetry failure, not a pass.
+    advance2, reasons2 = csl.should_advance_stage(
         **_base(pass_h_coll=[0.0],
                 metrics={"success_rate": 0.95, "collision_rate": 0.0, "h_coll_rate": None})
     )
-    assert advance2 is True
+    assert advance2 is False
+    assert any("H-Coll unavailable" in r for r in reasons2)
 
 
 # ── Per-map FAIL-FAST gates ─────────────────────────────────────────────────

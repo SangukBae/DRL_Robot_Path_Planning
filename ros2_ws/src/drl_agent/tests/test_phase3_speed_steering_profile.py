@@ -52,6 +52,16 @@ def _load_hp_yaml(spec):
         return (yaml.safe_load(f) or {}).get("hyperparameters", {})
 
 
+def _load_train_yaml(spec):
+    with open(spec.config_paths["train"], "r") as f:
+        return (yaml.safe_load(f) or {}).get("train_settings", {})
+
+
+def _load_curriculum_yaml(spec):
+    with open(spec.config_paths["curriculum"], "r") as f:
+        return (yaml.safe_load(f) or {}).get("curriculum_settings", {})
+
+
 # --------------------------------------------------------------------------- #
 #  Profile loads + validates
 # --------------------------------------------------------------------------- #
@@ -220,9 +230,38 @@ def test_phase3_yield_reward_disabled_and_no_per_stage_overrides():
 
 def test_phase3_no_buffer_reset_on_any_stage_promotion():
     spec = ProfileLoader().load(PHASE3_NAME)
-    with open(spec.config_paths["curriculum"], "r") as f:
-        cur = (yaml.safe_load(f) or {}).get("curriculum_settings", {})
+    cur = _load_curriculum_yaml(spec)
     assert cur.get("reset_buffer_on_promote_to") == []
+
+
+# --------------------------------------------------------------------------- #
+#  Safety-gated promotion protocol
+# --------------------------------------------------------------------------- #
+def test_phase3_uses_one_40_episode_eval_with_30k_stage_dwell():
+    spec = ProfileLoader().load(PHASE3_NAME)
+    train = _load_train_yaml(spec)
+    cur = _load_curriculum_yaml(spec)
+    assert train.get("eval_eps") == 40
+    assert train.get("eval_freq") == 12000
+    assert cur.get("min_stage_steps") == 30000
+    assert cur.get("min_stage_episodes") == 20
+    assert cur.get("consecutive_eval_passes") == 1
+
+
+def test_phase3_human_safety_and_per_map_gates_are_enabled_at_intended_stages():
+    spec = ProfileLoader().load(PHASE3_NAME)
+    cur = _load_curriculum_yaml(spec)
+
+    assert cur.get("pass_eval_collision_rate") == [
+        0.10, 0.10, 0.10, 0.10, 0.10, 0.15, 0.15, 0.15, 0.15]
+    assert cur.get("pass_eval_psc") == [
+        0.0, 0.0, 0.0, 0.85, 0.85, 0.82, 0.82, 0.80, 0.80]
+    assert cur.get("pass_eval_h_coll_rate") == [
+        1.0, 1.0, 1.0, 0.10, 0.10, 0.10, 0.10, 0.10, 0.10]
+    assert cur.get("pass_eval_per_map_success_rate") == [
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.50, 0.50, 0.50, 0.50]
+    assert cur.get("pass_eval_per_map_collision_rate") == [
+        1.0, 1.0, 1.0, 1.0, 1.0, 0.20, 0.20, 0.20, 0.20]
 
 
 # --------------------------------------------------------------------------- #

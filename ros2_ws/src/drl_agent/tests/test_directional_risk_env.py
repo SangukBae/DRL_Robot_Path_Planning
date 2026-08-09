@@ -98,6 +98,10 @@ def _node(**overrides):
         _dr_rollout_brake_decel_mps2=6.0,
         _dr_rollout_steering_rate_rad_s=math.radians(200.0),
         _dr_rollout_path_samples=15,
+        # TRAJ_RISK: default OFF -> every existing test above (none of which
+        # sets this) keeps exercising the original per-sector lookup for
+        # waypoint_yield, unaffected by the swept-path extension.
+        _waypoint_trajectory_risk_enabled=False,
     )
     for k, v in overrides.items():
         setattr(node, k, v)
@@ -276,6 +280,199 @@ def test_speed_steering_braking_from_speed_reaches_true_stopping_point():
         node, 0.0, target_v=0.0, target_cmd_steering=0.0)
     assert min_dist_dir == pytest.approx(0.0, abs=1e-6)
     assert risk_dir == pytest.approx(1.0, abs=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+#  TRAJ_RISK: waypoint_yield swept-path risk (opt-in extension)
+# --------------------------------------------------------------------------- #
+def test_waypoint_trajectory_risk_disabled_is_unaffected_by_flag_default():
+    """directional_risk.waypoint_trajectory_risk_enabled defaults False (see
+    _node()'s base fixture) -- waypoint_yield must keep using the current-
+    pose-only per-sector lookup, exactly like before this feature existed."""
+    node = _node(
+        action_mode="waypoint_yield",
+        human_states={"h0": {"x": 1.0, "y": 0.0, "yaw": math.pi, "v": 0.3}},
+    )
+    assert node._waypoint_trajectory_risk_enabled is False
+    baseline = Environment._compute_directional_risk(node, 0.0, target_v=0.0, target_cmd_steering=0.0)
+    moving = Environment._compute_directional_risk(node, 0.0, target_v=1.5, target_cmd_steering=0.3)
+    assert baseline == moving
+
+
+def test_waypoint_trajectory_risk_enabled_swept_path_catches_crossing_human():
+    """A robot driving STRAIGHT AHEAD and a pedestrian crossing perpendicular
+    whose paths nearly collide at the swept-path's ENDPOINT (t=1.0s, matching
+    test_speed_steering_swept_path_catches_crossing_human's setup exactly).
+
+    The DISABLED (per-sector) target -- compute_directional_risk_map -- has
+    NO notion of the robot's own motion at all: it only ever looks at where
+    each human is PROJECTED to be at the single horizon time, from the
+    robot's CURRENT (stationary) pose, then bins that into a sector. It
+    therefore reports a much LOWER risk here (the human's horizon-projected
+    position is 2.0 m from the robot's CURRENT position) than the true
+    swept-path answer (an actual near-collision, since the robot itself
+    moves to meet the human at that same point/time). ENABLED must catch the
+    true near-collision the endpoint-only, motion-blind lookup misses.
+    """
+    cfg = _directional_risk_cfg(horizons_sec=[1.0])
+    human_states = {"h0": {"x": 2.0, "y": -2.0, "yaw": math.pi / 2, "v": 2.0}}
+    base_kwargs = dict(
+        action_mode="waypoint_yield",
+        vehicle_wheelbase_m=1.0,
+        _directional_risk_cfg=cfg,
+        latest_actual_signed_speed=2.0,
+        latest_center_steering=0.0,
+        human_states=human_states,
+    )
+
+    node_off = _node(_waypoint_trajectory_risk_enabled=False, **base_kwargs)
+    risk_off, min_dist_off = Environment._compute_directional_risk(
+        node_off, 0.0, target_v=2.0, target_cmd_steering=0.0)
+    # Sector lookup: human projects to (2, 0) at t=1.0 (2.0 m from the
+    # robot's CURRENT, unmoved position) -> risk = 1 - 2.0/3.0.
+    assert risk_off == pytest.approx(1.0 / 3.0, abs=1e-3)
+
+    node_on = _node(_waypoint_trajectory_risk_enabled=True, **base_kwargs)
+    risk_on, min_dist_on = Environment._compute_directional_risk(
+        node_on, 0.0, target_v=2.0, target_cmd_steering=0.0)
+    assert risk_on == pytest.approx(1.0)
+    assert min_dist_on == pytest.approx(0.0)
+    assert risk_on > risk_off  # swept path catches what the endpoint-only lookup misses
+
+
+def test_waypoint_trajectory_risk_enabled_turn_away_scores_lower_than_straight():
+    """In a genuinely risky situation (human directly ahead), a swerve-away
+    command must score LOWER risk than driving straight at the same target
+    speed -- the swept path actually curves away from the human, unlike the
+    old sector-lookup target (current-pose-only, blind to the robot's own
+    commanded motion)."""
+    cfg = _directional_risk_cfg(horizons_sec=[1.0])
+    node = _node(
+        action_mode="waypoint_yield",
+        _waypoint_trajectory_risk_enabled=True,
+        vehicle_wheelbase_m=1.0,
+        _directional_risk_cfg=cfg,
+        latest_actual_signed_speed=2.0,
+        latest_center_steering=0.0,
+        human_states={"h0": {"x": 1.5, "y": 0.0, "yaw": 0.0, "v": 0.0}},
+    )
+    risk_straight, min_dist_straight = Environment._compute_directional_risk(
+        node, 0.0, target_v=2.0, target_cmd_steering=0.0)
+    risk_turn, min_dist_turn = Environment._compute_directional_risk(
+        node, 0.3, target_v=2.0, target_cmd_steering=0.3)
+    assert risk_straight > 0.5
+    assert risk_turn < risk_straight
+    assert min_dist_turn > min_dist_straight
+
+
+def test_waypoint_trajectory_risk_enabled_yield_has_real_braking_distance():
+    """Regression (waypoint_yield analogue of
+    test_speed_steering_braking_from_speed_reaches_true_stopping_point): a
+    YIELD command (target_v=0.0, the yield_creep_speed_mps default) does NOT
+    teleport the robot to an instant stop -- it must still cover the real
+    braking distance at brake_decel_mps2 before the swept path stops."""
+    cfg = _directional_risk_cfg(horizons_sec=[1.0])
+    stopping_distance = 2.0 ** 2 / (2 * 6.0)  # exact analytic braking distance
+    node = _node(
+        action_mode="waypoint_yield",
+        _waypoint_trajectory_risk_enabled=True,
+        vehicle_wheelbase_m=1.0,
+        _directional_risk_cfg=cfg,
+        latest_actual_signed_speed=2.0,
+        latest_center_steering=0.0,
+        human_states={"h0": {"x": stopping_distance, "y": 0.0, "yaw": 0.0, "v": 0.0}},
+    )
+    # target_v=0.0 mirrors hybrid_action_to_command's YIELD branch (speed
+    # capped at controller_yield_creep_mps, default 0.0 -> full stop target).
+    risk_dir, min_dist_dir = Environment._compute_directional_risk(
+        node, 0.0, target_v=0.0, target_cmd_steering=0.0)
+    assert min_dist_dir == pytest.approx(0.0, abs=1e-6)
+    assert risk_dir == pytest.approx(1.0, abs=1e-6)
+
+
+def test_waypoint_trajectory_risk_enabled_yield_scores_lower_than_move():
+    """In a risky situation, YIELD (target_v=0.0, real braking distance ~
+    0.333 m at this fixture's dynamics) must score LOWER risk than MOVE
+    (target_v=2.0, continuing at cruise speed straight through the human)."""
+    cfg = _directional_risk_cfg(horizons_sec=[1.0])
+    node = _node(
+        action_mode="waypoint_yield",
+        _waypoint_trajectory_risk_enabled=True,
+        vehicle_wheelbase_m=1.0,
+        _directional_risk_cfg=cfg,
+        latest_actual_signed_speed=2.0,
+        latest_center_steering=0.0,
+        # 1.9 m ahead: well past the ~0.333 m YIELD braking distance, but
+        # reached by t=0.95s < horizon (1.0s) at a steady 2 m/s MOVE.
+        human_states={"h0": {"x": 1.9, "y": 0.0, "yaw": 0.0, "v": 0.0}},
+    )
+    risk_yield, min_dist_yield = Environment._compute_directional_risk(
+        node, 0.0, target_v=0.0, target_cmd_steering=0.0)
+    risk_move, min_dist_move = Environment._compute_directional_risk(
+        node, 0.0, target_v=2.0, target_cmd_steering=0.0)
+    # MOVE passes right by the human (near-collision, some sampling slack
+    # since the closest swept-path sample need not land exactly on the
+    # human); YIELD brakes to a stop well short of it.
+    assert risk_move > 0.9
+    assert min_dist_move < 0.05
+    assert risk_yield < risk_move
+    assert min_dist_yield > min_dist_move
+
+
+def test_waypoint_trajectory_risk_enabled_stopped_robot_catches_intermediate_time_close_pass():
+    """waypoint_yield analogue of
+    test_speed_steering_stopped_robot_catches_intermediate_time_close_pass: a
+    robot already at rest AND commanding YIELD (target_v=0.0) must still
+    catch a pedestrian who is only close to it at some time STRICTLY BETWEEN
+    now and the horizon."""
+    cfg = _directional_risk_cfg(horizons_sec=[1.0])
+    vx, vy = 3.0, -5.0  # crosses (x=-1.8, y=3.0) -> (x=0, y=0) at t=0.6s
+    v = math.hypot(vx, vy)
+    yaw = math.atan2(vy, vx)
+    node = _node(
+        action_mode="waypoint_yield",
+        _waypoint_trajectory_risk_enabled=True,
+        vehicle_wheelbase_m=1.0,
+        _directional_risk_cfg=cfg,
+        _dr_rollout_path_samples=5,
+        latest_actual_signed_speed=0.0,
+        latest_center_steering=0.0,
+        human_states={"h0": {"x": -1.8, "y": 3.0, "yaw": yaw, "v": v}},
+    )
+    risk_dir, min_dist_dir = Environment._compute_directional_risk(
+        node, 0.0, target_v=0.0, target_cmd_steering=0.0)
+    assert risk_dir == pytest.approx(1.0)
+    assert min_dist_dir == pytest.approx(0.0)
+
+
+def test_waypoint_trajectory_risk_enabled_robot_human_time_alignment():
+    """Robot and human positions must be compared at MATCHING sample times,
+    not robot@t=0 vs human@t=horizon: the human here reaches the robot's
+    CURRENT (t=0) position (0, 0) only at t=1.0s, by which point the ALSO-
+    MOVING robot (2 m/s straight ahead, same direction/speed) has itself
+    moved away from (0, 0) -- so the two stay a constant 2.0 m apart at every
+    matching sample time. A time-MISMATCHED check (robot@t=0=(0,0) vs.
+    human@t=horizon=(0,0)) would wrongly report a dead-on collision
+    (risk=1.0, min_dist=0.0); the correct matching-time answer must not."""
+    cfg = _directional_risk_cfg(horizons_sec=[1.0])
+    node = _node(
+        action_mode="waypoint_yield",
+        _waypoint_trajectory_risk_enabled=True,
+        vehicle_wheelbase_m=1.0,
+        _directional_risk_cfg=cfg,
+        latest_actual_signed_speed=2.0,
+        latest_center_steering=0.0,
+        # Walks +x at the SAME speed as the robot, starting 2m behind the
+        # robot's t=0 position -> constant 2.0 m separation at every matching
+        # t (NOT 0, which a t=0-vs-t=horizon mismatch would wrongly produce).
+        human_states={"h0": {"x": -2.0, "y": 0.0, "yaw": 0.0, "v": 2.0}},
+    )
+    risk_dir, min_dist_dir = Environment._compute_directional_risk(
+        node, 0.0, target_v=2.0, target_cmd_steering=0.0)
+    # Dc=3.0 (cfg default) -> risk = 1 - 2.0/3.0, min_dist = 2.0/3.0.
+    assert risk_dir == pytest.approx(1.0 / 3.0, abs=1e-3)
+    assert min_dist_dir == pytest.approx(2.0 / 3.0, abs=1e-3)
+    assert risk_dir < 0.9  # far from the wrong mismatched-time answer (1.0)
 
 
 # --------------------------------------------------------------------------- #

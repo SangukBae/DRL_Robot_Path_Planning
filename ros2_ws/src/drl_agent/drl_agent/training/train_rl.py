@@ -356,6 +356,11 @@ class TrainTQCCurriculum(
             _yr = dict(env_cfg.get("yield_reward", {}) or {})
             self._motion_yield_action_enabled = bool(_yr.get("action_enabled", True))
             self._motion_yield_action_threshold = float(_yr.get("action_threshold", 0.3))
+            # TRAJ_RISK: mirrors train_tqc_curriculum.py's identical read.
+            self._motion_waypoint_trajectory_risk_enabled = bool(
+                dict(env_cfg.get("directional_risk", {}) or {}).get(
+                    "waypoint_trajectory_risk_enabled", False)
+            )
             # Per-stage effective yield gate: mirror the env's stage override
             # (environment_curriculum._apply_curriculum_stage) so telemetry reflects
             # the ACTUAL contract per stage (early stages seal yield). Index i = the
@@ -380,10 +385,11 @@ class TrainTQCCurriculum(
     def _augment_profile_manifest_with_action_contract(self):
         """RESUME-SAFETY: mirrors TrainTQCCurriculum._augment_profile_manifest_
         with_action_contract exactly (see that docstring) -- appends
-        action_mode/action_dim to configs/profile_manifest.json so a later
-        resume attempt can verify the checkpoint's action contract (see
-        config/validation.py's _check_action_mode). No-op when no manifest
-        was written this run."""
+        action_mode/action_dim and the RISK_BALANCE/TRAJ_RISK feature-contract
+        flags to configs/profile_manifest.json so a later resume attempt can
+        verify the checkpoint's contract (see config/validation.py's
+        _check_action_mode / _check_risk_feature_contract). No-op when no
+        manifest was written this run."""
         target_dir = getattr(self, "configs_dir", None) or self.log_dir
         path = os.path.join(target_dir, "profile_manifest.json")
         if not os.path.isfile(path):
@@ -393,6 +399,12 @@ class TrainTQCCurriculum(
                 manifest = json.load(f)
             manifest["action_mode"] = str(getattr(self, "_motion_action_mode", "waypoint"))
             manifest["action_dim"] = int(getattr(self, "_motion_action_dim", 2))
+            manifest["waypoint_trajectory_risk_enabled"] = bool(
+                getattr(self, "_motion_waypoint_trajectory_risk_enabled", False)
+            )
+            manifest["risk_balanced_sampling_enabled"] = bool(
+                getattr(self.rl_agent, "risk_balanced_enabled", False)
+            )
             with open(path, "w") as f:
                 json.dump(manifest, f, indent=2)
         except Exception as e:

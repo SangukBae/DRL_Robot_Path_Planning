@@ -168,6 +168,82 @@ def test_balanced_sampler_returns_none_on_empty_buffer():
 
 
 # --------------------------------------------------------------------------- #
+#  describe_risk_meta_fractions_raw: whole-buffer (not sampled-batch) fractions
+# --------------------------------------------------------------------------- #
+def test_describe_risk_meta_fractions_raw_reflects_whole_buffer():
+    buf = _mk_populated(n_uniform=600, n_human=200, n_collision=200)
+    frac = buf.describe_risk_meta_fractions_raw()
+    # 1000 total transitions; human/collision each tagged on exactly 200 rows
+    # (human rows ALSO set risk_positive=1.0, see _mk_populated).
+    assert frac["human_event_frac"] == pytest.approx(0.2)
+    assert frac["risk_positive_frac"] == pytest.approx(0.2)
+    assert frac["collision_frac"] == pytest.approx(0.2)
+
+
+def test_describe_risk_meta_fractions_raw_independent_of_last_sample():
+    """Unlike describe_risk_meta_fractions(indices), the _raw variant takes NO
+    indices argument -- it must reflect the ENTIRE buffer regardless of what
+    (if anything) was last sampled, including a buffer with metadata storage
+    on but risk-balanced SAMPLING off (pure metadata-collection use case)."""
+    buf = _mk_populated(n_uniform=90, n_human=5, n_collision=5,
+                         risk_balanced_enabled=False)
+    assert buf.sample_risk_balanced() is None  # sampling itself is off
+    frac = buf.describe_risk_meta_fractions_raw()
+    assert frac["human_event_frac"] == pytest.approx(0.05)
+    assert frac["collision_frac"] == pytest.approx(0.05)
+
+
+def test_describe_risk_meta_fractions_raw_empty_without_metadata_or_buffer():
+    assert _mk().describe_risk_meta_fractions_raw() == {}  # no metadata storage
+    buf = _mk(store_risk_meta=True)
+    assert buf.size == 0
+    assert buf.describe_risk_meta_fractions_raw() == {}  # empty buffer
+
+
+# --------------------------------------------------------------------------- #
+#  Collision-pool composition: collision_or_near also fires on STATIC
+#  obstacle collisions, not just human proximity -- these fractions surface
+#  how much of the "collision" pool is actually human-risk-relevant.
+# --------------------------------------------------------------------------- #
+def test_collision_pool_composition_diluted_by_static_collisions():
+    buf = _mk(store_risk_meta=True)
+    # 8 collision rows total: only 2 are also human_event/risk_positive (a
+    # human-adjacent collision); the other 6 are collision_or_near WITHOUT
+    # any human signal at all (a static-obstacle collision).
+    for _ in range(2):
+        _add(buf, risk_meta=(0.0, 1.0, 1.0, 1.0))
+    for _ in range(6):
+        _add(buf, risk_meta=(0.0, 0.0, 0.0, 1.0))
+    frac = buf.describe_risk_meta_fractions_raw()
+    assert frac["collision_frac"] == pytest.approx(1.0)  # all 8 rows tagged
+    assert frac["collision_human_event_frac"] == pytest.approx(2 / 8)
+    assert frac["collision_risk_positive_frac"] == pytest.approx(2 / 8)
+
+
+def test_collision_pool_composition_omitted_when_pool_empty():
+    buf = _mk(store_risk_meta=True)
+    _add(buf, risk_meta=(0.0, 1.0, 1.0, 0.0))  # human_event, but NOT collision
+    frac = buf.describe_risk_meta_fractions_raw()
+    assert frac["collision_frac"] == 0.0
+    # No collision-tagged rows at all -> the overlap keys must be OMITTED
+    # (not a spurious 0.0/0 division that would misleadingly read as
+    # "collisions never overlap with human risk").
+    assert "collision_human_event_frac" not in frac
+    assert "collision_risk_positive_frac" not in frac
+
+
+def test_collision_pool_composition_reported_for_sampled_indices_too():
+    """Same overlap keys via describe_risk_meta_fractions(indices) -- the
+    per-train()-call sampled_* variant, not just the whole-buffer raw one."""
+    buf = _mk(store_risk_meta=True)
+    _add(buf, risk_meta=(0.0, 1.0, 1.0, 1.0))
+    _add(buf, risk_meta=(0.0, 0.0, 0.0, 1.0))
+    frac = buf.describe_risk_meta_fractions(np.arange(buf.size))
+    assert frac["collision_human_event_frac"] == pytest.approx(0.5)
+    assert frac["collision_risk_positive_frac"] == pytest.approx(0.5)
+
+
+# --------------------------------------------------------------------------- #
 #  Episode-boundary safety for the balanced batch (explicit indices= param)
 # --------------------------------------------------------------------------- #
 def test_future_actions_respects_explicit_indices_and_boundary():

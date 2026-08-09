@@ -166,6 +166,21 @@ environment:
     bonus_weight: 0.15
     bonus_max: 0.1
     progress_positive_gate_eps: 0.0
+  # PHASE3: heading-error-delta reward + steering/speed continuous-control
+  # penalty (see the canonical environment_curriculum.yaml's continuous_
+  # control_reward comment for the full rationale). Targets the observed
+  # circular-driving local optimum: (a) rewards decreasing |heading error|
+  # step-over-step even when goal_dist momentarily regresses, (b) penalises
+  # constant-nonzero steering + left/right or speed chattering. Conservative
+  # initial weights (small vs. the existing progress_clip=0.25/k_p=0.5 and
+  # terminal +-20/-30 scale) so normal turning is not suppressed; tune from
+  # here based on smoke-run success/timeout/heading/steering metrics.
+  continuous_control_reward:
+    enabled: true
+    heading_delta_weight: 0.2
+    steering_magnitude_weight: 0.005
+    steering_change_weight: 0.01
+    speed_change_weight: 0.005
   action_risk_head:
     enabled: true
   human_mode_weights:

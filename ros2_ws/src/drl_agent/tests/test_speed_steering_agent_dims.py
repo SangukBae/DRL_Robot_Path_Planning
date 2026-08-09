@@ -188,3 +188,146 @@ def test_risk_meta_enabled_without_balanced_sampling_is_metadata_only(tmp_path):
     assert agent.store_risk_meta is True
     assert agent.risk_balanced_enabled is False
     assert agent.replay_buffer.sample_risk_balanced() is None
+
+
+# --------------------------------------------------------------------------- #
+#  HIGH fix: risk_balanced_sampling.enabled is the single master flag for
+#  weighted loss too (not just the balanced batch draw)
+# --------------------------------------------------------------------------- #
+def test_weighted_loss_neutralized_when_risk_balanced_sampling_disabled(tmp_path):
+    """Regression for the reviewed HIGH finding: risk_map_positive_weight/
+    loss_type and action_risk_head.pos_weight/loss_type were previously
+    parsed INDEPENDENTLY of risk_balanced_sampling.enabled, so setting the
+    master flag to false did NOT restore byte-identical unweighted-MSE loss
+    if a profile still set e.g. risk_map_positive_weight=5.0/loss_type=
+    smooth_l1. Both must now collapse to the neutral (weight=1.0, mse)
+    values regardless of what the YAML says, whenever the master flag is
+    off."""
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                   _hp(aux_prediction={"enabled": True,
+                                        "risk_map_positive_weight": 5.0,
+                                        "risk_map_positive_weight_cap": 10.0,
+                                        "risk_map_loss_type": "smooth_l1",
+                                        "hazard_pos_weight": 5.0},
+                       action_risk_head={"enabled": True, "hidden_dim": 16,
+                                          "pos_weight": 5.0, "pos_weight_cap": 10.0,
+                                          "loss_type": "smooth_l1"},
+                       replay_buffer={"risk_balanced_sampling": {"enabled": False}}),
+                   log_dir=str(tmp_path))
+    assert agent.risk_balanced_enabled is False
+    assert agent.aux_cfg.risk_map_positive_weight == pytest.approx(1.0)
+    assert agent.aux_cfg.risk_map_loss_type == "mse"
+    assert agent.aux_cfg.hazard_pos_weight is None
+    assert agent.action_risk_cfg.pos_weight == pytest.approx(1.0)
+    assert agent.action_risk_cfg.loss_type == "mse"
+
+
+def test_weighted_loss_passes_through_when_risk_balanced_sampling_enabled(tmp_path):
+    """Guard against over-correcting: with the master flag ON, the configured
+    weight/loss_type values must reach AuxPredConfig/ActionRiskConfig
+    unchanged (this is phase2/both's and phase3's actual shipped config)."""
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                   _hp(aux_prediction={"enabled": True,
+                                        "risk_map_positive_weight": 5.0,
+                                        "risk_map_loss_type": "smooth_l1"},
+                       action_risk_head={"enabled": True, "hidden_dim": 16,
+                                          "pos_weight": 5.0, "loss_type": "smooth_l1"},
+                       replay_buffer={"risk_balanced_sampling": {"enabled": True}}),
+                   log_dir=str(tmp_path))
+    assert agent.risk_balanced_enabled is True
+    assert agent.aux_cfg.risk_map_positive_weight == pytest.approx(5.0)
+    assert agent.aux_cfg.risk_map_loss_type == "smooth_l1"
+    assert agent.action_risk_cfg.pos_weight == pytest.approx(5.0)
+    assert agent.action_risk_cfg.loss_type == "smooth_l1"
+
+
+# --------------------------------------------------------------------------- #
+#  MEDIUM fix: sample_risk_balanced() skipped when no consumer needs it
+# --------------------------------------------------------------------------- #
+def test_sample_risk_balanced_skipped_when_no_consumer_needs_it(tmp_path):
+    """sample_risk_balanced() rescans the entire risk_meta array every call
+    -- must not even be CALLED (not just its result discarded) when neither
+    aux (beta==0, e.g. curriculum stage 0-2's stagewise_loss_schedule entry)
+    nor action-risk (current_stage < enable_from_stage) would use the draw."""
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                   _hp(aux_prediction={"enabled": True, "stagewise_loss_schedule": [0.0]},
+                       action_risk_head={"enabled": True, "hidden_dim": 16,
+                                          "enable_from_stage": 3},
+                       replay_buffer={
+                           "risk_meta": {"enabled": True},
+                           "risk_balanced_sampling": {"enabled": True},
+                       }),
+                   log_dir=str(tmp_path))
+    assert agent.current_stage == 0
+    assert agent._action_risk_active is False
+    assert agent._current_aux_beta() == 0.0
+    _fill(agent, n=64, action_risk_target=True, risk_meta_kind="mixed")
+
+    calls = []
+    orig = agent.replay_buffer.sample_risk_balanced
+
+    def _spy(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    agent.replay_buffer.sample_risk_balanced = _spy
+    agent.train()
+    assert calls == [], "sample_risk_balanced() must be skipped entirely at stage 0"
+
+
+def test_sample_risk_balanced_called_once_when_a_consumer_needs_it(tmp_path):
+    """Positive-path counterpart: once action-risk is active (stage >=
+    enable_from_stage), sample_risk_balanced() must still be called exactly
+    once per train() step (not skipped, not called twice)."""
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                   _hp(action_risk_head={"enabled": True, "hidden_dim": 16,
+                                          "enable_from_stage": 0},
+                       replay_buffer={
+                           "risk_meta": {"enabled": True},
+                           "risk_balanced_sampling": {"enabled": True},
+                       }),
+                   log_dir=str(tmp_path))
+    assert agent._action_risk_active is True
+    _fill(agent, n=64, action_risk_target=True, risk_meta_kind="mixed")
+
+    calls = []
+    orig = agent.replay_buffer.sample_risk_balanced
+
+    def _spy(*a, **k):
+        calls.append(1)
+        return orig(*a, **k)
+
+    agent.replay_buffer.sample_risk_balanced = _spy
+    agent.train()
+    assert len(calls) == 1
+
+
+def test_risk_balance_raw_fractions_logged_when_metadata_enabled(tmp_path):
+    """RISK_BALANCE: risk_balance/raw_* (whole-buffer pool fractions) must be
+    logged alongside the existing sampled_* ones whenever metadata storage is
+    on -- even if balanced SAMPLING itself is off (store_risk_meta implies
+    this, sample_risk_balanced() being a no-op does not suppress it)."""
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                   _hp(action_risk_head={"enabled": True, "hidden_dim": 16},
+                       replay_buffer={"risk_meta": {"enabled": True}}),
+                   log_dir=str(tmp_path))
+    assert agent.store_risk_meta is True
+    _fill(agent, n=64, action_risk_target=True, risk_meta_kind="mixed")
+    captured = {}
+    agent.writer.add_scalar = lambda k, v, step: captured.__setitem__(k, v)
+    agent.train()
+    assert "risk_balance/raw_human_event_frac" in captured
+    assert "risk_balance/raw_risk_positive_frac" in captured
+    assert "risk_balance/raw_collision_frac" in captured
+
+
+def test_risk_balance_raw_fractions_absent_when_metadata_disabled(tmp_path):
+    agent = Agent(STATE_DIM, ACTION_DIM, 1.0,
+                   _hp(action_risk_head={"enabled": True, "hidden_dim": 16}),
+                   log_dir=str(tmp_path))
+    assert agent.store_risk_meta is False
+    _fill(agent, action_risk_target=True)
+    captured = {}
+    agent.writer.add_scalar = lambda k, v, step: captured.__setitem__(k, v)
+    agent.train()
+    assert not any(k.startswith("risk_balance/raw_") for k in captured)

@@ -81,7 +81,14 @@ def compute_aux_loss(pred, label, cfg, device):
     else:
         risk_loss = risk_elementwise.mean()
     total = risk_loss
-    logs = {"aux/risk_mse": float(risk_loss.detach().item())}
+    logs = {
+        "aux/risk_mse": float(risk_loss.detach().item()),
+        # RISK_BALANCE: mirrors action_risk_head's pos_weight_applied -- the
+        # ACTUAL (already-capped) positive weight this call used, so a config
+        # value and its effective (post-cap) value are both visible without
+        # cross-referencing the YAML.
+        "aux/risk_map_pos_weight_applied": float(cfg.risk_map_positive_weight),
+    }
     # RISK_BALANCE: positive/safe error breakdown so an "all-safe collapse"
     # (great aggregate error, no signal on the rare risky cells) is visible
     # even when risk_map_positive_weight == 1.0 (pure diagnostics, no effect

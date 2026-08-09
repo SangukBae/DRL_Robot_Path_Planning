@@ -679,6 +679,13 @@ class Environment(
         self._dr_rollout_steering_rate_rad_s = math.radians(
             float(_dr.get("rollout_steering_rate_deg_s", 200.0)))
         self._dr_rollout_path_samples = int(_dr.get("rollout_path_samples", 15))
+        # TRAJ_RISK: opt-in extension of the swept-path rollout target (built
+        # for speed_steering, see _compute_directional_risk below) to the
+        # waypoint_yield / legacy waypoint action modes. Default OFF -> those
+        # modes keep the existing current-pose-only per-sector lookup, byte-
+        # identical to before this flag existed.
+        self._waypoint_trajectory_risk_enabled = bool(
+            _dr.get("waypoint_trajectory_risk_enabled", False))
 
         # PRIVILEGED: risk_map_reward feeds the GT risk_map DIRECTLY into the
         # reward (training-time only; never an observation). Default OFF ->
@@ -698,6 +705,22 @@ class Environment(
         self.risk_map_reward_bonus_max     = float(_rmr.get("bonus_max", 0.1))
         self.risk_map_reward_gate_eps      = float(_rmr.get("progress_positive_gate_eps", 0.0))
         self._prev_risk_dir = None  # reset per episode; None on episode start
+
+        # PHASE3: speed_steering-only continuous-control shaping (reward_
+        # calculator's continuous_control_reward_enabled block) -- heading-
+        # error-delta reward + steering/speed continuous-control penalty.
+        # reward_calculator itself re-gates on action_mode=="speed_steering",
+        # so leaving this enabled for waypoint/waypoint_yield configs would
+        # still be a no-op, but every profile that isn't phase3 simply omits
+        # the block (default OFF) -> reward byte-identical to before this
+        # feature. Per-episode prev-state mirrors the _prev_risk_dir pattern.
+        _ccr = dict(self.environment_config.get("continuous_control_reward", {}) or {})
+        self.continuous_control_reward_enabled = bool(_ccr.get("enabled", False))
+        self.ccr_heading_delta_weight       = float(_ccr.get("heading_delta_weight", 0.2))
+        self.ccr_steering_magnitude_weight  = float(_ccr.get("steering_magnitude_weight", 0.005))
+        self.ccr_steering_change_weight     = float(_ccr.get("steering_change_weight", 0.01))
+        self.ccr_speed_change_weight        = float(_ccr.get("speed_change_weight", 0.005))
+        self._reset_continuous_control_reward_state()
 
         # Env-side mirror of the agent's action_risk_head.enabled (hyperparameters_
         # tqc.yaml). Independent of risk_map_reward.enabled AND aux_prediction.
@@ -2058,6 +2081,10 @@ class Environment(
             "penalty_freeze",
             "penalty_risk_map",
             "reward_risk_map_bonus",
+            "reward_heading_delta",
+            "penalty_steering_magnitude",
+            "penalty_steering_change",
+            "penalty_speed_change",
             "reward_terminal",
             "reward",
             "collision", "target", "done",
@@ -2350,6 +2377,59 @@ class Environment(
     # ====================================Ignition Finish===========================================
     # ----------------------------------------------------------------------------------------------
 
+    def _swept_path_risk(self, target_v, target_cmd_steering):
+        """TRAJ_RISK: action-conditioned GLOBAL swept-path (risk, min_dist) for
+        an arbitrary candidate command (target_v, target_cmd_steering), reused
+        by both speed_steering (phase3) and, when
+        directional_risk.waypoint_trajectory_risk_enabled is on,
+        waypoint_yield/legacy waypoint. NOT tied to any one action_mode or a
+        single "selected" action -- a future counterfactual-label caller
+        (e.g. evaluating left/weak-left/straight/weak-right/right/yield
+        candidates) can call this directly with each candidate's own decoded
+        (v, cmd_steering) without touching _compute_directional_risk's
+        dispatch at all.
+
+        The robot's trajectory is built by pure_pursuit.ackermann_swept_path
+        from its CURRENT actual speed/steering (self.latest_actual_signed_
+        speed / self.latest_center_steering) ramping toward (target_v,
+        target_cmd_steering) under hunter_se_cmd_prefilter's own accel/brake/
+        steering-rate limits -- NOT an instant jump to the target on this same
+        tick. This is what lets a decelerating/stopping (or YIELDing) action
+        genuinely read as lower risk than driving at full speed toward the
+        same person, while still crediting the real residual motion a stop
+        command doesn't instantly cancel (e.g. braking from 2 m/s covers
+        ~0.33 m before actually stopping, at this vehicle's tuned limits) --
+        i.e. YIELD is never scored as an instantaneous stop. Distance is the
+        GLOBAL minimum over the whole swept path vs. every human's own
+        constant-velocity path (matching sample times), with NO re-filtering
+        by bearing sector -- a per-sector lookup would silently drop a
+        crossing pedestrian whose OWN bearing sector differs from the action's
+        heading sector even though the two paths nearly intersect, and would
+        miss a pedestrian who is only close at some time STRICTLY BETWEEN now
+        and the horizon (including while the robot itself is stopped).
+
+        Returns (risk, min_dist), both in [0, 1].
+        """
+        with self._human_lock:
+            humans = [
+                {"x": s["x"], "y": s["y"],
+                 "yaw": s.get("yaw", 0.0), "v": s.get("v", 0.0)}
+                for s in self.human_states.values()
+            ]
+        cfg = self._directional_risk_cfg
+        horizon_sec = float(cfg.horizons_sec[0]) if cfg.horizons_sec else 0.0
+        robot_path = pure_pursuit.ackermann_swept_path(
+            self.latest_actual_signed_speed, self.latest_center_steering,
+            target_v, target_cmd_steering, self.vehicle_wheelbase_m, horizon_sec,
+            accel_limit_mps2=self._dr_rollout_accel_mps2,
+            brake_decel_mps2=self._dr_rollout_brake_decel_mps2,
+            steering_rate_rad_s=self._dr_rollout_steering_rate_rad_s,
+            num_samples=self._dr_rollout_path_samples,
+        )
+        risk, min_dist = aux_labels.compute_action_conditioned_risk(
+            humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg, robot_path)
+        return float(risk), float(min_dist)
+
     def _compute_directional_risk(self, theta, target_v=0.0, target_cmd_steering=0.0):
         """PHASE2: pre-step GT risk for the action just decoded. Shared by
         risk_map_reward (fed straight into get_reward) and the Action-Risk
@@ -2362,38 +2442,38 @@ class Environment(
         call site in _step_callback_impl -- so neither consumer ever sees
         post-step information leak into an action-credit signal.
 
-        Two DIFFERENT computations depending on self.action_mode, gated so
-        this change is ISOLATED to speed_steering (phase3) and never alters
-        phase2/waypoint_yield or the legacy waypoint contract's semantics,
-        regardless of what target_v/target_cmd_steering happen to be at the
-        call site:
+        Two DIFFERENT computations depending on self.action_mode AND (for
+        waypoint modes) directional_risk.waypoint_trajectory_risk_enabled:
 
-        * action_mode == "speed_steering": action-conditioned GLOBAL swept-
-          path risk (aux_prediction_labels.compute_action_conditioned_risk) --
-          the minimum distance between the robot's own Ackermann trajectory
-          and every human's own constant-velocity path, sampled at matching
-          times, with NO re-filtering by bearing sector (a per-sector lookup
-          would silently drop a crossing pedestrian whose OWN bearing sector
-          differs from the action's heading sector even though the two paths
-          nearly intersect). The robot's trajectory is built by
-          pure_pursuit.ackermann_swept_path from its CURRENT actual speed/
-          steering (self.latest_actual_signed_speed / self.
-          latest_center_steering) ramping toward (target_v,
-          target_cmd_steering) under hunter_se_cmd_prefilter's own accel/
-          brake/steering-rate limits -- NOT an instant jump to the target on
-          this same tick. This is what lets a decelerating/stopping action
-          genuinely read as lower risk than driving at full speed toward the
-          same person, while still crediting the real residual motion a stop
-          command doesn't instantly cancel (e.g. braking from 2 m/s covers
-          ~0.33 m before actually stopping, at this vehicle's tuned limits).
-        * every other action_mode (unchanged from before this feature
-          existed): per-SECTOR risk (aux_prediction_labels.
-          compute_directional_risk_map, current-pose-only, no target_v/
-          target_cmd_steering dependence at all), sliced at the sector
-          `theta` points into.
+        * action_mode == "speed_steering", OR (action_mode in
+          {"waypoint_yield", "waypoint"} AND
+          self._waypoint_trajectory_risk_enabled): action-conditioned GLOBAL
+          swept-path risk -- see _swept_path_risk's docstring for the full
+          rationale. Isolated to speed_steering by default (phase3) so
+          phase2/waypoint_yield and the legacy waypoint contract's semantics
+          are UNCHANGED unless the profile explicitly opts in via that flag.
+        * every other case (unchanged from before either feature existed):
+          per-SECTOR risk (aux_prediction_labels.compute_directional_risk_map,
+          current-pose-only, no target_v/target_cmd_steering dependence at
+          all), sliced at the sector `theta` points into.
 
         Returns (risk_dir, min_dist_dir), both in [0, 1].
         """
+        use_swept_path = (
+            self.action_mode == "speed_steering"
+            or (
+                self._waypoint_trajectory_risk_enabled
+                and self.action_mode in ("waypoint_yield", "waypoint")
+            )
+        )
+        if use_swept_path:
+            # Explicit class-qualified call (not self._swept_path_risk(...)):
+            # this method is exercised in tests via
+            # Environment._compute_directional_risk(fake_node, ...) where
+            # fake_node is a plain types.SimpleNamespace, not a real
+            # Environment instance -- self.<method> lookup would fail to find
+            # _swept_path_risk on it, since it isn't in the object's MRO.
+            return Environment._swept_path_risk(self, target_v, target_cmd_steering)
         with self._human_lock:
             humans = [
                 {"x": s["x"], "y": s["y"],
@@ -2401,19 +2481,6 @@ class Environment(
                 for s in self.human_states.values()
             ]
         cfg = self._directional_risk_cfg
-        if self.action_mode == "speed_steering":
-            horizon_sec = float(cfg.horizons_sec[0]) if cfg.horizons_sec else 0.0
-            robot_path = pure_pursuit.ackermann_swept_path(
-                self.latest_actual_signed_speed, self.latest_center_steering,
-                target_v, target_cmd_steering, self.vehicle_wheelbase_m, horizon_sec,
-                accel_limit_mps2=self._dr_rollout_accel_mps2,
-                brake_decel_mps2=self._dr_rollout_brake_decel_mps2,
-                steering_rate_rad_s=self._dr_rollout_steering_rate_rad_s,
-                num_samples=self._dr_rollout_path_samples,
-            )
-            risk, min_dist = aux_labels.compute_action_conditioned_risk(
-                humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg, robot_path)
-            return float(risk), float(min_dist)
         risk_row, min_dist_row = aux_labels.compute_directional_risk_map(
             humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg)
         sector = aux_labels.sector_index_for_theta(theta, cfg.num_sectors)
@@ -2797,6 +2864,19 @@ class Environment(
             risk_bonus_weight=self.risk_map_reward_bonus_w,
             risk_bonus_max=self.risk_map_reward_bonus_max,
             progress_positive_gate_eps=self.risk_map_reward_gate_eps,
+            # PHASE3: speed_steering continuous-control shaping (0 unless
+            # enabled AND action_mode=="speed_steering").
+            continuous_control_reward_enabled=self.continuous_control_reward_enabled,
+            action_mode=self.action_mode,
+            heading_delta_weight=self.ccr_heading_delta_weight,
+            prev_theta_err=self._prev_theta_err,
+            cmd_steering=cmd_steering,
+            prev_cmd_steering=self._prev_ccr_cmd_steering,
+            prev_cmd_speed=self._prev_ccr_cmd_speed,
+            steering_limit_rad=self.vehicle_steering_limit_rad,
+            steering_magnitude_weight=self.ccr_steering_magnitude_weight,
+            steering_change_weight=self.ccr_steering_change_weight,
+            speed_change_weight=self.ccr_speed_change_weight,
             return_terms=True,
         )
         # Carry the anti-freeze / yield streaks into the next step (reset per episode).
@@ -2807,6 +2887,12 @@ class Environment(
         # comparison (None on episode start / when risk_map_reward is off and
         # action_risk_head didn't compute it either).
         self._prev_risk_dir = action_risk_dir
+        # PHASE3: carry this step's heading error / commanded steering+speed
+        # into the next step's continuous-control shaping (None on episode
+        # start / no-op unless continuous_control_reward_enabled).
+        self._prev_theta_err = theta_err
+        self._prev_ccr_cmd_steering = cmd_steering
+        self._prev_ccr_cmd_speed = v
 
         # 9) 다음 스텝 대비 기록
         self._prev_goal_dist = curr_goal_dist
@@ -2847,6 +2933,10 @@ class Environment(
                 round(float(reward_terms["freeze_pen"]), 6),
                 round(float(reward_terms["risk_map_penalty"]), 6),
                 round(float(reward_terms["risk_map_bonus"]), 6),
+                round(float(reward_terms["reward_heading_delta"]), 6),
+                round(float(reward_terms["penalty_steering_magnitude"]), 6),
+                round(float(reward_terms["penalty_steering_change"]), 6),
+                round(float(reward_terms["penalty_speed_change"]), 6),
                 round(float(reward_terms["terminal"]), 6),
                 round(float(reward), 6),
                 int(bool(collision)), int(bool(target)), int(bool(done)),
@@ -2912,6 +3002,21 @@ class Environment(
                 f"[Episode active] map_type='{mt or 'none'}' -> "
                 f"static={self.num_of_static_obstacles} humans={self.num_of_humans}"
             )
+
+    def _reset_continuous_control_reward_state(self):
+        """PHASE3: clear continuous_control_reward's per-episode carry state
+        (heading error + commanded steering/speed from the PREVIOUS step) so
+        the new episode's first step sees them as None -- this is what makes
+        reward_calculator.compute_reward's heading-delta/change-penalty terms
+        exactly 0 on an episode's first step (see its continuous_control_
+        reward_enabled docstring). Called once from __init__ (first-init
+        default) and once per episode from reset_callback; factored out as
+        its own method (mirroring no other per-episode reset field here, but
+        the smallest sub-block worth isolating) so it is unit-testable as a
+        real code path, not just via pure-function inputs."""
+        self._prev_theta_err = None
+        self._prev_ccr_cmd_steering = None
+        self._prev_ccr_cmd_speed = None
 
     def reset_callback(self, request, response):
         """/reset entrypoint. Wraps the implementation so a Gazebo service failure
@@ -2996,6 +3101,7 @@ class Environment(
         self._freeze_streak    = 0
         self._yield_streak     = 0
         self._prev_risk_dir    = None  # PHASE2: no risk-decrease bonus on episode's first step
+        self._reset_continuous_control_reward_state()
         self._reset_robot_path()
         prev_scan_updates = self.scan_update_count
         prev_role_updates = dict(self._odom_role_count)
