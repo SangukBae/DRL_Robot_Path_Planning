@@ -1,21 +1,19 @@
-# PHASE2 experiment profile: both
-# Deprecated compatibility name. Prefer phase2/both_legacy for the old
-# pre-trajectory-risk profile, or phase2/both_trajrisk_rbs for the current
-# feature-expanded profile. This directory currently mirrors the expanded
-# variant but keeps the historical tqc_phase2_both output prefix for existing
-# scripts.
+# PHASE2 experiment profile: both_trajrisk_rbs
+# Current feature-expanded "both" variant: risk_map_reward +
+# action_risk_head/critic_risk_input, plus waypoint trajectory risk and
+# risk-balanced supervised aux/action-risk sampling.
 # Loaded by drl_agent.config.loader (ProfileLoader). File paths are relative
 # to this directory. Flags below must MATCH the yaml contents — validated by
 # drl_agent.config.validation before training starts.
 profile:
-  name: phase2/both
+  name: phase2/both_trajrisk_rbs
   algorithm: tqc
   trainer: curriculum
   environment: environment_curriculum.yaml
   train: train_tqc_config.yaml
   hparams: hyperparameters_tqc.yaml
   curriculum: train_tqc_curriculum_config.yaml
-  output_prefix: tqc_phase2_both
+  output_prefix: tqc_phase2_both_trajrisk_rbs
   overrides:
     risk_map_reward_enabled: true      # env-side reward shaping (candidate1)
     action_risk_head_enabled: true     # env+agent action-risk head (candidate2)

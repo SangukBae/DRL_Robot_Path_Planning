@@ -57,15 +57,6 @@ hyperparameters:
     # any stage beyond the list length.
     stagewise_loss_schedule: [0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
     min_distance_loss_weight: 0.1
-    # RISK_BALANCE: up-weight risk-map cells whose target is a positive-risk
-    # cell so rare near-risk events aren't washed out by the safe majority.
-    # Conservative 3x (requested range 3-6x, capped at 10x) as an initial
-    # value pending a re-tune against this run's actual replay positive-class
-    # share (see the risk_balance/raw_risk_positive_frac TensorBoard scalar).
-    risk_map_positive_weight: 3.0
-    risk_map_positive_weight_cap: 10.0
-    risk_map_positive_threshold: 0.0
-    risk_map_loss_type: smooth_l1
     use_distributional_aux: false
     distributional_quantiles:
     - 0.1
@@ -115,27 +106,5 @@ hyperparameters:
     # input's `extra`, which gets a fixed all-zero (batch,2) tensor instead
     # so the critic's input width never changes with stage).
     enable_from_stage: 3
-    # RISK_BALANCE: same conservative 3x/10x-cap rationale as
-    # aux_prediction.risk_map_positive_weight above, applied to this head's
-    # own (risk_dir, min_dist_dir) supervised loss.
-    pos_weight: 3.0
-    pos_weight_cap: 10.0
-    positive_threshold: 0.5
-    loss_type: smooth_l1
   critic_risk_input:
     enabled: true
-  # RISK_BALANCE (default OFF elsewhere, ON here): per-transition metadata +
-  # stratified aux/action-risk supervision sampling. The core TQC critic batch
-  # is ALWAYS the plain uniform/prioritized sample from LAP.sample() -- this
-  # block only changes which transitions feed the aux_prediction / action_
-  # risk_head SUPERVISED loss, never the critic or actor update.
-  replay_buffer:
-    risk_meta:
-      enabled: true
-      risk_positive_threshold: 0.5
-      human_risk_distance_m: 2.0
-    risk_balanced_sampling:
-      enabled: true
-      ratio_uniform: 0.5
-      ratio_human_risk: 0.25
-      ratio_collision: 0.25

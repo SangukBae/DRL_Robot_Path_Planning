@@ -3,5 +3,6 @@ sweep:
   name: paper_main
   profiles:
     - phase2/baseline
-    - phase2/both
+    - phase2/both_legacy
+    - phase2/both_trajrisk_rbs
   seeds: [0, 1, 2, 3, 4]

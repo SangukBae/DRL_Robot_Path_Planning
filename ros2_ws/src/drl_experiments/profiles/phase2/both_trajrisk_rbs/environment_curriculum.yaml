@@ -7,9 +7,6 @@ environment:
   num_of_humans: 7
   environment_state_dim: 80
   agent_state_dim: 7
-  gazebo_deterministic_stepping: true
-  gazebo_physics_step_size: 0.001
-  human_deterministic_stepping: false
   aux_prediction:
     enabled: true
     num_sectors: 16

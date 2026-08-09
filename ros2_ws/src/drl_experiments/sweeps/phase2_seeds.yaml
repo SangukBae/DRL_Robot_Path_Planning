@@ -8,5 +8,6 @@ sweep:
     - phase2/baseline
     - phase2/reward_shaping_only
     - phase2/action_risk_head_only
-    - phase2/both
+    - phase2/both_legacy
+    - phase2/both_trajrisk_rbs
   seeds: [0, 1, 2]

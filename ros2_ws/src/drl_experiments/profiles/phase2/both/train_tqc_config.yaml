@@ -7,7 +7,7 @@ train_settings:
   load_model: false
   use_checkpoints: false
   eval_freq: 12000
-  eval_eps: 20
+  eval_eps: 40
   timesteps_before_training: 12000
   updates_per_env_step: 1
   base_file_name: tqc_phase2_both

@@ -1,0 +1,96 @@
+hyperparameters:
+  discount: 0.99
+  batch_size: 256
+  buffer_size: 1000000
+  n_quantiles: 25
+  n_critics: 5
+  top_quantiles_to_drop_per_net: 2
+  tau: 0.005
+  target_update_interval: 1
+  ent_coef: auto_1.0
+  ent_coef_lr: 0.0003
+  actor_hdim: 256
+  actor_activ: relu
+  actor_lr: 0.0003
+  critic_hdim: 256
+  critic_activ: elu
+  critic_lr: 0.0003
+  critic_residual: false
+  critic_layernorm: false
+  critic_residual_blocks: 2
+  reset_weight: 0.9
+  steps_before_checkpointing: 40000
+  max_eps_when_checkpointing: 50
+  prioritized: false
+  alpha: 0.4
+  min_priority: 1.0
+  aux_prediction:
+    enabled: false
+    version: 1
+    encoder_hidden_dim: 256
+    latent_dim: 128
+    num_sectors: 16
+    horizons_sec:
+    - 0.5
+    - 1.0
+    - 1.5
+    loss_weight: 0.1
+    aux_beta_warmup_steps: 5000
+    stagewise_loss_schedule: []
+    min_distance_loss_weight: 0.1
+    use_distributional_aux: false
+    distributional_quantiles:
+    - 0.1
+    - 0.5
+    - 0.9
+    distributional_loss_weight: 0.5
+    aux_trunk_hidden_dim: 256
+    aux_trunk_layers: 2
+    aux_head_layernorm: true
+    action_conditioned_aux: false
+    action_conditioned_steps: 4
+    action_embed_dim: 64
+    action_condition_hidden_dim: 256
+    action_condition_attention: false
+    action_condition_attention_heads: 4
+    fusion_type: concat
+    ttc_head_enabled: false
+    ttc_horizon_sec: 3.0
+    ttc_loss_weight: 0.5
+    hazard_sector_head_enabled: false
+    hazard_sector_bins: 3
+    hazard_sector_loss_weight: 0.5
+    encoder_layernorm: false
+    temporal_enabled: false
+    temporal_mode: none
+    history_len: 4
+    temporal_context_dim: 64
+    temporal_attention: false
+    state_stack_len: 1
+  temporal_actor_context:
+    enabled: false
+    history_len: 4
+    temporal_feature_dim: 32
+    encoder_type: conv1d
+    stack_agent_state: false
+    stage_enable_from: 2
+  action_risk_head:
+    enabled: false
+    hidden_dim: 64
+    loss_weight: 0.1
+  critic_risk_input:
+    enabled: false
+  replay_buffer:
+    risk_meta:
+      enabled: false
+      risk_positive_threshold: 0.5
+      human_risk_distance_m: 2.0
+    risk_balanced_sampling:
+      enabled: false
+      ratio_uniform: 0.5
+      ratio_human_risk: 0.25
+      ratio_collision: 0.25
+  observation_normalization:
+    enabled: false
+  optimizer_groups:
+    enabled: false

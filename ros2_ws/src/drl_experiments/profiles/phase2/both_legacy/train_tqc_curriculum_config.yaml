@@ -15,9 +15,14 @@ curriculum_settings:
   # Curriculum is now 10 stages (0..9) → 9 promotable transitions (0→1 … 8→9).
   # curriculum_stage_logic clamps an out-of-range stage index to the LAST entry,
   # so a shorter list still runs without crashing.
-  # Evaluation runs 40 episodes, so rates are quantized in 1/40 = 2.5% steps.
-  # The collision caps permit 4/40 collisions at 0.10 or 0.12, 6/40 at 0.15,
-  # and 8/40 at 0.20.
+  # NOTE: eval runs 10 episodes, so collision_rate is quantized to 0.1 steps —
+  # 0.10 = "1 collision allowed", 0.20 = "2 collisions". Anything in 0.10–0.19 is
+  # the same bucket (1), 0.20–0.29 the same (2); gates are set on these breakpoints.
+  # Consequences of that quantization for the gates below:
+  #   • stage 3 collision 0.11→0.12 is notation-only (both = 1-collision bucket);
+  #     the REAL stage-3 relaxation is success 0.82→0.80 (9/10→8/10) + SPL 0.52→0.50.
+  #   • stages 3,4,5 (0.12,0.12,0.15) are ALL the 1-collision bucket; only stages
+  #     6–8 (0.20) actually allow 2 collisions.
   #   stage idx:               0     1     2     3     4     5     6     7     8
   pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.80, 0.80, 0.76, 0.74, 0.72, 0.70] # stage별 최소 성공률 gate
   pass_eval_collision_rate: [0.10, 0.10, 0.10, 0.12, 0.12, 0.15, 0.20, 0.20, 0.20] # stage별 최대 전체 충돌률 gate
@@ -44,8 +49,9 @@ curriculum_settings:
   pass_eval_per_map_success_rate: []    # 비우면 per-map success fail-fast 비활성
   pass_eval_per_map_collision_rate: []  # 비우면 per-map collision fail-fast 비활성
 
-  # One 40-episode evaluation replaces the old 20-episode x 2-consecutive gate.
-  consecutive_eval_passes: 1      # 한 번의 40-episode eval gate 통과로 승급
+  # How many consecutive evaluations must pass the threshold before promotion.
+  # Set to 1 for faster iteration, 2-3 for more conservative advancement.
+  consecutive_eval_passes: 2      # 연속 몇 번 eval gate를 통과해야 실제 승급할지
 
   # Replay-buffer reset on promotion INTO these stages. Only needed where the
   # normalized action / control contract CHANGES between stages (off-contract

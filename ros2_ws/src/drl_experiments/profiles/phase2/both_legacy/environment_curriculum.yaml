@@ -7,9 +7,6 @@ environment:
   num_of_humans: 7
   environment_state_dim: 80
   agent_state_dim: 7
-  gazebo_deterministic_stepping: true
-  gazebo_physics_step_size: 0.001
-  human_deterministic_stepping: false
   aux_prediction:
     enabled: true
     num_sectors: 16
@@ -138,18 +135,6 @@ environment:
     horizon_sec: 1.0
     risk_distance_scale: 3.0
     min_speed_for_motion: 0.05
-    # TRAJ_RISK: waypoint_yield's action-risk target (and risk_map_reward's
-    # selected-action term) uses the action-conditioned Ackermann swept-path
-    # rollout (same computation phase3/speed_steering uses), not the current-
-    # pose-only per-sector lookup. rollout_* MUST mirror hunter_se_gazebo/
-    # config/hunter_se_cmd_prefilter.yaml's accel_limit_mps2/brake_decel_mps2/
-    # steering_rate_deg_s exactly (see
-    # test_phase2_waypoint_trajectory_risk.py's config-consistency test).
-    waypoint_trajectory_risk_enabled: true
-    rollout_accel_limit_mps2: 6.0
-    rollout_brake_decel_mps2: 6.0
-    rollout_steering_rate_deg_s: 200.0
-    rollout_path_samples: 15
   risk_map_reward:
     enabled: true
     penalty_weight: 0.3

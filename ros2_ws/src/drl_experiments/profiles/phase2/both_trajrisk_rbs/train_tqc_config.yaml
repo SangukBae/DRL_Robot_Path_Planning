@@ -10,4 +10,4 @@ train_settings:
   eval_eps: 40
   timesteps_before_training: 12000
   updates_per_env_step: 1
-  base_file_name: tqc_phase2_obs_norm_optim_split
+  base_file_name: tqc_phase2_both_trajrisk_rbs

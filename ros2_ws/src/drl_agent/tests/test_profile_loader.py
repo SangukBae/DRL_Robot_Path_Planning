@@ -94,6 +94,7 @@ def test_available_profiles_lists_nested_names(tmp_path):
 
 _PHASE2 = ("phase2/baseline", "phase2/reward_shaping_only",
            "phase2/action_risk_head_only", "phase2/both",
+           "phase2/both_legacy", "phase2/both_trajrisk_rbs",
            # STAGE 8: isolated observation-normalization + optimizer-group
            # ablation profile (NOT merged into phase2/both).
            "phase2/obs_norm_optim_split")
