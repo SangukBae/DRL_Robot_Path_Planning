@@ -736,6 +736,34 @@ class Environment(
             bool(_arh.get("enabled", False)),
         )
 
+        # Optional privileged counterfactual labels.  Each configured normalized
+        # action is decoded with the exact same controller contract as a real
+        # action, then scored at every horizon from the current pre-step state.
+        _cf = dict(self.environment_config.get(
+            "counterfactual_multi_horizon_risk", {}) or {})
+        self.counterfactual_risk_env_enabled = bool(_cf.get("enabled", False))
+        self.counterfactual_risk_horizons = [
+            float(v) for v in _cf.get("horizons_sec", [0.5, 1.0, 1.5, 2.0])]
+        self.counterfactual_candidate_actions = [
+            list(map(float, row)) for row in _cf.get("candidate_actions", [])]
+        if self.counterfactual_risk_env_enabled:
+            if not self.counterfactual_risk_horizons or any(
+                    h <= 0.0 for h in self.counterfactual_risk_horizons):
+                raise RuntimeError(
+                    "counterfactual_multi_horizon_risk.horizons_sec must be "
+                    "non-empty and positive.")
+            if not self.counterfactual_candidate_actions or any(
+                    len(a) != self.action_dim
+                    for a in self.counterfactual_candidate_actions):
+                raise RuntimeError(
+                    "counterfactual_multi_horizon_risk.candidate_actions must "
+                    f"be a non-empty list of {self.action_dim}-D actions.")
+            if any(abs(v) > 1.0 for a in self.counterfactual_candidate_actions
+                   for v in a):
+                raise RuntimeError(
+                    "counterfactual candidate actions must be normalized to "
+                    "[-1, 1].")
+
         self.obstacle_wall_margin   = self.environment_config.get("obstacle_wall_margin",   1.0)
         self.obstacle_robot_margin  = self.environment_config.get("obstacle_robot_margin",  1.5)
         self.obstacle_goal_margin   = self.environment_config.get("obstacle_goal_margin",   1.5)
@@ -2378,7 +2406,8 @@ class Environment(
     # ====================================Ignition Finish===========================================
     # ----------------------------------------------------------------------------------------------
 
-    def _swept_path_risk(self, target_v, target_cmd_steering):
+    def _swept_path_risk(self, target_v, target_cmd_steering,
+                         horizon_sec=None, humans=None):
         """TRAJ_RISK: action-conditioned GLOBAL swept-path (risk, min_dist) for
         an arbitrary candidate command (target_v, target_cmd_steering), reused
         by both the speed_steering action mode and, when
@@ -2389,6 +2418,15 @@ class Environment(
         candidates) can call this directly with each candidate's own decoded
         (v, cmd_steering) without touching _compute_directional_risk's
         dispatch at all.
+
+        ``humans``: optional PRE-FETCHED list (same dict-per-human shape this
+        method would otherwise build itself under ``self._human_lock``). Pass
+        a snapshot taken once by the caller to avoid re-acquiring the lock and
+        rebuilding the list on every one of many rollouts against the SAME
+        pre-step state (see _compute_counterfactual_risk_targets, which
+        evaluates (candidates + the executed action) x horizons from one
+        snapshot). None (default) preserves the original single-call
+        behaviour used by _compute_directional_risk.
 
         The robot's trajectory is built by pure_pursuit.ackermann_swept_path
         from its CURRENT actual speed/steering (self.latest_actual_signed_
@@ -2411,14 +2449,17 @@ class Environment(
 
         Returns (risk, min_dist), both in [0, 1].
         """
-        with self._human_lock:
-            humans = [
-                {"x": s["x"], "y": s["y"],
-                 "yaw": s.get("yaw", 0.0), "v": s.get("v", 0.0)}
-                for s in self.human_states.values()
-            ]
+        if humans is None:
+            with self._human_lock:
+                humans = [
+                    {"x": s["x"], "y": s["y"],
+                     "yaw": s.get("yaw", 0.0), "v": s.get("v", 0.0)}
+                    for s in self.human_states.values()
+                ]
         cfg = self._directional_risk_cfg
-        horizon_sec = float(cfg.horizons_sec[0]) if cfg.horizons_sec else 0.0
+        horizon_sec = (
+            float(cfg.horizons_sec[0]) if horizon_sec is None and cfg.horizons_sec
+            else float(horizon_sec or 0.0))
         robot_path = pure_pursuit.ackermann_swept_path(
             self.latest_actual_signed_speed, self.latest_center_steering,
             target_v, target_cmd_steering, self.vehicle_wheelbase_m, horizon_sec,
@@ -2430,6 +2471,73 @@ class Environment(
         risk, min_dist = aux_labels.compute_action_conditioned_risk(
             humans, (self.gt_x, self.gt_y, self.gt_yaw), cfg, robot_path)
         return float(risk), float(min_dist)
+
+    def _decode_counterfactual_action(self, action):
+        """Decode a normalized candidate without publishing or mutating state."""
+        if self.action_mode == "speed_steering":
+            return pure_pursuit.speed_steering_action_to_command(
+                action, self.controller_cruise_speed_mps,
+                self.vehicle_steering_limit_rad)
+        if self.action_mode == "waypoint_yield":
+            v, steering, _theta, _ctl = pure_pursuit.hybrid_action_to_command(
+                action, self.actions_low, self.actions_high,
+                self.vehicle_wheelbase_m, self.vehicle_steering_limit_rad,
+                self.controller_cruise_speed_mps,
+                self.controller_speed_steer_factor,
+                yield_enabled=self.yield_action_enabled,
+                yield_threshold=self.yield_action_threshold,
+                lookahead_min_m=self.controller_lookahead_min_m,
+                v_move_min_mps=self.controller_v_move_min_mps,
+                yield_creep_speed_mps=self.controller_yield_creep_mps)
+            return v, steering
+        _r, _theta, x_wp, y_wp = self._map_action_to_waypoint(action)
+        return self._controller_waypoint_to_command(x_wp, y_wp)
+
+    def _compute_counterfactual_risk_targets(self, executed_v=None,
+                                             executed_cmd_steering=None):
+        """Return (fixed_candidate_targets, executed_action_target).
+
+        fixed_candidate_targets : (M, H) ndarray, swept-path closeness-risk
+            for each configured normalized candidate action, one column per
+            configured horizon -- unchanged semantics from before.
+        executed_action_target  : (H,) ndarray for the action ACTUALLY
+            executed this step (``executed_v``/``executed_cmd_steering``,
+            already decoded by the step callback's own controller-contract
+            dispatch -- NOT re-decoded here), or None when
+            ``executed_v`` is None.
+
+        Both share ONE human-state snapshot taken under self._human_lock --
+        previously each of the (candidates x horizons) rollouts re-acquired
+        the lock and rebuilt the humans list from scratch. Must be called
+        BEFORE propagate_state() (see the call site in
+        _step_callback_impl), same pre-step-state contract as
+        _compute_directional_risk.
+        """
+        with self._human_lock:
+            humans = [
+                {"x": s["x"], "y": s["y"],
+                 "yaw": s.get("yaw", 0.0), "v": s.get("v", 0.0)}
+                for s in self.human_states.values()
+            ]
+        rows = []
+        for action in self.counterfactual_candidate_actions:
+            target_v, target_steering = Environment._decode_counterfactual_action(
+                self, np.asarray(action, dtype=np.float32))
+            rows.append([
+                Environment._swept_path_risk(
+                    self, target_v, target_steering, horizon_sec=h,
+                    humans=humans)[0]
+                for h in self.counterfactual_risk_horizons
+            ])
+        executed_row = None
+        if executed_v is not None:
+            executed_row = np.asarray([
+                Environment._swept_path_risk(
+                    self, executed_v, executed_cmd_steering, horizon_sec=h,
+                    humans=humans)[0]
+                for h in self.counterfactual_risk_horizons
+            ], dtype=np.float32)
+        return np.asarray(rows, dtype=np.float32), executed_row
 
     def _compute_directional_risk(self, theta, target_v=0.0, target_cmd_steering=0.0):
         """PHASE2: pre-step GT risk for the action just decoded. Shared by
@@ -2487,7 +2595,9 @@ class Environment(
         sector = aux_labels.sector_index_for_theta(theta, cfg.num_sectors)
         return float(risk_row[sector]), float(min_dist_row[sector])
 
-    def _append_aux_labels(self, state_array, action_risk_target=None):
+    def _append_aux_labels(self, state_array, action_risk_target=None,
+                           counterfactual_risk_target=None,
+                           counterfactual_executed_target=None):
         """AUX_PRED: return state_array (list) with the privileged future-risk
         label appended.  When disabled, returns the plain state list so the
         wire format is identical to baseline.
@@ -2505,6 +2615,16 @@ class Environment(
         responses (no action has been taken yet at reset).
         """
         state_list = np.asarray(state_array, dtype=np.float32).ravel().tolist()
+        if (getattr(self, "counterfactual_risk_env_enabled", False)
+                and counterfactual_risk_target is not None):
+            state_list.extend(aux_labels.counterfactual_risk_wire(
+                counterfactual_risk_target,
+                self.counterfactual_risk_horizons))
+        if (getattr(self, "counterfactual_risk_env_enabled", False)
+                and counterfactual_executed_target is not None):
+            state_list.extend(aux_labels.executed_action_risk_wire(
+                counterfactual_executed_target,
+                self.counterfactual_risk_horizons))
         if self.action_risk_head_env_enabled and action_risk_target is not None:
             risk_dir, min_dist_dir = action_risk_target
             state_list.extend([
@@ -2681,6 +2801,11 @@ class Environment(
         if self.risk_map_reward_enabled or self.action_risk_head_env_enabled:
             action_risk_dir, action_risk_min_dist = self._compute_directional_risk(
                 theta, v, cmd_steering)
+        counterfactual_risk_target = None
+        counterfactual_executed_target = None
+        if self.counterfactual_risk_env_enabled:
+            counterfactual_risk_target, counterfactual_executed_target = (
+                self._compute_counterfactual_risk_targets(v, cmd_steering))
 
         # 2) Twist publish:
         #   linear.x  = speed from Pure Pursuit [m/s]
@@ -2951,7 +3076,10 @@ class Environment(
             (action_risk_dir, action_risk_min_dist)
             if action_risk_dir is not None else None
         )
-        response.state  = self._append_aux_labels(state, action_risk_target=_action_risk_target)
+        response.state = self._append_aux_labels(
+            state, action_risk_target=_action_risk_target,
+            counterfactual_risk_target=counterfactual_risk_target,
+            counterfactual_executed_target=counterfactual_executed_target)
         response.reward = float(reward)
         response.done   = bool(done)
         response.target = bool(target)

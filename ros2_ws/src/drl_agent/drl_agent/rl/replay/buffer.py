@@ -24,6 +24,8 @@ class LAP(object):
         aux_dim=0,
         track_traj=False,
         action_risk_dim=0,
+        counterfactual_risk_dim=0,
+        executed_action_risk_dim=0,
         store_risk_meta=False,
         risk_balanced_enabled=False,
         risk_balanced_ratios=(0.5, 0.25, 0.25),
@@ -82,6 +84,27 @@ class LAP(object):
         else:
             self.action_risk_target = None
 
+        # Optional fixed candidate x horizon counterfactual-risk labels.
+        self.counterfactual_risk_dim = int(counterfactual_risk_dim)
+        if self.counterfactual_risk_dim > 0:
+            self.counterfactual_risk_target = np.zeros(
+                (max_size, self.counterfactual_risk_dim), dtype=_dt)
+        else:
+            self.counterfactual_risk_target = None
+
+        # Optional per-transition multi-horizon target for the action ACTUALLY
+        # executed this step (as opposed to the fixed candidates above),
+        # aligned with `state`+`action` exactly like action_risk_target.
+        # executed_action_risk_dim == 0 keeps the buffer identical to
+        # baseline; it is only > 0 alongside counterfactual_risk_dim > 0
+        # (the two are enabled by the same config toggle).
+        self.executed_action_risk_dim = int(executed_action_risk_dim)
+        if self.executed_action_risk_dim > 0:
+            self.executed_action_risk_target = np.zeros(
+                (max_size, self.executed_action_risk_dim), dtype=_dt)
+        else:
+            self.executed_action_risk_target = None
+
         # RISK_BALANCE: optional fixed-width per-transition metadata (stage /
         # human-event / risk-positive / collision-or-near-collision flags), used
         # ONLY by risk-balanced sampling (get_last_aux / get_last_action_risk /
@@ -115,7 +138,9 @@ class LAP(object):
         self.normalize_actions = max_action if normalize_actions else 1
 
     def add(self, state, action, next_state, reward, done, aux_target=None,
-            traj_end=0.0, action_risk_target=None, risk_meta=None):
+            traj_end=0.0, action_risk_target=None,
+            counterfactual_risk_target=None, executed_action_risk_target=None,
+            risk_meta=None):
         self.state[self.ptr] = state
         self.action[self.ptr] = action / self.normalize_actions
         self.next_state[self.ptr] = next_state
@@ -148,6 +173,30 @@ class LAP(object):
                 n = min(self.action_risk_dim, a.shape[0])
                 row[:n] = a[:n]
             self.action_risk_target[self.ptr] = row
+
+        if self.counterfactual_risk_target is not None:
+            row = np.zeros(
+                self.counterfactual_risk_dim,
+                dtype=self.counterfactual_risk_target.dtype)
+            if counterfactual_risk_target is not None:
+                values = np.asarray(
+                    counterfactual_risk_target,
+                    dtype=self.counterfactual_risk_target.dtype).reshape(-1)
+                n = min(self.counterfactual_risk_dim, values.shape[0])
+                row[:n] = values[:n]
+            self.counterfactual_risk_target[self.ptr] = row
+
+        if self.executed_action_risk_target is not None:
+            row = np.zeros(
+                self.executed_action_risk_dim,
+                dtype=self.executed_action_risk_target.dtype)
+            if executed_action_risk_target is not None:
+                values = np.asarray(
+                    executed_action_risk_target,
+                    dtype=self.executed_action_risk_target.dtype).reshape(-1)
+                n = min(self.executed_action_risk_dim, values.shape[0])
+                row[:n] = values[:n]
+            self.executed_action_risk_target[self.ptr] = row
 
         # RISK_BALANCE: store the per-transition metadata aligned with `state`
         # (same zero-pad-on-missing contract as aux_target/action_risk_target).
@@ -362,6 +411,28 @@ class LAP(object):
             return None
         return torch.from_numpy(self.action_risk_target[ind]).to(self.device)
 
+    def get_last_counterfactual_risk(self, indices=None):
+        if self.counterfactual_risk_target is None:
+            return None
+        ind = self.ind if indices is None else indices
+        if ind is None:
+            return None
+        return torch.from_numpy(
+            self.counterfactual_risk_target[ind]).to(self.device)
+
+    def get_last_executed_action_risk(self, indices=None):
+        """Executed-action multi-horizon supervision targets for the given
+        indices (default: the indices from the last sample()). Returns a
+        (batch, executed_action_risk_dim) float tensor, or None when the
+        feature is disabled. Mirrors get_last_counterfactual_risk()."""
+        if self.executed_action_risk_target is None:
+            return None
+        ind = self.ind if indices is None else indices
+        if ind is None:
+            return None
+        return torch.from_numpy(
+            self.executed_action_risk_target[ind]).to(self.device)
+
     def get_last_future_actions(self, k_steps, indices=None):
         """AUX_PRED: future action sequence for the given indices (default: the
         last sample()'s indices).
@@ -494,6 +565,12 @@ class LAP(object):
         # PHASE2: persist the Action-Risk Head target (optional key).
         if self.action_risk_target is not None:
             save_kwargs["action_risk_target"] = self.action_risk_target[: self.size]
+        if self.counterfactual_risk_target is not None:
+            save_kwargs["counterfactual_risk_target"] = (
+                self.counterfactual_risk_target[: self.size])
+        if self.executed_action_risk_target is not None:
+            save_kwargs["executed_action_risk_target"] = (
+                self.executed_action_risk_target[: self.size])
         # RISK_BALANCE: persist per-transition metadata (optional key).
         if self.risk_meta is not None:
             save_kwargs["risk_meta"] = self.risk_meta[: self.size]
@@ -569,6 +646,29 @@ class LAP(object):
                     "(action_risk_head toggled/changed). Resume with "
                     "load_replay_buffer=False."
                 )
+        if self.counterfactual_risk_target is not None:
+            if "counterfactual_risk_target" not in d.files:
+                raise RuntimeError(
+                    "[buffer] replay checkpoint has no counterfactual-risk "
+                    "targets. Resume with load_replay_buffer=False.")
+            saved_cf_dim = int(d["counterfactual_risk_target"].shape[1])
+            if saved_cf_dim != self.counterfactual_risk_dim:
+                raise RuntimeError(
+                    f"[buffer] replay counterfactual_risk_dim={saved_cf_dim} "
+                    f"!= current dim={self.counterfactual_risk_dim}. Resume "
+                    "with load_replay_buffer=False.")
+        if self.executed_action_risk_target is not None:
+            if "executed_action_risk_target" not in d.files:
+                raise RuntimeError(
+                    "[buffer] replay checkpoint has no executed-action-risk "
+                    "targets (predates the executed-action multi-horizon "
+                    "target). Resume with load_replay_buffer=False.")
+            saved_ex_dim = int(d["executed_action_risk_target"].shape[1])
+            if saved_ex_dim != self.executed_action_risk_dim:
+                raise RuntimeError(
+                    f"[buffer] replay executed_action_risk_dim={saved_ex_dim} "
+                    f"!= current dim={self.executed_action_risk_dim}. Resume "
+                    "with load_replay_buffer=False.")
         meta = d["meta"].tolist()
         ptr, size = int(meta[0]), int(meta[1])
         # STAGE 7: explicit, logged float64 (or any other dtype) -> float32
@@ -597,6 +697,16 @@ class LAP(object):
             saved_ar = self._cast_loaded("action_risk_target", d["action_risk_target"])
             cols = min(self.action_risk_dim, saved_ar.shape[1])
             self.action_risk_target[: size, :cols] = saved_ar[: size, :cols]
+        if (self.counterfactual_risk_target is not None
+                and "counterfactual_risk_target" in d.files):
+            saved_cf = self._cast_loaded(
+                "counterfactual_risk_target", d["counterfactual_risk_target"])
+            self.counterfactual_risk_target[:size] = saved_cf[:size]
+        if (self.executed_action_risk_target is not None
+                and "executed_action_risk_target" in d.files):
+            saved_ex = self._cast_loaded(
+                "executed_action_risk_target", d["executed_action_risk_target"])
+            self.executed_action_risk_target[:size] = saved_ex[:size]
         # RISK_BALANCE: restore per-transition metadata when both sides carry
         # it. DELIBERATELY graceful (unlike traj_end/aux_dim/action_risk_dim
         # above, which fail-fast on a mismatch): an old checkpoint saved before

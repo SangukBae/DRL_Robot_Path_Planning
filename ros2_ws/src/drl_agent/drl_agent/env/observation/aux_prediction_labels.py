@@ -149,6 +149,157 @@ def aux_label_dim(cfg: dict) -> int:
 ACTION_RISK_WIRE_SENTINEL = -999.0
 ACTION_RISK_WIRE_LEN = 3   # [SENTINEL, risk_dir, min_dist_dir]
 
+# Optional counterfactual block, placed before ACTION_RISK_WIRE when present:
+# [SENTINEL, M, H, h_0..h_(H-1), risk(candidate_0,h_0)..risk(M-1,H-1)].
+# Candidate actions themselves are a validated env/agent config contract and do
+# not need to be repeated on every transition.
+COUNTERFACTUAL_RISK_WIRE_SENTINEL = -998.0
+
+# Optional executed-action multi-horizon block, placed right after the fixed-
+# candidate COUNTERFACTUAL_RISK_WIRE block (both share the same
+# counterfactual_multi_horizon_risk.enabled gate):
+# [SENTINEL, H, h_0..h_(H-1), risk_h0..risk_h(H-1)] -- ONE row (the action
+# actually executed this step), not (candidate, horizon) like the fixed
+# block. This is a PRIVILEGED training label (computed from the pre-motion
+# GT human/robot state, same as the fixed-candidate block) and must never be
+# fed to the policy -- EnvInterface strips it into a side channel
+# (last_counterfactual_executed_target), it never reaches the RL state.
+EXECUTED_ACTION_RISK_WIRE_SENTINEL = -997.0
+
+
+def counterfactual_risk_wire(target, horizons_sec):
+    arr = np.asarray(target, dtype=np.float32)
+    if arr.ndim != 2:
+        raise ValueError(
+            "counterfactual risk target must have shape (candidates, horizons)")
+    m, h = arr.shape
+    horizons = np.asarray(horizons_sec, dtype=np.float32).reshape(-1)
+    if h < 1 or m < 1 or horizons.shape[0] != h:
+        raise ValueError(
+            "counterfactual risk target/horizon dimensions are inconsistent")
+    return ([COUNTERFACTUAL_RISK_WIRE_SENTINEL, float(m), float(h)]
+            + horizons.tolist() + arr.reshape(-1).tolist())
+
+
+def strip_counterfactual_risk_wire(tail):
+    """Return ``(target, meta, remainder)`` for an optional CF risk block."""
+    arr = np.asarray(tail, dtype=np.float32).ravel()
+    if arr.shape[0] < 3 or float(arr[0]) != COUNTERFACTUAL_RISK_WIRE_SENTINEL:
+        return None, None, arr.copy()
+    m = int(round(float(arr[1])))
+    h = int(round(float(arr[2])))
+    header_len = 3 + h
+    total_len = header_len + m * h
+    if m < 1 or h < 1 or total_len > arr.shape[0]:
+        raise ValueError(
+            "malformed counterfactual risk wire: invalid candidate/horizon size")
+    horizons = [float(v) for v in arr[3:header_len]]
+    target = arr[header_len:total_len].reshape(m, h).copy()
+    meta = {"num_candidates": m, "num_horizons": h,
+            "horizons_sec": horizons}
+    return target, meta, arr[total_len:].copy()
+
+
+def executed_action_risk_wire(target_row, horizons_sec):
+    """Wire block for the EXECUTED action's own multi-horizon risk target.
+
+    ``target_row``: length-H sequence, the swept-path closeness risk of the
+    action actually decoded+published this step, one value per configured
+    horizon (same convention as counterfactual_risk_wire's per-row values).
+    """
+    arr = np.asarray(target_row, dtype=np.float32).reshape(-1)
+    horizons = np.asarray(horizons_sec, dtype=np.float32).reshape(-1)
+    if arr.shape[0] < 1 or arr.shape[0] != horizons.shape[0]:
+        raise ValueError(
+            "executed-action risk target/horizon dimensions are inconsistent")
+    return ([EXECUTED_ACTION_RISK_WIRE_SENTINEL, float(arr.shape[0])]
+            + horizons.tolist() + arr.tolist())
+
+
+def validate_executed_action_risk_target(target, expected_num_horizons):
+    """Validate + coerce a trainer-side executed-action risk target.
+
+    Called through the shared reader below by both TQC curriculum entry points,
+    so they apply one fail-fast implementation rather than maintaining
+    independent validation blocks. A wrong length would
+    otherwise silently truncate/zero-pad in buffer.add(); a NaN/Inf (e.g.
+    from a degenerate swept-path rollout) would poison the executed-action
+    supervised loss -- and, via the trunk optimizer step, the shared encoder
+    -- without ever raising.
+
+    Returns the validated float32 (H,) ndarray; raises RuntimeError on a
+    length mismatch or a non-finite value.
+    """
+    arr = np.asarray(target, dtype=np.float32).reshape(-1)
+    if arr.shape[0] != int(expected_num_horizons):
+        raise RuntimeError(
+            "executed-action risk target dimension mismatch: "
+            f"env={arr.shape[0]}, agent={int(expected_num_horizons)}")
+    if not np.all(np.isfinite(arr)):
+        raise RuntimeError("executed-action risk target contains NaN or Inf")
+    return arr
+
+
+def read_and_validate_counterfactual_risk_targets(trainer):
+    """Read one trainer step's CF side channels and validate their contract.
+
+    Both TQC curriculum entry points call this single helper with ``self``;
+    neither can independently select different metadata, horizon counts, or
+    side-channel fields.
+    """
+    fixed_target = trainer.last_counterfactual_risk_target
+    executed_target = trainer.last_counterfactual_executed_target
+
+    if not trainer.rl_agent.counterfactual_risk_enabled:
+        return fixed_target, executed_target
+
+    if fixed_target is None:
+        raise RuntimeError(
+            "counterfactual_multi_horizon_risk is enabled in the agent but "
+            "the env emitted no target. Enable the same block in "
+            "environment_curriculum.yaml.")
+
+    meta = trainer.last_counterfactual_risk_meta or {}
+    expected = trainer.rl_agent.counterfactual_risk_cfg
+    got_horizons = meta.get("horizons_sec", [])
+    if (int(meta.get("num_candidates", -1)) != expected.num_candidates
+            or int(meta.get("num_horizons", -1)) != expected.num_horizons
+            or len(got_horizons) != expected.num_horizons
+            or any(abs(a - b) > 1e-5 for a, b in zip(
+                got_horizons, expected.horizons_sec))):
+        raise RuntimeError(
+            "counterfactual risk env/agent contract mismatch: "
+            f"env={meta}, agent candidates={expected.num_candidates}, "
+            f"horizons={expected.horizons_sec}.")
+
+    if executed_target is None:
+        raise RuntimeError(
+            "counterfactual_multi_horizon_risk is enabled but the env emitted "
+            "no executed-action target this step "
+            "(last_counterfactual_executed_target is None). This should never "
+            "happen while the fixed-candidate target above IS present -- both "
+            "blocks are written by the same env-side call; check "
+            "environment_curriculum.yaml / EnvInterface wiring.")
+
+    executed_target = validate_executed_action_risk_target(
+        executed_target, expected.num_horizons)
+    return fixed_target, executed_target
+
+
+def strip_executed_action_risk_wire(tail):
+    """Return ``(target, remainder)`` for an optional executed-action block."""
+    arr = np.asarray(tail, dtype=np.float32).ravel()
+    if arr.shape[0] < 2 or float(arr[0]) != EXECUTED_ACTION_RISK_WIRE_SENTINEL:
+        return None, arr.copy()
+    h = int(round(float(arr[1])))
+    header_len = 2 + h
+    total_len = header_len + h
+    if h < 1 or total_len > arr.shape[0]:
+        raise ValueError(
+            "malformed executed-action risk wire: invalid horizon size")
+    target = arr[header_len:total_len].copy()
+    return target, arr[total_len:].copy()
+
 
 def strip_action_risk_wire(tail):
     """PHASE2: split an optional action-risk-head target off the FRONT of an

@@ -58,13 +58,16 @@ class ScanTemporalEncoder(nn.Module):
     """
 
     def __init__(self, history_len: int, obs_dim: int, feature_dim: int = 32,
-                 encoder_type: str = "conv1d", hidden: int = 128):
+                 encoder_type: str = "conv1d", hidden: int = 128,
+                 angular_tokens: int = 10, use_range_rate: bool = True):
         super().__init__()
         self.history_len = int(history_len)
         self.obs_dim = int(obs_dim)
         self.feature_dim = int(feature_dim)
         self.encoder_type = str(encoder_type)
         self.out_dim = self.feature_dim
+        self.angular_tokens = max(2, int(angular_tokens))
+        self.use_range_rate = bool(use_range_rate)
 
         if self.encoder_type == "mlp":
             # Flatten the (small) history and run a 2-layer MLP.
@@ -83,6 +86,26 @@ class ScanTemporalEncoder(nn.Module):
                 nn.AdaptiveAvgPool1d(1),
             )
             self.proj = nn.Linear(c, self.feature_dim)
+        elif self.encoder_type == "spatiotemporal":
+            # Keep TIME and SCAN ANGLE as distinct axes.  The old conv1d path
+            # treats time as channels and globally pools the angle axis to one
+            # scalar, which makes otherwise-identical left/right obstacle
+            # patterns indistinguishable.  Here Conv2d extracts local motion
+            # over (time, angle), while AdaptiveAvgPool2d retains an ORDERED
+            # sequence of angular tokens.  The optional first difference is a
+            # direct range-rate cue for approaching/receding obstacles.
+            in_channels = 2 if self.use_range_rate else 1
+            c = max(16, self.feature_dim)
+            self.st_conv = nn.Sequential(
+                nn.Conv2d(in_channels, c, kernel_size=(3, 5),
+                          padding=(1, 2)),
+                nn.ELU(),
+                nn.Conv2d(c, c, kernel_size=(3, 5), stride=(1, 2),
+                          padding=(1, 2)),
+                nn.ELU(),
+                nn.AdaptiveAvgPool2d((1, self.angular_tokens)),
+            )
+            self.proj = nn.Linear(c * self.angular_tokens, self.feature_dim)
         elif self.encoder_type == "gru":
             h = max(self.feature_dim, 32)
             self.gru = nn.GRU(self.obs_dim, h, batch_first=True)
@@ -90,7 +113,7 @@ class ScanTemporalEncoder(nn.Module):
         else:
             raise ValueError(
                 f"temporal_actor_context.encoder_type must be "
-                f"mlp|conv1d|gru (got {self.encoder_type!r})")
+                f"mlp|conv1d|spatiotemporal|gru (got {self.encoder_type!r})")
 
     def forward(self, scan_hist):
         if self.encoder_type == "mlp":
@@ -98,6 +121,14 @@ class ScanTemporalEncoder(nn.Module):
         if self.encoder_type == "conv1d":
             x = self.conv(scan_hist)                 # (B, c, 1)
             return F.elu(self.proj(x.squeeze(-1)))
+        if self.encoder_type == "spatiotemporal":
+            ranges = scan_hist.unsqueeze(1)          # (B, 1, T, O)
+            if self.use_range_rate:
+                delta = torch.zeros_like(scan_hist)
+                delta[:, 1:, :] = scan_hist[:, 1:, :] - scan_hist[:, :-1, :]
+                ranges = torch.cat([ranges, delta.unsqueeze(1)], dim=1)
+            x = self.st_conv(ranges)                  # (B, c, 1, tokens)
+            return F.elu(self.proj(x.flatten(1)))
         out, _ = self.gru(scan_hist)                 # (B, T, h)
         return F.elu(self.proj(out[:, -1]))          # last (newest) step
 
@@ -127,7 +158,8 @@ class TemporalFusionEncoder(nn.Module):
 
     def __init__(self, state_dim: int, obs_dim: int, agent_dim: int,
                  history_len: int, stack_agent_state: bool, aux_cfg,
-                 feature_dim: int = 32, encoder_type: str = "conv1d"):
+                 feature_dim: int = 32, encoder_type: str = "conv1d",
+                 angular_tokens: int = 10, use_range_rate: bool = True):
         super().__init__()
         self.state_dim = int(state_dim)
         self.obs_dim = int(obs_dim)
@@ -147,7 +179,8 @@ class TemporalFusionEncoder(nn.Module):
         self.main = SharedEncoder(self.current_dim, aux_cfg)
         ldim = self.main.out_dim
         self.temporal = ScanTemporalEncoder(
-            self.history_len, self.obs_dim, feature_dim, encoder_type)
+            self.history_len, self.obs_dim, feature_dim, encoder_type,
+            angular_tokens=angular_tokens, use_range_rate=use_range_rate)
         self.fusion = nn.Linear(ldim + self.temporal.out_dim, ldim)
         self.out_dim = ldim
         self.temporal_gain = 1.0

@@ -45,6 +45,7 @@ class ConfigValidator:
         if rep.errors:
             return rep  # unreadable configs — nothing further is meaningful
         self._check_action_risk_head_consistency(rep, docs)
+        self._check_counterfactual_and_spatiotemporal(rep, docs)
         self._check_risk_map_reward(rep, docs)
         self._check_continuous_control_reward(rep, docs)
         self._check_directional_risk_rollout_config(rep, docs)
@@ -97,6 +98,79 @@ class ConfigValidator:
             rep.errors.append(
                 f"profile declares action_risk_head_enabled={declared} but the config "
                 f"files say {env_arh} — fix the profile or the yamls")
+
+    def _check_counterfactual_and_spatiotemporal(self, rep, docs):
+        env_cfg = (docs.get("environment") or {}).get(
+            "environment", docs.get("environment") or {})
+        hp = (docs.get("hparams") or {}).get("hyperparameters", {}) or {}
+        env_cf = dict(env_cfg.get("counterfactual_multi_horizon_risk", {}) or {})
+        agent_cf = dict(hp.get("counterfactual_multi_horizon_risk", {}) or {})
+        env_on = bool(env_cf.get("enabled", False))
+        agent_on = bool(agent_cf.get("enabled", False))
+        rep.info["counterfactual_multi_horizon_risk.env_enabled"] = env_on
+        rep.info["counterfactual_multi_horizon_risk.agent_enabled"] = agent_on
+        if env_on != agent_on:
+            rep.errors.append(
+                "counterfactual_multi_horizon_risk.enabled mismatch: "
+                f"env={env_on} vs agent={agent_on}")
+
+        # horizon_weights is agent-only (no env-side counterpart -- it only
+        # feeds the actor-penalty aggregation, never an env computation), so
+        # this is validated unconditionally here rather than under the
+        # `env_on and agent_on` block below: a profile that keeps the CF
+        # block SYNCED with these keys but enabled=false (e.g. the baseline
+        # toggle profile) must still catch a malformed horizon_weights at
+        # --validate-only time instead of only failing much later at Agent
+        # construction. Mirrors CounterfactualRiskConfig's own "always-valid
+        # config regardless of enabled" policy.
+        agent_horizons = [float(x) for x in agent_cf.get("horizons_sec", [])]
+        if agent_cf.get("actor_risk_aggregation", "max") == "weighted_mean":
+            hw = agent_cf.get("horizon_weights", None)
+            if not hw:
+                rep.errors.append(
+                    "counterfactual_multi_horizon_risk.actor_risk_aggregation="
+                    "'weighted_mean' requires horizon_weights")
+            elif len(hw) != len(agent_horizons):
+                rep.errors.append(
+                    "counterfactual_multi_horizon_risk.horizon_weights length "
+                    f"({len(hw)}) must match horizons_sec length "
+                    f"({len(agent_horizons)})")
+            elif any(float(w) < 0.0 for w in hw):
+                rep.errors.append(
+                    "counterfactual_multi_horizon_risk.horizon_weights "
+                    "entries must all be >= 0")
+            elif sum(float(w) for w in hw) <= 0.0:
+                rep.errors.append(
+                    "counterfactual_multi_horizon_risk.horizon_weights must "
+                    "sum to > 0")
+
+        if env_on and agent_on:
+            env_h = [float(x) for x in env_cf.get("horizons_sec", [])]
+            agent_h = [float(x) for x in agent_cf.get("horizons_sec", [])]
+            env_a = env_cf.get("candidate_actions", [])
+            agent_a = agent_cf.get("candidate_actions", [])
+            if env_h != agent_h or env_a != agent_a:
+                rep.errors.append(
+                    "counterfactual env/agent horizons_sec and "
+                    "candidate_actions must match exactly")
+            action_dim = int(env_cfg.get("action_dim", 0) or 0)
+            if not env_h or any(h <= 0.0 for h in env_h):
+                rep.errors.append(
+                    "counterfactual horizons_sec must be non-empty/positive")
+            if not env_a or any(len(a) != action_dim for a in env_a):
+                rep.errors.append(
+                    "counterfactual candidate_actions must be non-empty and "
+                    f"each have action_dim={action_dim} values")
+
+        st = dict(hp.get("spatiotemporal_lidar", {}) or {})
+        st_on = bool(st.get("enabled", False))
+        temporal_on = bool(dict(hp.get("temporal_actor_context", {}) or {}).get(
+            "enabled", False))
+        rep.info["spatiotemporal_lidar.enabled"] = st_on
+        if st_on and not temporal_on:
+            rep.errors.append(
+                "spatiotemporal_lidar.enabled=true requires "
+                "temporal_actor_context.enabled=true")
 
     def _check_risk_map_reward(self, rep, docs):
         env_cfg = (docs.get("environment") or {}).get("environment", docs.get("environment") or {})
@@ -446,9 +520,16 @@ class ConfigValidator:
         traj_risk_enabled = bool(dr.get("waypoint_trajectory_risk_enabled", False))
         rbs = dict((hp.get("replay_buffer", {}) or {}).get("risk_balanced_sampling", {}) or {})
         risk_balanced_enabled = bool(rbs.get("enabled", False))
+        counterfactual_enabled = bool(dict(hp.get(
+            "counterfactual_multi_horizon_risk", {}) or {}).get(
+                "enabled", False))
+        spatiotemporal_enabled = bool(dict(hp.get(
+            "spatiotemporal_lidar", {}) or {}).get("enabled", False))
 
         rep.info["directional_risk.waypoint_trajectory_risk_enabled"] = traj_risk_enabled
         rep.info["replay_buffer.risk_balanced_sampling.enabled"] = risk_balanced_enabled
+        rep.info["counterfactual_multi_horizon_risk.enabled"] = counterfactual_enabled
+        rep.info["spatiotemporal_lidar.enabled"] = spatiotemporal_enabled
 
         if not resume:
             return
@@ -480,14 +561,31 @@ class ConfigValidator:
 
         saved_traj = bool(manifest.get("waypoint_trajectory_risk_enabled", False))
         saved_rbs = bool(manifest.get("risk_balanced_sampling_enabled", False))
-        if saved_traj != traj_risk_enabled or saved_rbs != risk_balanced_enabled:
+        saved_cf = bool(manifest.get(
+            "counterfactual_multi_horizon_risk_enabled", False))
+        saved_st = bool(manifest.get("spatiotemporal_lidar_enabled", False))
+        if ((counterfactual_enabled or spatiotemporal_enabled)
+                and ("counterfactual_multi_horizon_risk_enabled" not in manifest
+                     or "spatiotemporal_lidar_enabled" not in manifest)):
+            rep.errors.append(
+                "checkpoint manifest predates the counterfactual/spatiotemporal "
+                "architecture contract; start a fresh run when enabling either "
+                "feature")
+            return
+        if (saved_traj != traj_risk_enabled or saved_rbs != risk_balanced_enabled
+                or saved_cf != counterfactual_enabled
+                or saved_st != spatiotemporal_enabled):
             rep.errors.append(
                 "risk feature contract mismatch: profile requests "
                 f"waypoint_trajectory_risk_enabled={traj_risk_enabled}, "
-                f"risk_balanced_sampling_enabled={risk_balanced_enabled} but the "
+                f"risk_balanced_sampling_enabled={risk_balanced_enabled}, "
+                f"counterfactual={counterfactual_enabled}, "
+                f"spatiotemporal_lidar={spatiotemporal_enabled} but the "
                 f"checkpoint in {run_dir} was trained with "
                 f"waypoint_trajectory_risk_enabled={saved_traj}, "
-                f"risk_balanced_sampling_enabled={saved_rbs} — the replay/target "
+                f"risk_balanced_sampling_enabled={saved_rbs}, "
+                f"counterfactual={saved_cf}, spatiotemporal_lidar={saved_st} — "
+                "the replay/target "
                 "semantics differ. Start a fresh run (no -p resume:=true / --resume)."
             )
 

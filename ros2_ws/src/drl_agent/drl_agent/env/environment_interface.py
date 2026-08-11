@@ -56,6 +56,12 @@ class EnvInterface(Node):
         # reset()/step() -- (risk_dir, min_dist_dir) for the action that just
         # produced this response, or None (disabled / reset / no sentinel found).
         self.last_action_risk_target = None
+        self.last_counterfactual_risk_target = None
+        self.last_counterfactual_risk_meta = None
+        # Executed-action multi-horizon target (privileged; side channel only
+        # -- see _strip_executed_action_risk_target). Set on every
+        # reset()/step(); None on reset (no action taken yet).
+        self.last_counterfactual_executed_target = None
         # RISK_BALANCE: FULL-360 collision verdict + min distance from the
         # response of the most recent step() (see environment.py's
         # response.collision / response.min_obstacle_dist_m) -- the ground
@@ -83,6 +89,45 @@ class EnvInterface(Node):
         tail = arr[self._rl_state_dim:]
         target, remainder = _aux_labels.strip_action_risk_wire(tail)
         self.last_action_risk_target = target
+        if target is None:
+            return state
+        return np.concatenate([arr[: self._rl_state_dim], remainder])
+
+    def _strip_counterfactual_risk_target(self, state):
+        """Strip the optional variable-size counterfactual block first."""
+        if self._rl_state_dim is None:
+            self.last_counterfactual_risk_target = None
+            self.last_counterfactual_risk_meta = None
+            return state
+        arr = np.asarray(state, dtype=np.float32).ravel()
+        if arr.shape[0] <= self._rl_state_dim:
+            self.last_counterfactual_risk_target = None
+            self.last_counterfactual_risk_meta = None
+            return state
+        target, meta, remainder = _aux_labels.strip_counterfactual_risk_wire(
+            arr[self._rl_state_dim:])
+        self.last_counterfactual_risk_target = target
+        self.last_counterfactual_risk_meta = meta
+        if target is None:
+            return state
+        return np.concatenate([arr[: self._rl_state_dim], remainder])
+
+    def _strip_executed_action_risk_target(self, state):
+        """Strip the optional executed-action multi-horizon block, placed
+        right after the fixed-candidate counterfactual block on the wire
+        (see environment.py::_append_aux_labels). Side-channel only -- the
+        returned state never carries this block; the trainer reads it off
+        self.last_counterfactual_executed_target instead."""
+        if self._rl_state_dim is None:
+            self.last_counterfactual_executed_target = None
+            return state
+        arr = np.asarray(state, dtype=np.float32).ravel()
+        if arr.shape[0] <= self._rl_state_dim:
+            self.last_counterfactual_executed_target = None
+            return state
+        target, remainder = _aux_labels.strip_executed_action_risk_wire(
+            arr[self._rl_state_dim:])
+        self.last_counterfactual_executed_target = target
         if target is None:
             return state
         return np.concatenate([arr[: self._rl_state_dim], remainder])
@@ -179,7 +224,9 @@ class EnvInterface(Node):
         result = self._call_service(self.reset_client, Reset.Request(), "reset")
         # PHASE2: strip the action-risk block first (no-op — env never emits it
         # on /reset, no action has been taken yet), THEN the aux label tail.
-        state = self._strip_action_risk_target(result.state)
+        state = self._strip_counterfactual_risk_target(result.state)
+        state = self._strip_executed_action_risk_target(state)
+        state = self._strip_action_risk_target(state)
         # RISK_BALANCE: no step has happened yet this episode.
         self.last_collision = False
         self.last_min_obstacle_dist_m = float("inf")
@@ -195,7 +242,9 @@ class EnvInterface(Node):
         response = self._call_service(self.step_client, request, "step")
         # PHASE2: strip the action-risk block first (no-op when disabled), THEN
         # the aux label tail (order matters -- see _strip_action_risk_target).
-        state = self._strip_action_risk_target(response.state)
+        state = self._strip_counterfactual_risk_target(response.state)
+        state = self._strip_executed_action_risk_target(state)
+        state = self._strip_action_risk_target(state)
         # AUX_PRED: strip the appended label (no-op when aux disabled).
         state = self._strip_aux_label(state)
         # RISK_BALANCE: cache the FULL-360 collision/min-distance metadata

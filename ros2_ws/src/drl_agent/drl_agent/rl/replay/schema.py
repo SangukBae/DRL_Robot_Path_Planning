@@ -37,6 +37,16 @@ when its flag is off):
                        [stage, human_event, risk_positive, collision_or_near],
                        used only by risk-balanced sampling (never by the core
                        critic batch). Enabled by ``store_risk_meta=True``.
+  counterfactual_risk_target : (N, counterfactual_risk_dim)  fixed-candidate
+                       x horizon swept-path closeness-risk labels, aligned
+                       with ``state``. Enabled by ``counterfactual_risk_dim
+                       > 0``.
+  executed_action_risk_target : (N, executed_action_risk_dim)  multi-horizon
+                       swept-path closeness-risk labels for the action
+                       ACTUALLY executed this transition (as opposed to the
+                       fixed candidates above), aligned with ``state``+
+                       ``action``. Enabled by ``executed_action_risk_dim >
+                       0`` (only set alongside counterfactual_risk_dim > 0).
 
 Checkpoint layout (see ``LAP.save`` / ``LAP.load``):
 
@@ -77,6 +87,14 @@ OPTIONAL_FIELDS = (
     ReplayField("risk_meta", "risk_meta", "store_risk_meta", None,
                 "RISK_BALANCE [stage, human_event, risk_positive, "
                 "collision_or_near] metadata, used only by risk-balanced sampling"),
+    ReplayField("counterfactual_risk_target", "counterfactual_risk_target",
+                "counterfactual_risk_dim > 0", "counterfactual_risk_dim",
+                "fixed-candidate x horizon swept-path closeness-risk labels "
+                "aligned with state"),
+    ReplayField("executed_action_risk_target", "executed_action_risk_target",
+                "executed_action_risk_dim > 0", "executed_action_risk_dim",
+                "multi-horizon swept-path closeness-risk labels for the "
+                "action actually executed, aligned with state+action"),
 )
 
 #: Bookkeeping keys always present in the .npz checkpoint.
@@ -84,7 +102,8 @@ META_KEYS = ("meta", "max_priority")
 
 
 def expected_npz_keys(aux_dim=0, track_traj=False, action_risk_dim=0,
-                       store_risk_meta=False):
+                       store_risk_meta=False, counterfactual_risk_dim=0,
+                       executed_action_risk_dim=0):
     """Exact key set ``LAP.save`` writes for a buffer built with these flags."""
     keys = {f.npz_key for f in CORE_FIELDS} | set(META_KEYS)
     if int(aux_dim) > 0:
@@ -95,6 +114,10 @@ def expected_npz_keys(aux_dim=0, track_traj=False, action_risk_dim=0,
         keys.add("action_risk_target")
     if bool(store_risk_meta):
         keys.add("risk_meta")
+    if int(counterfactual_risk_dim) > 0:
+        keys.add("counterfactual_risk_target")
+    if int(executed_action_risk_dim) > 0:
+        keys.add("executed_action_risk_target")
     return keys
 
 
@@ -105,11 +128,16 @@ def describe_buffer(buf):
         "track_traj": getattr(buf, "traj_end", None) is not None,
         "action_risk_dim": int(getattr(buf, "action_risk_dim", 0) or 0),
         "store_risk_meta": getattr(buf, "risk_meta", None) is not None,
+        "counterfactual_risk_dim": int(
+            getattr(buf, "counterfactual_risk_dim", 0) or 0),
+        "executed_action_risk_dim": int(
+            getattr(buf, "executed_action_risk_dim", 0) or 0),
     }
 
 
 def validate_npz_keys(npz_files, aux_dim=0, track_traj=False, action_risk_dim=0,
-                       store_risk_meta=False):
+                       store_risk_meta=False, counterfactual_risk_dim=0,
+                       executed_action_risk_dim=0):
     """Check a saved checkpoint's key set against this schema.
 
     Parameters
@@ -118,6 +146,8 @@ def validate_npz_keys(npz_files, aux_dim=0, track_traj=False, action_risk_dim=0,
         ``numpy.load(path).files`` of the checkpoint.
     Returns ``(missing, unexpected)`` key sets — both empty on an exact match.
     """
-    expected = expected_npz_keys(aux_dim, track_traj, action_risk_dim, store_risk_meta)
+    expected = expected_npz_keys(
+        aux_dim, track_traj, action_risk_dim, store_risk_meta,
+        counterfactual_risk_dim, executed_action_risk_dim)
     actual = set(npz_files)
     return expected - actual, actual - expected

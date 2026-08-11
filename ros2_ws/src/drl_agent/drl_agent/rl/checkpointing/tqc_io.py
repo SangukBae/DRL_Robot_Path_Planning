@@ -19,6 +19,10 @@ def _obs_norm_manifest_path(directory, filename):
     return f"{directory}/{filename}_obs_norm_manifest.json"
 
 
+def _cf_state_path(directory, filename):
+    return f"{directory}/{filename}_cf_state.json"
+
+
 def save(agent, directory, filename):
     """Save model parameters (+ optimizers, entropy coef, replay buffer)."""
     os.makedirs(directory, exist_ok=True)
@@ -69,6 +73,15 @@ def save(agent, directory, filename):
                    f"{directory}/{filename}_action_risk_head.pth")
         torch.save(agent.action_risk_head_target.state_dict(),
                    f"{directory}/{filename}_action_risk_head_target.pth")
+    if getattr(agent, "counterfactual_risk_head", None) is not None:
+        torch.save(
+            agent.counterfactual_risk_head.state_dict(),
+            f"{directory}/{filename}_counterfactual_risk_head.pth")
+        # Actor-penalty warm-up/ramp counter: persisted so a resumed run
+        # continues its ramp instead of restarting from update 0.
+        with open(_cf_state_path(directory, filename), "w", encoding="utf-8") as f:
+            json.dump(
+                {"supervised_updates": int(agent._cf_supervised_updates)}, f)
 
     # Entropy coefficient
     if agent.ent_coef_auto:
@@ -357,6 +370,42 @@ def load(
                 "a run saved before action_risk_head was enabled); using a "
                 "freshly-initialised head."
             )
+
+    if getattr(agent, "counterfactual_risk_head", None) is not None:
+        p = f"{directory}/{filename}_counterfactual_risk_head.pth"
+        cf_state_p = _cf_state_path(directory, filename)
+        if os.path.exists(p):
+            fresh = copy.deepcopy(agent.counterfactual_risk_head.state_dict())
+            try:
+                agent.counterfactual_risk_head.load_state_dict(_torch_load(p))
+                if os.path.isfile(cf_state_p):
+                    with open(cf_state_p, "r", encoding="utf-8") as f:
+                        saved_cf_state = json.load(f)
+                    agent._cf_supervised_updates = int(
+                        saved_cf_state.get("supervised_updates", 0))
+                else:
+                    # Head loaded but predates the warm-up/ramp counter --
+                    # restart the ramp rather than guessing a count.
+                    agent._cf_supervised_updates = 0
+                    print(
+                        "[PHASE2] no counterfactual-risk warm-up/ramp state "
+                        "in this checkpoint (resuming a run saved before "
+                        "actor_penalty_warmup/ramp_updates was added); "
+                        "starting the counter at 0.")
+            except (RuntimeError, KeyError) as e:
+                agent.counterfactual_risk_head.load_state_dict(fresh)
+                agent.critic_optimizer = agent._make_critic_optimizer()
+                agent._cf_supervised_updates = 0
+                print(
+                    "[PHASE2] counterfactual-risk-head checkpoint is "
+                    "incompatible; using fresh head/optimizer state. "
+                    f"Details: {e}")
+        else:
+            agent.critic_optimizer = agent._make_critic_optimizer()
+            agent._cf_supervised_updates = 0
+            print(
+                "[PHASE2] checkpoint has no counterfactual-risk-head; using "
+                "a freshly-initialised head and optimizer state.")
 
     # Entropy coefficient
     if agent.ent_coef_auto:

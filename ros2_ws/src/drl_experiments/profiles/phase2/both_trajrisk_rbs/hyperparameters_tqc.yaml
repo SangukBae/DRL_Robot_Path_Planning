@@ -102,6 +102,13 @@ hyperparameters:
     encoder_type: conv1d
     stack_agent_state: false
     stage_enable_from: 2
+  # Independent toggle 1: preserves left/right angular location and explicit
+  # scan range-rate while encoding the 4-frame LiDAR history. false keeps the
+  # existing conv1d encoder/checkpoint contract unchanged.
+  spatiotemporal_lidar:
+    enabled: false
+    angular_tokens: 10
+    use_range_rate: true
   action_risk_head:
     enabled: true
     hidden_dim: 64
@@ -124,6 +131,45 @@ hyperparameters:
     loss_type: smooth_l1
   critic_risk_input:
     enabled: true
+  # Independent toggle 2: privileged simulator rollouts supervise seven
+  # alternative actions at four horizons; the learned head then supplies a
+  # direct differentiable risk penalty to the actor. Fresh training/replay is
+  # required when enabling it.
+  counterfactual_multi_horizon_risk:
+    enabled: false
+    horizons_sec: [0.5, 1.0, 1.5, 2.0]
+    # Normalized waypoint_yield actions: short/long × left/straight/right,
+    # plus yield. [range, angle, yield_channel]
+    candidate_actions:
+    - [-0.5, -1.0, -1.0]
+    - [-0.5, 0.0, -1.0]
+    - [-0.5, 1.0, -1.0]
+    - [0.5, -1.0, -1.0]
+    - [0.5, 0.0, -1.0]
+    - [0.5, 1.0, -1.0]
+    - [0.0, 0.0, 1.0]
+    hidden_dim: 128
+    loss_weight: 0.1
+    # Actor-penalty warm-up/ramp (kept in sync with both_trajrisk_rbs_cf_st
+    # even though this profile keeps the feature OFF, so toggling `enabled`
+    # alone is enough to A/B): 0 for the first 5000 CF SUPERVISED updates,
+    # then linear 0 -> actor_penalty_weight over the next 10000.
+    actor_penalty_weight: 0.1
+    actor_penalty_warmup_updates: 5000
+    actor_penalty_ramp_updates: 10000
+    # weighted_mean: nearer horizons dominate the actor penalty more than
+    # max's single-worst-horizon signal (which can over-trigger freezing).
+    actor_risk_aggregation: weighted_mean
+    horizon_weights: [0.4, 0.3, 0.2, 0.1]
+    # Executed-action supervision term weight (see agent.py's Agent.train()):
+    # fixed_candidate_loss + executed_action_loss_weight * executed_action_loss.
+    executed_action_loss_weight: 1.0
+    use_temporal_context: true
+    enable_from_stage: 3
+    pos_weight: 2.0
+    pos_weight_cap: 10.0
+    positive_threshold: 0.5
+    loss_type: smooth_l1
   # RISK_BALANCE (default OFF elsewhere, ON here): per-transition metadata +
   # stratified aux/action-risk supervision sampling. The core TQC critic batch
   # is ALWAYS the plain uniform/prioritized sample from LAP.sample() -- this

@@ -49,15 +49,16 @@ curriculum_settings:
 
   # Replay-buffer reset on promotion INTO these stages. Only needed where the
   # normalized action / control contract CHANGES between stages (off-contract
-  # transitions would otherwise poison the critic). The curriculum now uses ONE
-  # stop-capable contract from Stage 0 through the final stage — no stage changes
-  # action semantics — so NO stage needs a reset. Stage 3 is now just the
-  # first-human stage, not a contract boundary.
-  # Empty list → never reset (the current, correct behaviour). Keep the mechanism
-  # available in case a future curriculum reintroduces a contract-changing stage.
-  # Stage 5 (add_clutter_clean) UNSEALS the yield channel (action[2] goes from
-  # no-op to honoured), so the control contract changes there — reset the buffer
-  # so off-contract (yield-inactive) transitions don't poison the critic.
+  # transitions would otherwise poison the critic). Stage 3 is just the
+  # first-human stage, not a contract boundary. Stage 5 (add_clutter_clean)
+  # UNSEALS the yield channel (action[2] goes from no-op to honoured), so the
+  # control contract changes there — reset the buffer so off-contract
+  # (yield-inactive) transitions don't poison the critic.
+  # This reset also re-arms the CF actor-penalty warm-up/ramp (Agent.
+  # reset_counterfactual_penalty_schedule(), called unconditionally right
+  # after replay_buffer.reset() -- a no-op here since counterfactual_multi_
+  # horizon_risk.enabled=false in this profile, but keeps this file diffable
+  # against both_trajrisk_rbs_cf_st where it matters).
   reset_buffer_on_promote_to: [5]  # yield 해제 stage에서 buffer reset
   # Random-action re-warmup steps AFTER a buffer reset (no gradient updates), so
   # the buffer refills with on-contract (yield-capable) data before training.

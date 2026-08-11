@@ -29,6 +29,17 @@ def test_expected_keys_all_optional():
     assert {"aux_target", "traj_end", "action_risk_target"} <= keys
 
 
+def test_expected_keys_counterfactual_and_executed_action():
+    keys = schema.expected_npz_keys(
+        counterfactual_risk_dim=14, executed_action_risk_dim=2)
+    assert {"counterfactual_risk_target", "executed_action_risk_target"} <= keys
+    # executed_action_risk_dim == 0 (CF off) leaves both keys absent -- the
+    # buffer stays byte-identical to a pre-CF checkpoint.
+    off_keys = schema.expected_npz_keys()
+    assert "counterfactual_risk_target" not in off_keys
+    assert "executed_action_risk_target" not in off_keys
+
+
 def test_validate_npz_keys_reports_missing_and_unexpected():
     missing, unexpected = schema.validate_npz_keys(
         ["state", "action", "bogus"], track_traj=True)
@@ -37,21 +48,35 @@ def test_validate_npz_keys_reports_missing_and_unexpected():
 
 
 @pytest.mark.skipif(not _HAVE_TORCH, reason="torch not installed")
-@pytest.mark.parametrize("aux_dim,track_traj,action_risk_dim", [
-    (0, False, 0),
-    (3, True, 2),
-])
-def test_lap_save_matches_schema(tmp_path, aux_dim, track_traj, action_risk_dim):
+@pytest.mark.parametrize(
+    "aux_dim,track_traj,action_risk_dim,counterfactual_risk_dim,"
+    "executed_action_risk_dim",
+    [
+        (0, False, 0, 0, 0),
+        (3, True, 2, 0, 0),
+        (0, False, 0, 14, 2),
+    ],
+)
+def test_lap_save_matches_schema(tmp_path, aux_dim, track_traj, action_risk_dim,
+                                 counterfactual_risk_dim, executed_action_risk_dim):
     buf = LAP(state_dim=5, action_dim=2, device=torch.device("cpu"), max_size=32,
               batch_size=4, prioritized=True, aux_dim=aux_dim,
-              track_traj=track_traj, action_risk_dim=action_risk_dim)
+              track_traj=track_traj, action_risk_dim=action_risk_dim,
+              counterfactual_risk_dim=counterfactual_risk_dim,
+              executed_action_risk_dim=executed_action_risk_dim)
     rng = np.random.default_rng(0)
     for _ in range(6):
         buf.add(rng.normal(size=5), rng.normal(size=2), rng.normal(size=5),
                 0.5, 0.0,
                 aux_target=(rng.normal(size=aux_dim) if aux_dim else None),
                 action_risk_target=(rng.normal(size=action_risk_dim)
-                                    if action_risk_dim else None))
+                                    if action_risk_dim else None),
+                counterfactual_risk_target=(
+                    rng.normal(size=counterfactual_risk_dim)
+                    if counterfactual_risk_dim else None),
+                executed_action_risk_target=(
+                    rng.normal(size=executed_action_risk_dim)
+                    if executed_action_risk_dim else None))
     buf.mark_last_traj_end()
     prefix = str(tmp_path / "rb")
     buf.save(prefix)
@@ -64,7 +89,9 @@ def test_lap_save_matches_schema(tmp_path, aux_dim, track_traj, action_risk_dim)
     # Round-trip into an identically-configured buffer preserves contents.
     buf2 = LAP(state_dim=5, action_dim=2, device=torch.device("cpu"), max_size=32,
                batch_size=4, prioritized=True, aux_dim=aux_dim,
-               track_traj=track_traj, action_risk_dim=action_risk_dim)
+               track_traj=track_traj, action_risk_dim=action_risk_dim,
+               counterfactual_risk_dim=counterfactual_risk_dim,
+               executed_action_risk_dim=executed_action_risk_dim)
     assert buf2.load(prefix) is True
     assert buf2.size == buf.size and buf2.ptr == buf.ptr
     np.testing.assert_allclose(buf2.state[:buf2.size], buf.state[:buf.size])
@@ -72,3 +99,7 @@ def test_lap_save_matches_schema(tmp_path, aux_dim, track_traj, action_risk_dim)
     if track_traj:
         np.testing.assert_allclose(buf2.traj_end[:buf2.size],
                                    buf.traj_end[:buf.size])
+    if executed_action_risk_dim:
+        np.testing.assert_allclose(
+            buf2.executed_action_risk_target[:buf2.size],
+            buf.executed_action_risk_target[:buf.size])

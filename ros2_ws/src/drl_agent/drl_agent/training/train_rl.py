@@ -71,7 +71,10 @@ from drl_agent.training.dynamic_avoidance_log import (
 )
 import drl_agent.common.pure_pursuit as pure_pursuit
 # AUX_PRED: expected wire-format version for the env<->agent label contract.
-from drl_agent.env.observation.aux_prediction_labels import AUX_WIRE_VERSION
+from drl_agent.env.observation.aux_prediction_labels import (
+    AUX_WIRE_VERSION,
+    read_and_validate_counterfactual_risk_targets,
+)
 # AUX_ABLATION: run-identity / ablation logging helpers.
 import drl_agent.training.aux_ablation_logging as aux_log
 # RUN_LAYOUT: per-run runtime/experiments/<run_id>/ directory structure.
@@ -405,6 +408,10 @@ class TrainTQCCurriculum(
             manifest["risk_balanced_sampling_enabled"] = bool(
                 getattr(self.rl_agent, "risk_balanced_enabled", False)
             )
+            manifest["counterfactual_multi_horizon_risk_enabled"] = bool(
+                getattr(self.rl_agent, "counterfactual_risk_enabled", False))
+            manifest["spatiotemporal_lidar_enabled"] = bool(
+                getattr(self.rl_agent, "spatiotemporal_lidar_enabled", False))
             with open(path, "w") as f:
                 json.dump(manifest, f, indent=2)
         except Exception as e:
@@ -540,10 +547,9 @@ class TrainTQCCurriculum(
         self.cur_consec_passes   = int(cur.get("consecutive_eval_passes", 2))
         # Replay-buffer reset on promotion INTO a stage whose normalized action /
         # control contract DIFFERS from the previous stage's (old transitions would
-        # otherwise poison the critic; clearing + re-warming avoids that). The
-        # current curriculum uses ONE stop-capable contract from Stage 0 onward, so
-        # no stage changes semantics and this list is EMPTY (never reset). The
-        # mechanism is kept generic in case a contract-changing stage is re-added.
+        # otherwise poison the critic; clearing + re-warming avoids that). Phase2
+        # currently lists stage 5 because it unseals the yield action channel;
+        # profiles with one stable action contract may leave the list empty.
         # rewarmup_steps random-action steps refill the buffer with on-contract data
         # before gradient updates resume.
         self.cur_reset_buffer_stages = set(
@@ -1247,6 +1253,9 @@ class TrainTQCCurriculum(
             # last_aux_label it needs no cur/next carry-over, just read straight
             # off EnvInterface for this same step() call (None when disabled).
             action_risk_target = self.last_action_risk_target
+            (counterfactual_risk_target,
+             executed_action_risk_target) = (
+                read_and_validate_counterfactual_risk_targets(self))
             # PHASE2 fail-fast: when this agent expects a supervision target
             # (hyperparameters_tqc.yaml action_risk_head.enabled=true) but the
             # env never emitted one this step, the buffer would otherwise
@@ -1269,7 +1278,6 @@ class TrainTQCCurriculum(
                     "Refusing to silently train the head toward an all-zero "
                     "target."
                 )
-
             # Timeout penalty (same as base class)
             if ep_timesteps == self.max_episode_steps - 1 and not ep_finished:
                 reward -= 20.0
@@ -1287,6 +1295,8 @@ class TrainTQCCurriculum(
                 state, action, next_state, reward, done,
                 aux_target=self._aux_label_cur,
                 action_risk_target=action_risk_target,
+                counterfactual_risk_target=counterfactual_risk_target,
+                executed_action_risk_target=executed_action_risk_target,
                 risk_meta=risk_meta,
             )
             self._aux_label_cur = self._aux_label_next
@@ -1477,7 +1487,7 @@ class TrainTQCCurriculum(
                             # switched stages. Otherwise the trainer would reset
                             # its buffer / re-warmup while the env stays on the old
                             # contract — a silent desync. (No-op unless a
-                            # contract-changing stage is configured; currently none.)
+                            # contract-changing stage is configured.)
                             if not self._set_curriculum_stage(new_stage):
                                 raise RuntimeError(
                                     f"[Curriculum] Failed to push stage {new_stage} to "
@@ -1490,12 +1500,25 @@ class TrainTQCCurriculum(
                             self._consecutive_pass_count = 0
                             # Contract-changing boundary: clear the buffer so
                             # off-contract data does not poison the new stage's
-                            # critic. Reset is gated ONLY by the stage list, which is
-                            # EMPTY in the current single-contract curriculum, so this
-                            # branch does not run; rewarmup_steps controls just the
-                            # re-warmup length (0 → reset only, resume immediately).
+                            # critic. Reset is gated by cur_reset_buffer_stages
+                            # (reset_buffer_on_promote_to in the curriculum
+                            # config) -- currently [5] for the phase2/
+                            # both_trajrisk_rbs(_cf_st) family, where stage 5
+                            # unseals the yield channel; empty for profiles
+                            # whose curriculum never changes the action/
+                            # control contract. rewarmup_steps controls the
+                            # re-warmup length (0 → reset only, resume
+                            # immediately).
                             if new_stage in self.cur_reset_buffer_stages:
-                                self.rl_agent.replay_buffer.reset()
+                                self.rl_agent.reset_replay_for_action_contract_change()
+                                # CF actor-penalty warm-up/ramp is keyed off
+                                # supervised-update COUNT, not wall-clock step
+                                # -- a buffer reset throws away everything the
+                                # head was supervised on, so the penalty must
+                                # re-earn trust against the post-reset (on-
+                                # contract) data instead of applying full
+                                # weight immediately from a counter left over
+                                # from the OLD contract. No-op when CF is off.
                                 if self.cur_rewarmup_steps > 0:
                                     self._rewarmup_until_t = t + self.cur_rewarmup_steps
                                     self.get_logger().info(

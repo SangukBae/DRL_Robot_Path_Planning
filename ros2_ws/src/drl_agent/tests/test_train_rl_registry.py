@@ -248,3 +248,24 @@ def test_arg_parser_ignores_ros_args_tail():
     proc = _run_snippet(code)
     assert proc.returncode == 0, proc.stderr
     assert "OK" in proc.stdout
+
+
+def test_train_rl_and_train_tqc_curriculum_share_cf_contract_helpers():
+    """Both entry points delegate validation and reset to the same helpers."""
+    code = (
+        "import inspect\n"
+        "import drl_agent.training.train_rl as train_rl\n"
+        "import drl_agent.training.train_tqc_curriculum as train_tqc_curriculum\n"
+        "assert (train_rl.read_and_validate_counterfactual_risk_targets\n"
+        "        is train_tqc_curriculum.read_and_validate_counterfactual_risk_targets)\n"
+        "src_rl = inspect.getsource(train_rl.TrainTQCCurriculum.train_online)\n"
+        "src_tqc = inspect.getsource(train_tqc_curriculum.TrainTQCCurriculum.train_online)\n"
+        "for src in (src_rl, src_tqc):\n"
+        "    assert 'read_and_validate_counterfactual_risk_targets(self)' in src\n"
+        "    assert 'self.rl_agent.reset_replay_for_action_contract_change()' in src\n"
+        "    assert 'reset_counterfactual_penalty_schedule()' not in src\n"
+        "print('OK')\n"
+    )
+    proc = _run_snippet(code)
+    assert proc.returncode == 0, proc.stderr
+    assert "OK" in proc.stdout

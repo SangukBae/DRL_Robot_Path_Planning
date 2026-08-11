@@ -128,6 +128,203 @@ class ActionRiskHead(nn.Module):
         return pred  # (B, 2): [:, 0] = risk_dir, [:, 1] = min_dist_dir
 
 
+class CounterfactualRiskConfig:
+    """Configuration for the optional multi-horizon counterfactual head.
+
+    The environment evaluates the fixed normalized ``candidate_actions`` from
+    the same pre-step state.  The head learns those labels and can then score
+    the actor's continuous action directly, including actions between the
+    fixed candidates.
+    """
+
+    def __init__(self, cfg: dict = None):
+        cfg = dict(cfg or {})
+        self.enabled = bool(cfg.get("enabled", False))
+        self.horizons_sec = [float(v) for v in cfg.get(
+            "horizons_sec", [0.5, 1.0, 1.5, 2.0])]
+        self.candidate_actions = [list(map(float, row)) for row in cfg.get(
+            "candidate_actions", [])]
+        self.hidden_dim = int(cfg.get("hidden_dim", 128))
+        self.loss_weight = float(cfg.get("loss_weight", 0.1))
+        self.actor_penalty_weight = float(cfg.get("actor_penalty_weight", 0.2))
+        self.actor_risk_aggregation = str(
+            cfg.get("actor_risk_aggregation", "max")).strip().lower()
+        self.use_temporal_context = bool(cfg.get("use_temporal_context", True))
+        self.enable_from_stage = int(cfg.get("enable_from_stage", 3))
+        self.positive_threshold = float(cfg.get("positive_threshold", 0.5))
+        self.pos_weight_cap = float(cfg.get("pos_weight_cap", 10.0))
+        raw_pos_weight = float(cfg.get("pos_weight", 1.0))
+        self.pos_weight = (
+            min(raw_pos_weight, self.pos_weight_cap)
+            if raw_pos_weight > 0.0 else 1.0)
+        self.loss_type = str(cfg.get("loss_type", "smooth_l1")).strip().lower()
+        # Actor-penalty warm-up/ramp: the head starts randomly initialised, so
+        # applying its (untrained) prediction as a direct actor penalty from
+        # the very first supervised update risks steering the actor off a
+        # noisy signal. actor_penalty_warmup_updates counts of CF SUPERVISED
+        # updates (not train() calls / env steps -- see Agent.train()) during
+        # which the effective penalty weight is held at 0; the following
+        # actor_penalty_ramp_updates then linearly ramp 0 -> actor_penalty_
+        # weight; after that the full configured weight applies. Both default
+        # 0 -> byte-identical to the pre-ramp behaviour (full weight from the
+        # first supervised update).
+        self.actor_penalty_warmup_updates = int(
+            cfg.get("actor_penalty_warmup_updates", 0))
+        self.actor_penalty_ramp_updates = int(
+            cfg.get("actor_penalty_ramp_updates", 0))
+        if self.actor_penalty_warmup_updates < 0:
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.actor_penalty_warmup_"
+                "updates must be >= 0.")
+        if self.actor_penalty_ramp_updates < 0:
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.actor_penalty_ramp_"
+                "updates must be >= 0.")
+        # Executed-action supervision: in addition to the fixed candidates,
+        # the head is also trained on the REPLAY-stored action actually
+        # executed (against its own multi-horizon target) -- this weight
+        # scales that second loss term relative to the fixed-candidate one.
+        self.executed_action_loss_weight = float(
+            cfg.get("executed_action_loss_weight", 1.0))
+        if self.executed_action_loss_weight < 0.0:
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.executed_action_loss_"
+                "weight must be >= 0.")
+        if not self.horizons_sec or any(h <= 0.0 for h in self.horizons_sec):
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.horizons_sec must contain "
+                "one or more positive values.")
+        if self.actor_risk_aggregation not in ("max", "mean", "weighted_mean"):
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.actor_risk_aggregation "
+                "must be 'max', 'mean' or 'weighted_mean'.")
+        if self.loss_type not in ("mse", "smooth_l1"):
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.loss_type must be 'mse' "
+                "or 'smooth_l1'.")
+        # weighted_mean aggregation: nearer horizons can be weighted more
+        # heavily than far ones (unlike 'max', which lets a single distant,
+        # noisy horizon dominate and can over-trigger freezing). Validated
+        # (and normalized to sum to 1) regardless of whether aggregation is
+        # actually 'weighted_mean' this run, same "always-valid config" policy
+        # as horizons_sec/loss_type above -- a profile with the block synced
+        # but the feature off must still parse cleanly.
+        raw_weights = cfg.get("horizon_weights", None)
+        self.horizon_weights = None
+        if raw_weights is not None:
+            w = [float(v) for v in raw_weights]
+            if len(w) != self.num_horizons:
+                raise ValueError(
+                    "counterfactual_multi_horizon_risk.horizon_weights length "
+                    f"({len(w)}) must match horizons_sec length "
+                    f"({self.num_horizons}).")
+            if any(x < 0.0 for x in w):
+                raise ValueError(
+                    "counterfactual_multi_horizon_risk.horizon_weights "
+                    "entries must all be >= 0.")
+            s = sum(w)
+            if s <= 0.0:
+                raise ValueError(
+                    "counterfactual_multi_horizon_risk.horizon_weights must "
+                    "sum to > 0.")
+            self.horizon_weights = [x / s for x in w]
+        elif self.actor_risk_aggregation == "weighted_mean":
+            raise ValueError(
+                "counterfactual_multi_horizon_risk.actor_risk_aggregation="
+                "'weighted_mean' requires horizon_weights.")
+
+    @property
+    def num_horizons(self):
+        return len(self.horizons_sec)
+
+    @property
+    def num_candidates(self):
+        return len(self.candidate_actions)
+
+    @property
+    def target_dim(self):
+        return self.num_candidates * self.num_horizons
+
+    def effective_actor_penalty_weight(self, n_supervised_updates: int) -> float:
+        """Warm-up/ramp schedule, a pure function of the number of CF
+        SUPERVISED updates that have actually run (see Agent.train() --
+        never a step where the head had no target to train on).
+
+        - n <= actor_penalty_warmup_updates              -> 0.0
+        - the following actor_penalty_ramp_updates       -> linear 0 -> weight
+        - after that                                     -> actor_penalty_weight
+
+        actor_penalty_ramp_updates == 0 skips straight from warm-up to the
+        full weight (no ramp segment). Both knobs default 0, so the default
+        schedule is the original "full weight from update 1" behaviour.
+        """
+        n = int(n_supervised_updates)
+        if n <= self.actor_penalty_warmup_updates:
+            return 0.0
+        ramp = self.actor_penalty_ramp_updates
+        if ramp <= 0:
+            return self.actor_penalty_weight
+        progress = (n - self.actor_penalty_warmup_updates) / float(ramp)
+        if progress >= 1.0:
+            return self.actor_penalty_weight
+        return self.actor_penalty_weight * progress
+
+
+class CounterfactualMultiHorizonRiskHead(nn.Module):
+    """Predict one swept-path closeness risk per configured future horizon."""
+
+    def __init__(self, latent_dim: int, action_dim: int,
+                 cfg: CounterfactualRiskConfig, temporal_dim: int = 0):
+        super().__init__()
+        self.temporal_dim = int(temporal_dim)
+        self.num_horizons = int(cfg.num_horizons)
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim + self.temporal_dim + action_dim,
+                      cfg.hidden_dim),
+            nn.ELU(),
+            nn.Linear(cfg.hidden_dim, cfg.hidden_dim),
+            nn.ELU(),
+            nn.Linear(cfg.hidden_dim, self.num_horizons),
+        )
+
+    def forward(self, z, action, temporal_feature=None):
+        parts = [z]
+        if self.temporal_dim > 0:
+            if temporal_feature is None:
+                raise RuntimeError(
+                    "CounterfactualMultiHorizonRiskHead requires the actor's "
+                    "temporal feature, but forward() received None.")
+            parts.append(temporal_feature)
+        parts.append(action)
+        return torch.sigmoid(self.net(torch.cat(parts, dim=-1)))
+
+
+def weighted_counterfactual_risk_loss(pred, target,
+                                      cfg: CounterfactualRiskConfig):
+    """Rare-risk-weighted regression over all candidate/horizon labels."""
+    elementwise = (
+        F.smooth_l1_loss(pred, target, reduction="none")
+        if cfg.loss_type == "smooth_l1"
+        else F.mse_loss(pred, target, reduction="none")
+    )
+    positive = target > cfg.positive_threshold
+    if cfg.pos_weight != 1.0:
+        weights = torch.where(
+            positive, torch.full_like(target, cfg.pos_weight),
+            torch.ones_like(target))
+        loss = (weights * elementwise).mean()
+    else:
+        loss = elementwise.mean()
+    with torch.no_grad():
+        logs = {
+            "counterfactual_risk/positive_fraction":
+                float(positive.float().mean().item()),
+            "counterfactual_risk/mean_prediction":
+                float(pred.mean().item()),
+        }
+    return loss, logs
+
+
 def weighted_action_risk_loss(pred, target, cfg: ActionRiskConfig):
     """RISK_BALANCE: supervised loss for the Action-Risk Head's (risk_dir,
     min_dist_dir) prediction, with optional up-weighting of positive-risk

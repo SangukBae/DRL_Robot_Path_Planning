@@ -30,6 +30,8 @@ from drl_agent.rl.networks.aux_temporal import TemporalFusionEncoder
 # action_risk_head.py's module docstring for the gradient rule.
 from drl_agent.rl.networks.action_risk_head import (
     ActionRiskConfig, ActionRiskHead, weighted_action_risk_loss,
+    CounterfactualRiskConfig, CounterfactualMultiHorizonRiskHead,
+    weighted_counterfactual_risk_loss,
 )
 
 # STAGE 8: fixed physical-range observation normalization (ISOLATED
@@ -271,6 +273,16 @@ class Agent(object):
         self.temporal_stage_enable_from = int(tcfg.get("stage_enable_from", 0))
         self.current_stage = 0
 
+        # Independent architecture switch: replace only the scan-history
+        # compressor while keeping TemporalFusionEncoder's public/output
+        # contract unchanged.
+        _st_cfg = dict(self.hyperparameters.get("spatiotemporal_lidar", {}) or {})
+        self.spatiotemporal_lidar_enabled = bool(_st_cfg.get("enabled", False))
+        if self.spatiotemporal_lidar_enabled and not self.temporal_actor_enabled:
+            raise RuntimeError(
+                "spatiotemporal_lidar.enabled=true requires "
+                "temporal_actor_context.enabled=true.")
+
         # ----------------------------
         # PHASE2: Critic-connected Action-Risk Head (default OFF, independent of
         # aux_prediction). action_risk_head.enabled builds the head + its
@@ -353,6 +365,58 @@ class Agent(object):
                 "replay resume normally."
             )
 
+        # Counterfactual multi-horizon head is independent of the legacy
+        # selected-action head and critic_risk_input. It reuses the actor's
+        # temporal feature when requested and adds a direct actor penalty.
+        _cf_dict = dict(self.hyperparameters.get(
+            "counterfactual_multi_horizon_risk", {}) or {})
+        if not self.risk_balanced_enabled:
+            _cf_dict["pos_weight"] = 1.0
+            _cf_dict["loss_type"] = "mse"
+        self.counterfactual_risk_cfg = CounterfactualRiskConfig(_cf_dict)
+        self.counterfactual_risk_enabled = self.counterfactual_risk_cfg.enabled
+        self._counterfactual_risk_active = bool(
+            self.counterfactual_risk_enabled
+            and self.current_stage >= self.counterfactual_risk_cfg.enable_from_stage)
+        if self.counterfactual_risk_enabled:
+            if self.counterfactual_risk_cfg.num_candidates < 1:
+                raise RuntimeError(
+                    "counterfactual_multi_horizon_risk.enabled=true requires "
+                    "at least one candidate_actions entry.")
+            if any(len(a) != action_dim
+                   for a in self.counterfactual_risk_cfg.candidate_actions):
+                raise RuntimeError(
+                    "Every counterfactual candidate action must have action_dim="
+                    f"{action_dim} values.")
+            if any(abs(v) > 1.0
+                   for a in self.counterfactual_risk_cfg.candidate_actions
+                   for v in a):
+                raise RuntimeError(
+                    "Counterfactual candidate actions must be normalized to "
+                    "[-1, 1].")
+            if (self.counterfactual_risk_cfg.use_temporal_context
+                    and not self.temporal_actor_enabled):
+                raise RuntimeError(
+                    "counterfactual_multi_horizon_risk.use_temporal_context="
+                    "true requires temporal_actor_context.enabled=true.")
+        # Actor-penalty warm-up/ramp: counts CF SUPERVISED updates that have
+        # actually run (never a train() call where the head had no target),
+        # persisted across checkpoint save/load (see tqc_io.py) so a resumed
+        # run continues its ramp instead of restarting it. effective weight
+        # is recomputed from this counter every train() call it applies in.
+        self._cf_supervised_updates = 0
+        self._cf_effective_actor_penalty_weight = 0.0
+        # weighted_mean horizon aggregation: precompute the normalized weight
+        # tensor once (CounterfactualRiskConfig already validated length/
+        # non-negativity/sum>0 and normalized it to sum to 1).
+        self._cf_horizon_weights = (
+            torch.tensor(self.counterfactual_risk_cfg.horizon_weights,
+                        dtype=torch.float32, device=self.device)
+            if (self.counterfactual_risk_enabled
+                and self.counterfactual_risk_cfg.actor_risk_aggregation
+                == "weighted_mean")
+            else None)
+
         # NOTE: replay_buffer.risk_meta / risk_balanced_sampling (self.
         # risk_balanced_enabled / self.store_risk_meta / self.
         # risk_balanced_ratios) are parsed EARLY, right after self.max_action
@@ -378,7 +442,11 @@ class Agent(object):
                 stack_agent_state=bool(tcfg.get("stack_agent_state", False)),
                 aux_cfg=self.aux_cfg,
                 feature_dim=int(tcfg.get("temporal_feature_dim", 32)),
-                encoder_type=str(tcfg.get("encoder_type", "conv1d")),
+                encoder_type=(
+                    "spatiotemporal" if self.spatiotemporal_lidar_enabled
+                    else str(tcfg.get("encoder_type", "conv1d"))),
+                angular_tokens=int(_st_cfg.get("angular_tokens", 10)),
+                use_range_rate=bool(_st_cfg.get("use_range_rate", True)),
             )
             exp = enc.expected_state_dim()
             if exp != state_dim:
@@ -461,6 +529,20 @@ class Agent(object):
             self.action_risk_head = None
             self.action_risk_head_target = None
 
+        if self.counterfactual_risk_enabled:
+            cf_temporal_dim = (
+                self.encoder.temporal.out_dim
+                if self.counterfactual_risk_cfg.use_temporal_context else 0)
+            self.counterfactual_risk_head = CounterfactualMultiHorizonRiskHead(
+                latent_dim, action_dim, self.counterfactual_risk_cfg,
+                temporal_dim=cf_temporal_dim).to(self.device)
+            self._counterfactual_candidates = torch.tensor(
+                self.counterfactual_risk_cfg.candidate_actions,
+                dtype=torch.float32, device=self.device)
+        else:
+            self.counterfactual_risk_head = None
+            self._counterfactual_candidates = None
+
         # ----------------------------
         # Networks & Optimizers
         # ----------------------------
@@ -535,6 +617,12 @@ class Agent(object):
             aux_dim=(self.aux_cfg.label_dim if self.aux_enabled else 0),
             # PHASE2: store the Action-Risk Head's (risk_dir, min_dist_dir) target.
             action_risk_dim=(2 if self.action_risk_enabled else 0),
+            counterfactual_risk_dim=(
+                self.counterfactual_risk_cfg.target_dim
+                if self.counterfactual_risk_enabled else 0),
+            executed_action_risk_dim=(
+                self.counterfactual_risk_cfg.num_horizons
+                if self.counterfactual_risk_enabled else 0),
             # AUX_PRED: track episode boundaries when EITHER the action-conditioned
             # aux (future-action lookup) OR the temporal context (backward
             # state-history lookup) is on, so neither walk crosses an episode.
@@ -710,13 +798,18 @@ class Agent(object):
         # (polyak-updated only, like critic_target/encoder_target).
         if getattr(self, "action_risk_head", None) is not None:
             components.append(("action_risk_head", list(self.action_risk_head.parameters())))
+        if getattr(self, "counterfactual_risk_head", None) is not None:
+            components.append((
+                "counterfactual_risk_head",
+                list(self.counterfactual_risk_head.parameters())))
 
         if not use_groups:
             trunk_params = [p for _, params in components for p in params]
             return torch.optim.Adam(trunk_params, lr=self.critic_lr)
 
         lr_key = {"critic": "critic_lr", "encoder": "encoder_lr",
-                  "aux_head": "aux_head_lr", "action_risk_head": "action_risk_head_lr"}
+                  "aux_head": "aux_head_lr", "action_risk_head": "action_risk_head_lr",
+                  "counterfactual_risk_head": "counterfactual_risk_head_lr"}
         param_groups = []
         merged = {}
         for name, params in components:
@@ -760,6 +853,40 @@ class Agent(object):
         self._action_risk_active = bool(
             self.action_risk_enabled and self.current_stage >= self.action_risk_cfg.enable_from_stage
         )
+        self._counterfactual_risk_active = bool(
+            self.counterfactual_risk_enabled
+            and self.current_stage >= self.counterfactual_risk_cfg.enable_from_stage
+        )
+
+    def reset_counterfactual_penalty_schedule(self):
+        """Reset actor-penalty warm-up after an action-contract change.
+
+        A curriculum promotion that also resets the replay buffer (e.g.
+        stage 5 unsealing the yield channel -- see train_tqc_curriculum.py's
+        reset_buffer_on_promote_to) throws away every transition the CF head
+        was supervised on. Without this call, self._cf_supervised_updates
+        keeps counting from before the reset, so a head that has ALREADY
+        cleared warmup+ramp under the OLD contract would apply a full-weight
+        actor penalty from its very first update on the NEW (off-contract-
+        free) data -- exactly the "untrained head steers the actor" failure
+        this schedule exists to avoid.
+
+        Deliberately does NOT touch counterfactual_risk_head's parameters:
+        the head's learned dynamic-risk representation (avoid nearby humans,
+        walls, etc.) is still largely valid across the contract change -- only
+        the ACTOR PENALTY needs to re-earn trust via a fresh warm-up/ramp
+        against post-reset data, not the head's whole knowledge.
+
+        No-op when the feature is disabled (nothing to reset)."""
+        if not self.counterfactual_risk_enabled:
+            return
+        self._cf_supervised_updates = 0
+        self._cf_effective_actor_penalty_weight = 0.0
+
+    def reset_replay_for_action_contract_change(self):
+        """Clear off-contract replay and re-arm the optional CF penalty."""
+        self.replay_buffer.reset()
+        self.reset_counterfactual_penalty_schedule()
 
     def _current_aux_beta(self):
         """AUX_PRED: effective trunk-level aux weight at this step.
@@ -970,15 +1097,20 @@ class Agent(object):
         need_rb_for_risk = (
             self.risk_balanced_enabled and self.action_risk_enabled and self._action_risk_active
         )
+        need_rb_for_cf = (
+            self.risk_balanced_enabled and self.counterfactual_risk_enabled
+            and self._counterfactual_risk_active
+        )
         ind_rb = (
             self.replay_buffer.sample_risk_balanced()
-            if (need_rb_for_aux or need_rb_for_risk) else None
+            if (need_rb_for_aux or need_rb_for_risk or need_rb_for_cf) else None
         )
         use_rb_for_aux = ind_rb is not None and need_rb_for_aux
         use_rb_for_risk = ind_rb is not None and need_rb_for_risk
+        use_rb_for_cf = ind_rb is not None and need_rb_for_cf
         z_rb = action_rb = state_rb = None
         risk_balance_logs = {}
-        if use_rb_for_aux or use_rb_for_risk:
+        if use_rb_for_aux or use_rb_for_risk or use_rb_for_cf:
             state_rb, action_rb, _ns_rb, _r_rb, _nd_rb = self.replay_buffer.get_batch_by_indices(ind_rb)
             if self.obs_normalizer is not None:
                 state_rb = self.obs_normalizer.normalize(state_rb)
@@ -1184,9 +1316,117 @@ class Agent(object):
                 action_risk_logs["action_risk/loss"] = action_risk_loss_val
                 action_risk_logs.update(_ar_logs)
 
+        # Counterfactual supervision: TWO terms trained from the SAME head/
+        # encoder call contract [z, action(, temporal)] -> (B, H):
+        #   1. fixed_candidate_loss: every configured candidate action at once
+        #      for each replay state, matching the env's (candidate,horizon)
+        #      target matrix -- the fixed candidates themselves are never
+        #      executed or inserted into the core TQC batch.
+        #   2. executed_action_loss: the REPLAY-STORED action (the batch's own
+        #      `action`/`action_rb`, i.e. what was actually executed) against
+        #      its own multi-horizon target (computed pre-motion by the env
+        #      for that exact transition) -- this is what lets the head score
+        #      continuous actions it was never shown as a fixed candidate,
+        #      closing the fixed-candidate-only generalization gap.
+        # cf_supervised_ran gates BOTH the warm-up counter increment AND the
+        # actor penalty below: a step with no target (buffer not yet filled /
+        # stage-gated off) must neither advance the ramp nor apply a penalty
+        # from an untrained head.
+        counterfactual_logs = {}
+        cf_temporal_cur = None
+        cf_supervised_ran = False
+        if (self.counterfactual_risk_enabled
+                and self.counterfactual_risk_head is not None
+                and self._counterfactual_risk_active):
+            cf_z = z_rb if use_rb_for_cf else z
+            cf_action = action_rb if use_rb_for_cf else action
+            cf_state = state_rb if use_rb_for_cf else state
+            cf_indices = ind_rb if use_rb_for_cf else None
+            cf_target = self.replay_buffer.get_last_counterfactual_risk(
+                cf_indices)
+            cf_executed_target = self.replay_buffer.get_last_executed_action_risk(
+                cf_indices)
+            if cf_target is not None and cf_executed_target is not None:
+                batch_n = cf_z.shape[0]
+                cand_n = self.counterfactual_risk_cfg.num_candidates
+                horizon_n = self.counterfactual_risk_cfg.num_horizons
+                candidates = self._counterfactual_candidates.unsqueeze(0).expand(
+                    batch_n, -1, -1)
+                z_candidates = cf_z.unsqueeze(1).expand(
+                    -1, cand_n, -1).reshape(batch_n * cand_n, -1)
+                temporal_candidates = None
+                cf_temporal = None
+                if self.counterfactual_risk_cfg.use_temporal_context:
+                    cf_temporal = self.encoder.temporal_feature(cf_state)
+                    temporal_candidates = cf_temporal.unsqueeze(1).expand(
+                        -1, cand_n, -1).reshape(batch_n * cand_n, -1)
+                    # Cache the PRIMARY-batch feature before the trunk update
+                    # so the later actor call pairs z_actor with a feature from
+                    # the same encoder weights. The balanced supervised batch
+                    # has a different state batch and therefore needs a second
+                    # primary forward here.
+                    cf_temporal_cur = (
+                        self.encoder.temporal_feature(state)
+                        if use_rb_for_cf else cf_temporal)
+                cf_pred = self.counterfactual_risk_head(
+                    z_candidates, candidates.reshape(batch_n * cand_n, -1),
+                    temporal_feature=temporal_candidates).reshape(
+                        batch_n, cand_n, horizon_n)
+                cf_target = cf_target.reshape(batch_n, cand_n, horizon_n)
+                fixed_loss, fixed_loss_logs = weighted_counterfactual_risk_loss(
+                    cf_pred, cf_target, self.counterfactual_risk_cfg)
+
+                # Executed-action term: same head, REPLAY action as input
+                # (not a fixed candidate), against the executed-action target.
+                cf_pred_executed = self.counterfactual_risk_head(
+                    cf_z, cf_action, temporal_feature=cf_temporal)
+                executed_loss, executed_loss_logs = weighted_counterfactual_risk_loss(
+                    cf_pred_executed, cf_executed_target, self.counterfactual_risk_cfg)
+
+                cf_loss = (
+                    fixed_loss
+                    + self.counterfactual_risk_cfg.executed_action_loss_weight
+                    * executed_loss)
+                total_trunk_loss = (
+                    total_trunk_loss
+                    + self.counterfactual_risk_cfg.loss_weight * cf_loss)
+                counterfactual_logs.update(fixed_loss_logs)
+                counterfactual_logs.update({
+                    f"counterfactual_risk/executed_{k.split('/', 1)[1]}": v
+                    for k, v in executed_loss_logs.items()
+                })
+                counterfactual_logs["counterfactual_risk/loss"] = float(
+                    cf_loss.detach().item())
+                counterfactual_logs["counterfactual_risk/fixed_candidate_loss"] = float(
+                    fixed_loss.detach().item())
+                counterfactual_logs["counterfactual_risk/executed_action_loss"] = float(
+                    executed_loss.detach().item())
+                with torch.no_grad():
+                    executed_err = (cf_pred_executed - cf_executed_target).abs()
+                    counterfactual_logs["counterfactual_risk/executed_action_mae"] = float(
+                        executed_err.mean().item())
+                    per_horizon_mae = executed_err.mean(dim=0)
+                    for _hi, _h_sec in enumerate(self.counterfactual_risk_cfg.horizons_sec):
+                        counterfactual_logs[
+                            f"counterfactual_risk/executed_mae_h{_h_sec:g}s"] = float(
+                                per_horizon_mae[_hi].item())
+                if use_rb_for_cf:
+                    counterfactual_logs[
+                        "risk_balance/counterfactual_uses_balanced_batch"] = 1.0
+
+                cf_supervised_ran = True
+
         self.critic_optimizer.zero_grad()
         total_trunk_loss.backward()
         self.critic_optimizer.step()
+
+        # Only count an update as "supervised" once the trunk optimizer has
+        # actually applied it -- an exception between building the loss and
+        # this step() call (e.g. a NaN in backward()) would otherwise have
+        # already advanced the warm-up/ramp counter for a step that never
+        # updated the head's weights.
+        if cf_supervised_ran:
+            self._cf_supervised_updates += 1
 
         """******************************************
         ** Actor Update
@@ -1252,8 +1492,79 @@ class Agent(object):
         # Average over quantiles and critics
         qf_pi = qf_pi.mean(dim=2).mean(dim=1, keepdim=True)
 
-        # Actor loss
-        actor_loss = (ent_coef * log_prob - qf_pi).mean()
+        # Direct actor risk penalty. Freeze the head's weights but keep the
+        # input-side gradient d(risk)/d(action), exactly as for the indirect
+        # action-risk path above. The state/temporal representation is detached,
+        # so this update remains actor-only.
+        #
+        # Gated on cf_supervised_ran (not just _counterfactual_risk_active):
+        # a step where the head had no supervised target to train on must not
+        # apply a penalty from an untrained/stale head, and must not advance
+        # the warm-up/ramp counter either (see CounterfactualRiskConfig.
+        # effective_actor_penalty_weight's docstring).
+        actor_risk_penalty = actions_pi.new_zeros(())
+        effective_penalty_weight = 0.0
+        if (self.counterfactual_risk_enabled
+                and self.counterfactual_risk_head is not None
+                and self._counterfactual_risk_active
+                and cf_supervised_ran):
+            temporal_pi = None
+            if self.counterfactual_risk_cfg.use_temporal_context:
+                if cf_temporal_cur is None:
+                    # Defensive fallback (normally populated by the supervised
+                    # block above). Inference-only: do not build an encoder graph.
+                    with torch.no_grad():
+                        cf_temporal_cur = self.encoder.temporal_feature(state)
+                temporal_pi = cf_temporal_cur.detach()
+            with _frozen_params(self.counterfactual_risk_head):
+                predicted_horizon_risk = self.counterfactual_risk_head(
+                    z_actor, actions_pi, temporal_feature=temporal_pi)
+            if self.counterfactual_risk_cfg.actor_risk_aggregation == "max":
+                actor_risk_penalty = predicted_horizon_risk.max(dim=1).values.mean()
+            elif self.counterfactual_risk_cfg.actor_risk_aggregation == "weighted_mean":
+                actor_risk_penalty = (
+                    predicted_horizon_risk * self._cf_horizon_weights
+                ).sum(dim=1).mean()
+            else:
+                actor_risk_penalty = predicted_horizon_risk.mean()
+            effective_penalty_weight = (
+                self.counterfactual_risk_cfg.effective_actor_penalty_weight(
+                    self._cf_supervised_updates))
+            self._cf_effective_actor_penalty_weight = effective_penalty_weight
+
+        actor_loss = (
+            (ent_coef * log_prob - qf_pi).mean()
+            + effective_penalty_weight * actor_risk_penalty)
+        if self.counterfactual_risk_enabled:
+            counterfactual_logs["counterfactual_risk/actor_penalty"] = float(
+                actor_risk_penalty.detach().item())
+            counterfactual_logs[
+                "counterfactual_risk/actor_penalty_weight"] = float(
+                    self.counterfactual_risk_cfg.actor_penalty_weight)
+            counterfactual_logs[
+                "counterfactual_risk/effective_actor_penalty_weight"] = float(
+                    effective_penalty_weight)
+            counterfactual_logs[
+                "counterfactual_risk/actor_penalty_contribution"] = float(
+                    effective_penalty_weight * actor_risk_penalty.detach().item())
+            counterfactual_logs["counterfactual_risk/supervised_updates"] = float(
+                self._cf_supervised_updates)
+            # OOD monitoring: normalized-action L2 distance from the actor's
+            # own continuous action to its NEAREST fixed candidate -- computed
+            # whenever the head is stage-active, independent of whether a
+            # supervised update ran THIS step, so drift is visible through
+            # warm-up too.
+            if self._counterfactual_risk_active:
+                with torch.no_grad():
+                    _diffs = (actions_pi.unsqueeze(1)
+                             - self._counterfactual_candidates.unsqueeze(0))
+                    _nearest = _diffs.norm(dim=-1).min(dim=1).values
+                    counterfactual_logs[
+                        "counterfactual_risk/actor_candidate_distance_mean"] = float(
+                            _nearest.mean().item())
+                    counterfactual_logs[
+                        "counterfactual_risk/actor_candidate_distance_max"] = float(
+                            _nearest.max().item())
 
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -1324,6 +1635,8 @@ class Agent(object):
                 scalars.update(aux_logs)
             if self.action_risk_enabled and action_risk_logs:
                 scalars.update(action_risk_logs)
+            if self.counterfactual_risk_enabled and counterfactual_logs:
+                scalars.update(counterfactual_logs)
             # RISK_BALANCE: sampled-pool fractions logged regardless of which
             # consumer (aux / action-risk / both) used the balanced batch this
             # step, so they're visible even if only one of the two is enabled.

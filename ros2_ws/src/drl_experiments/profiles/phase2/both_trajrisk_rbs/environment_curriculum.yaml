@@ -155,6 +155,19 @@ environment:
     progress_positive_gate_eps: 0.0
   action_risk_head:
     enabled: true
+  # Must mirror hyperparameters_tqc.yaml. Keeping this false adds no wire data
+  # and performs no extra simulator rollouts.
+  counterfactual_multi_horizon_risk:
+    enabled: false
+    horizons_sec: [0.5, 1.0, 1.5, 2.0]
+    candidate_actions:
+    - [-0.5, -1.0, -1.0]
+    - [-0.5, 0.0, -1.0]
+    - [-0.5, 1.0, -1.0]
+    - [0.5, -1.0, -1.0]
+    - [0.5, 0.0, -1.0]
+    - [0.5, 1.0, -1.0]
+    - [0.0, 0.0, 1.0]
   human_mode_weights:
     crossing: 1.0
     along_path: 1.0
