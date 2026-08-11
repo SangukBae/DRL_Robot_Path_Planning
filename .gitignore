@@ -17,6 +17,11 @@ ros2_ws/src/aws-robomaker-small-warehouse-world/models/
 ros2_ws/src/drl_obstacle_assets
 ros2_ws/src/drl_agent/runtime/
 ros2_ws/src/drl_agent/runs/
+/runs/
+
+# Local presentation artifacts generated at the ROS workspace root
+/ros2_ws/*.pptx
+/ros2_ws/*.pptx.bak
 ros2_ws/src/dataset_builder/
 ros2_ws/src/depth_d435/
 ros2_ws/src/depth_d455/
