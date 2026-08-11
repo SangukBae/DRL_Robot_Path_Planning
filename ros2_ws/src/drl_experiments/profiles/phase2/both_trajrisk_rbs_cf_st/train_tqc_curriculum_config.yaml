@@ -1,0 +1,68 @@
+# Curriculum-learning settings for train_tqc_curriculum.py.
+# Only the curriculum_settings block is here; base train_settings are
+# still read from train_tqc_config.yaml by the parent TrainTQC class.
+
+curriculum_settings:
+  enabled: true                  # trainer가 stage promotion 로직을 사용할지 여부
+
+  min_stage_steps: 30000         # 이 step 수를 넘기기 전에는 stage 승급 금지
+  min_stage_episodes: 20         # 이 episode 수를 넘기기 전에는 stage 승급 금지
+
+  # Per-stage success / collision thresholds (list index = stage index).
+  # Early stages require high success because the task is simple; later stages
+  # allow lower success as the environment becomes genuinely harder.
+  # List length should equal (num_stages - 1): one entry per promotable stage.
+  # Curriculum is now 10 stages (0..9) → 9 promotable transitions (0→1 … 8→9).
+  # curriculum_stage_logic clamps an out-of-range stage index to the LAST entry,
+  # so a shorter list still runs without crashing.
+  # Evaluation runs 40 episodes, so rates are quantized in 1/40 = 2.5% steps.
+  # The collision caps permit 4/40 collisions at 0.10 or 0.12, 6/40 at 0.15,
+  # and 8/40 at 0.20.
+  #   stage idx:               0     1     2     3     4     5     6     7     8
+  pass_eval_success_rate:   [0.90, 0.88, 0.86, 0.80, 0.80, 0.76, 0.74, 0.72, 0.70] # stage별 최소 성공률 gate
+  pass_eval_collision_rate: [0.10, 0.10, 0.10, 0.12, 0.12, 0.15, 0.20, 0.20, 0.20] # stage별 최대 전체 충돌률 gate
+
+  # Quality gate (conservative): minimum SPL (Success weighted by Path Length)
+  # required to PROMOTE, per stage. This stops "arrived but wandered" policies
+  # from passing on success_rate alone. Values are deliberately mild (well below
+  # a clean-run SPL) so they only catch clearly inefficient driving.
+  # Empty list / 0.0 / omit → SPL gate disabled (legacy success-only behaviour).
+  #   stage idx:     0     1     2     3     4     5     6     7     8
+  pass_eval_spl:  [0.55, 0.55, 0.54, 0.50, 0.50, 0.48, 0.47, 0.45, 0.44] # stage별 최소 SPL gate
+
+  # Optional extra gate (default OFF): minimum LiDAR clearance rate before
+  # promotion. Leave empty to disable; raise to require safer-distance driving.
+  # Kept off by default to introduce one quality metric (SPL) at a time.
+  pass_eval_lidar_clearance_rate: [] # 비우면 LiDAR clearance gate 비활성
+
+  # Rollback to the older promotion behaviour: keep advancement driven by the
+  # global success / collision / SPL gates only. The newer human-safety hard
+  # gates and per-map fail-fast gates stay available in code, but are disabled
+  # here so the run promotes like the pre-tightening curriculum.
+  pass_eval_psc: []                     # 비우면 PSC hard gate 비활성
+  pass_eval_h_coll_rate: []             # 비우면 H-Coll hard gate 비활성
+  pass_eval_per_map_success_rate: []    # 비우면 per-map success fail-fast 비활성
+  pass_eval_per_map_collision_rate: []  # 비우면 per-map collision fail-fast 비활성
+
+  # One 40-episode evaluation replaces the old 20-episode x 2-consecutive gate.
+  consecutive_eval_passes: 1      # 한 번의 40-episode eval gate 통과로 승급
+
+  # Replay-buffer reset on promotion INTO these stages. Only needed where the
+  # normalized action / control contract CHANGES between stages (off-contract
+  # transitions would otherwise poison the critic). Stage 3 is just the
+  # first-human stage, not a contract boundary. Stage 5 (add_clutter_clean)
+  # UNSEALS the yield channel (action[2] goes from no-op to honoured), so the
+  # control contract changes there — reset the buffer so off-contract
+  # (yield-inactive) transitions don't poison the critic.
+  # This reset ALSO re-arms the CF actor-penalty warm-up/ramp (Agent.
+  # reset_counterfactual_penalty_schedule(), called from the trainer's stage-
+  # advancement handler right after replay_buffer.reset()): the head's
+  # supervised-update counter restarts at 0 so the penalty re-earns trust
+  # against post-reset (on-contract) data, instead of applying full weight
+  # immediately from a counter left over from the pre-stage-5 contract.
+  reset_buffer_on_promote_to: [5]  # yield 해제 stage에서 buffer reset
+  # Random-action re-warmup steps AFTER a buffer reset (no gradient updates), so
+  # the buffer refills with on-contract (yield-capable) data before training.
+  # Also gives the CF head's own supervised loss (warmup_updates below) a
+  # matching head start before any actor penalty ramps in.
+  rewarmup_steps: 5000            # reset 후 on-contract 재warmup
