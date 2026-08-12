@@ -7,15 +7,21 @@
 ### 실행 순서
 
 ```bash
+PROFILE=phase2/both
+
 # [터미널 1] Gazebo 시뮬레이션
 ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 
-# [터미널 2] 커리큘럼 환경 노드 (config_file은 기본값 자동 주입, 명시 override 시에만 필요)
-ros2 run drl_agent environment_curriculum.py
+# [터미널 2] profile 기반 커리큘럼 환경 노드
+ros2 run drl_agent environment_curriculum_node.py --ros-args -p profile:=$PROFILE
 
-# [터미널 3] TQC 커리큘럼 학습
-ros2 run drl_agent train_tqc_curriculum.py
+# [터미널 3] 같은 profile로 TQC 커리큘럼 학습
+ros2 run drl_agent train_node.py --ros-args -p profile:=$PROFILE -p seed:=0
 ```
+
+ST와 CF를 모두 켠 실험은 `PROFILE=phase2/both_trajrisk_rbs_cf_st`로 바꾼다.
+이 프로필은 fresh-run 전용이므로 새 학습에 `resume:=true`를 넣지 않는다. 사람 장애물은
+환경 노드가 직접 생성·이동하므로 일반 Ignition launch를 사용하며 HuNav launch는 필요 없다.
 
 ### 출력 파일
 

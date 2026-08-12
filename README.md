@@ -64,6 +64,7 @@ Profile config 주요 기능:
 | phase2 | `phase2/both` | risk_map_reward + action_risk_head + trajectory risk/RBS | `waypoint_yield` |
 | phase2 | `phase2/both_legacy` | 이전 `phase2/both` 의미 보존 | `waypoint_yield` |
 | phase2 | `phase2/both_trajrisk_rbs` | trajectory risk/RBS variant 명시 | `waypoint_yield` |
+| phase2 | `phase2/both_trajrisk_rbs_cf_st` | trajectory risk/RBS + spatiotemporal LiDAR + counterfactual multi-horizon risk | `waypoint_yield` |
 | phase2 | `phase2/obs_norm_optim_split` | 관측 정규화 + optimizer split 실험 | `waypoint_yield` |
 
 ```bash
@@ -99,6 +100,11 @@ python3 ros2_ws/src/drl_experiments/scripts/run_profile.py \
 # TensorBoard 모니터링
 tensorboard --logdir <run_dir>/logs
 ```
+
+> `phase2/both_trajrisk_rbs_cf_st`는 네트워크와 replay schema가 달라지는
+> fresh-run 프로필이다. 이 프로필로 새 학습을 시작할 때는 `resume:=true`를 사용하지 않는다.
+> 동적 사람 장애물은 curriculum 환경 노드의 obstacle pool과 human-motion 로직이 관리하므로
+> 일반 `simulate_hunter_se_ignition.launch.py`를 실행한다(HuNav launch 불필요).
 
 논문 비교 실험용 후처리/평가:
 

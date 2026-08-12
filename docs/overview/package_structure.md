@@ -14,7 +14,7 @@ ros2_ws/src/
 │   │   │   │                      #   train_tqc_curriculum.py, train_rl.py, gym_parameter_client.py,
 │   │   │   │                      #   episode_metrics.py, aux_ablation_logging.py, aux_eval_metrics.py,
 │   │   │   │                      #   dynamic_avoidance_log.py
-│   │   │   ├── curriculum/        #   stage_logic / metrics / state_io / eval_runner / aux_eval
+│   │   │   ├── curriculum/        #   trainer_base / stage_logic / metrics / state_io / eval_runner / aux_eval
 │   │   │   └── baselines/         #   {sac,td7,a3c,tqc_ieqn,sb3_sac,sb3_td3,sb3_ppo}[_curriculum].py
 │   │   │                          #   — 논문 비교군/ablation 모델 (PPO는 curriculum 변형 없음)
 │   │   ├── rl/
@@ -22,15 +22,17 @@ ros2_ws/src/
 │   │   │   │                      #   aux_losses / aux_temporal
 │   │   │   ├── replay/            #   buffer.py (LAP) + schema.py (npz 필드 계약)
 │   │   │   ├── checkpointing/     #   manager.py (탐색·검증) + tqc_io.py (실제 save/load)
-│   │   │   └── algorithms/        #   tqc/ sac/ td7/ a3c/ tqc_ieqn/ (각 agent.py) + sb3/{sac,td3,ppo}.py
+│   │   │   └── algorithms/        #   tqc/{agent,update,networks,metrics}.py + sac/ td7/ a3c/
+│   │   │                          #   tqc_ieqn/ (각 agent.py) + sb3/{sac,td3,ppo}.py
 │   │   ├── evaluation/            #   generalization_eval / risk_map_eval / real_policy_runner /
 │   │   │   │                      #   sim_validation_runner / sim_validation / risk_map_dump
 │   │   │   ├── live/              #   tqc_live_runner.py / td7_live_runner.py (수동 live-sim 실행)
 │   │   │   └── analysis/          #   aggregate_results / analyze_{aux_correlation,yield_freezing} /
 │   │   │                          #   aux_ablation_summary / check_reproducibility /
-│   │   │                          #   plot_{metrics,reward,trajectories_on_map} / sim_validation_summary
+│   │   │                          #   plot_{metrics,trajectories_on_map} / sim_validation_summary
 │   │   ├── env/                   #   environment_interface.py +
-│   │   │   ├── simulation/        #   environment.py(본체) / environment_360.py(classic Gazebo) /
+│   │   │   ├── simulation/        #   environment.py(조율·node state) / environment_360.py(classic Gazebo) /
+│   │   │   │                      #   gazebo_runtime / step_pipeline / reset_pipeline / risk_targets /
 │   │   │   │                      #   gazebo_* / map_* / zone_tracker / collision_checker / localization_noise
 │   │   │   ├── curriculum/        #   environment_curriculum.py(본체)
 │   │   │   ├── observation/       #   observation_builder / obs_time_context / aux_prediction_labels
@@ -45,7 +47,8 @@ ros2_ws/src/
 └── drl_experiments/               # 실험 정의 패키지
     ├── profiles/
     │   └── phase2/{tqc_vanilla,baseline,reward_shaping_only,action_risk_head_only,both,
-    │               both_legacy,both_trajrisk_rbs,obs_norm_optim_split}/
+    │               both_legacy,both_trajrisk_rbs,both_trajrisk_rbs_cf_st,
+    │               obs_norm_optim_split}/
     │                              #   profile.yaml + config 4종 (self-contained)
     ├── sweeps/                    # phase2_seeds.yaml / paper_main.yaml
     ├── scripts/                   # run_profile.py / resume_profile.py / aggregate.py / export_tables.py
@@ -122,6 +125,11 @@ ros2 run drl_agent sac_curriculum.py
 ros2 run drl_agent train_rl.py --ros-args -p rl_model:=td7_curriculum   # 또는 registry 경유
 ```
 
+`phase2/both_trajrisk_rbs_cf_st`는 spatiotemporal LiDAR encoder와
+counterfactual multi-horizon risk head를 모두 켠 fresh-run 프로필이다. 일반
+Ignition launch를 사용하며 사람 장애물은 환경 노드가 자체 관리한다. 이 프로필의
+새 학습에는 `resume:=true`를 사용하지 않는다.
+
 ## 호환성 보존 사항
 
 | 항목 | 상태 |
@@ -139,4 +147,5 @@ ros2 run drl_agent train_rl.py --ros-args -p rl_model:=td7_curriculum   # 또는
 
 주의: `runtime/phase2_configs/`와 `profiles/phase2/`는 별도 파일이므로 현재 실험 config를
 수정할 땐 `profiles/phase2/`(canonical)를 수정할 것. `runtime/phase2_configs/`는 기존 run 호환용으로
-남겨 둔 snapshot이며 새 profile split(`both_legacy`, `both_trajrisk_rbs`, `tqc_vanilla`)을 대표하지 않는다.
+남겨 둔 snapshot이며 새 profile split(`both_legacy`, `both_trajrisk_rbs`,
+`both_trajrisk_rbs_cf_st`, `tqc_vanilla`)을 대표하지 않는다.

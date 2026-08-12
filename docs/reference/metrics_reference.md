@@ -30,7 +30,9 @@ T:{t} | Ep:{ep} | Steps:{n} | Reward:{r:.3f} | {GOAL/COLLISION/TIMEOUT/EVAL_CUT}
   (reward/result/stage/map_type).
 
 ### B. Aux 자기학습 (gradient 스텝마다, TensorBoard + tqc_metrics.json)
-`rl/algorithms/tqc/agent.py`의 `Agent.train()`(`rl/networks/aux_losses.compute_aux_loss`)에서 생성, 변경 없음:
+`rl/algorithms/tqc/update.py`의 `UpdateMixin.train()`
+(`rl/networks/aux_losses.compute_aux_loss`)에서 생성하고,
+`rl/algorithms/tqc/metrics.py`가 JSON/TensorBoard flush를 담당한다:
 `aux/loss`, `aux/risk_mse`, `aux/min_dist_mse`(v2), `aux/risk_quantile`(distributional 전용),
 `aux/valid_len_mean`(action-conditioned 전용). aux-off이면 이 키들은 단순히 존재하지 않는다.
 

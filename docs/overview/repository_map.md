@@ -15,9 +15,9 @@
 ## `drl_agent` 내부 (`drl_agent/drl_agent/` — importable 패키지, 구현의 유일한 위치)
 | 폴더 | 내용 |
 |------|------|
-| `env/` | 환경 노드 (`simulation/environment.py`, `curriculum/environment_curriculum.py`, `environment_interface.py`, observation/rewards/spawning/humans mixin) |
-| `training/` + `training/baselines/` | 알고리즘 트레이너 (TQC: `train_tqc_curriculum.py`; baseline: `baselines/<algo>_curriculum.py`, …) |
-| `rl/algorithms/` | 알고리즘 네트워크/에이전트 (`tqc/agent.py`, …) |
+| `env/` | 환경 노드 (`simulation/environment.py` 조율부 + `step_pipeline.py`/`reset_pipeline.py`/`gazebo_runtime.py`/`risk_targets.py`, curriculum selector, interface, observation/rewards/spawning/humans mixin) |
+| `training/` + `training/baselines/` | 알고리즘 트레이너 (TQC: `train_tqc_curriculum.py`; baseline 공통부: `curriculum/trainer_base.py`; 얇은 알고리즘 subclass: `baselines/<algo>_curriculum.py`) |
+| `rl/algorithms/` | 알고리즘 네트워크/에이전트 (TQC: `tqc/agent.py` + `update.py`/`networks.py`/`metrics.py`, 그 외 알고리즘별 agent) |
 | `evaluation/` | 리플레이 지표, 로깅 헬퍼, 플롯, live-sim 실행, 후처리 분석 |
 | `config/` (drl_agent/config/, 별도) | 모든 YAML 설정 |
 
@@ -28,7 +28,7 @@
 ## 알고리즘 (`drl_agent/rl/algorithms/` + `drl_agent/training/`)
 | 알고리즘 | 계열 | 파일 | 특징 |
 |---------|------|------|------|
-| **TQC** (주력) | off-policy AC | `rl/algorithms/tqc/agent.py` + `training/train_tqc_curriculum.py` | 분위수 분포 추정 + 상위 truncation으로 과대추정 완화. LAP 버퍼. aux/커리큘럼 결합 |
+| **TQC** (주력) | off-policy AC | `rl/algorithms/tqc/{agent,update,networks,metrics}.py` + `training/train_tqc_curriculum.py` | 분위수 분포 추정 + 상위 truncation으로 과대추정 완화. LAP 버퍼. aux/커리큘럼 결합 |
 | TQC+IEQn | off-policy AC | `rl/algorithms/tqc_ieqn/agent.py` + `training/baselines/tqc_ieqn_curriculum.py` | TQC + 부등식(안전) 제약 |
 | TD7 | off-policy AC | `rl/algorithms/td7/agent.py` + `training/baselines/td7_curriculum.py` | 상태-액션 표현 학습 + 체크포인트 정책 선택 |
 | SAC | off-policy AC | `rl/algorithms/sac/agent.py` + `training/baselines/sac_curriculum.py` | 최대 엔트로피, 자동 온도 |
@@ -46,7 +46,7 @@
 | `training/aux_eval_metrics.py` | aux 정식 평가 지표(RMSE/MAE/F1) |
 | `training/aux_ablation_logging.py` | run-identity / eval-summary / manifest 로깅 |
 | `common/file_manager.py` | 체크포인트, YAML 로드 |
-| `evaluation/analysis/plot_*.py` | 학습/보상/궤적 시각화 |
+| `evaluation/analysis/plot_metrics.py`, `plot_trajectories_on_map.py` | 학습 지표/궤적 시각화 |
 
 ## 학습 산출물 (`runtime/<algo>/`)
 | 경로 | 내용 |

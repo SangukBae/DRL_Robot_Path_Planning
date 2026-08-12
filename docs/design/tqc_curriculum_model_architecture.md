@@ -2,8 +2,9 @@
 
 `train_tqc_curriculum.py`(`TrainTQCCurriculum`)가 학습하는 강화학습 모델의 전체 구조를
 정리한 문서다. 이 trainer는 **TQC + Temporal Fusion Encoder + Action-conditioned Auxiliary
-Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으며 커리큘럼(10-stage)으로
-학습한다.
+Prediction**을 기본 확장 경로로 사용하고, profile에 따라 Action-Risk Head,
+spatiotemporal LiDAR(ST), counterfactual multi-horizon risk(CF)를 추가해 ROS2 service 기반
+환경과 주고받으며 커리큘럼(10-stage)으로 학습한다.
 
 - 정책은 **비순환(non-recurrent)** 이다. 시간 정보는 (1) actor/critic이 보는 압축 temporal
   feature와 (2) aux head 전용 context로만 들어가고, actor/critic body 자체는 순환하지 않는다.
@@ -12,9 +13,10 @@ Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으�
   shaping**에 있다.
 - 관련 코드 태그: `AUX_PRED`(aux), `TEMPORAL_ACTOR`(temporal fusion), 실험 플래그 `A1~A4`.
 
-관련 모듈: `rl/algorithms/tqc/agent.py`, `rl/networks/tqc.py`, `rl/networks/aux_prediction.py`,
+관련 모듈: `rl/algorithms/tqc/{agent,update,networks,metrics}.py`, `rl/networks/tqc.py`,
+`rl/networks/action_risk_head.py`, `rl/networks/aux_prediction.py`,
 `rl/networks/aux_temporal.py`, `rl/networks/aux_losses.py`, `rl/replay/buffer.py`(LAP),
-`env/environment_interface.py`.
+`env/environment_interface.py`, `env/simulation/risk_targets.py`.
 
 ---
 
@@ -62,7 +64,7 @@ Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으�
              │  TemporalFusionEncoder  E_ψ   (TEMPORAL_ACTOR)           │
              │  split(state):                                          │
              │    current [obs80 + agent7] = 87 ─► SharedEncoder ─► z_cur (128) │
-             │    scan history [obs_{t..t-3}] 80×4 ─► ScanTemporalEncoder(conv1d) ─► z_tmp(32) │
+             │    scan history [obs_{t..t-3}] 80×4 ─► ScanTemporalEncoder(conv1d 또는 ST Conv2d) │
              │    fuse: Linear([z_cur ; gain·z_tmp]) ─► ELU ─► z_t (latent 128)  │
              │    (gain = 0  stage<2  /  1  stage≥2  : 커리큘럼 stage로 게이팅)   │
              └───────────────────────────┬────────────────────────────┘
@@ -101,9 +103,9 @@ Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으�
  z   = E_ψ(state)                # graph 유지 (critic·aux가 encoder를 shaping)
  z_a = z.detach()                # actor/temperature는 encoder로 grad 안 보냄
 
- critic_optimizer.step( (critic_loss + β·aux_loss).backward() )
-     └─ 파라미터 그룹 = Critic ∪ Encoder(E_ψ) ∪ AuxHead(embed·GRU·attn·trunk·heads) ∪ [TemporalCtx GRU]
- actor_optimizer.step(  actor_loss.backward() )        # z_a 위에서만
+ critic_optimizer.step( (critic_loss + β·aux_loss + β_risk·risk_loss + β_cf·cf_loss).backward() )
+     └─ 파라미터 그룹 = Critic ∪ Encoder(E_ψ) ∪ AuxHead ∪ ActionRiskHead ∪ CFHead
+ actor_optimizer.step( (actor_loss + λ_cf·predicted_cf_risk).backward() ) # z_a 위에서만
  ent_coef_optimizer.step( ... )                        # 온도 α auto
  target: Critic·Encoder는 Polyak(τ)로 target 네트워크 동기화
 ```
@@ -126,8 +128,9 @@ Prediction**이 결합된 모델을, ROS2 service 기반 환경과 주고받으�
 ```
 
 stage가 바뀌어도 **네트워크 텐서 모양은 그대로**이고, gain/β 같은 스칼라만 켜지고 램프된다.
-(현재 커리큘럼은 Stage 0부터 단일 stop-capable action 계약을 쓰므로 replay buffer reset은
-비활성 — 계약 변경 stage가 재도입될 때만 동작.)
+`reset_buffer_on_promote_to`가 설정된 프로필은 action 계약이 바뀌는 stage(현재 CF/ST 프로필은
+Stage 5의 yield 해제)에서 replay를 비우고 재워밍업한다. 이때 CF head 파라미터는 보존하되
+supervised-update counter와 actor-penalty warm-up/ramp를 0부터 다시 시작한다.
 
 ---
 
@@ -138,7 +141,7 @@ stage가 바뀌어도 **네트워크 텐서 모양은 그대로**이고, gain/β
 | stacked state | 327-D | 현재 87 + scan history 80×3 (obs stacking N=4) |
 | current frame | 87-D | obs 80(front 180° LiDAR) + agent 7 |
 | SharedEncoder | 87 → 256 → 128 | ELU, latent=128 |
-| ScanTemporalEncoder | 80×4 → 32 | conv1d, stage2부터 gain=1 |
+| ScanTemporalEncoder | 80×4 → 32 | 기본 conv1d; ST ON이면 시간×각도 Conv2d + ordered angular tokens + 선택 range-rate, stage2부터 gain=1 |
 | Fusion | 128+32 → 128 | actor/critic 입력 폭 고정 |
 | Actor | 128 → 256³ → (mean,log_std)×3 | tanh Gaussian, a∈[-1,1]³ = (r, θ, yield) |
 | Critic (TQC) | (128+3) → 256³ → 25 | n_critics=5, target 상위 2/critic 절삭 → 115 target quantile |
@@ -151,7 +154,20 @@ action 3축: `a[0]=r`(waypoint 거리), `a[1]=θ`(waypoint 각), `a[2]=yield`(�
 
 ---
 
-## 5. 실험 플래그(A1~A4)가 이 구조에서 바꾸는 지점
+## 5. ST/CF 선택 기능 (`phase2/both_trajrisk_rbs_cf_st`)
+
+- **ST (`spatiotemporal_lidar`)**: 4-frame LiDAR의 시간과 scan 각도를 별도 축으로 유지하는
+  Conv2d encoder다. `angular_tokens`로 좌우 순서를 보존하고 `use_range_rate=true`면 frame 차분을
+  접근/이탈 단서로 추가한다. 기존 conv1d encoder와 독립 토글이며 활성화 시 fresh run이 필요하다.
+- **CF (`counterfactual_multi_horizon_risk`)**: 환경의 `risk_targets.py`가 동일한 pre-step human
+  snapshot에서 7개 고정 후보와 실제 실행 action을 0.5/1.0/1.5/2.0초 horizon으로 rollout한다.
+  replay에 저장된 target으로 CF head를 지도학습하고, 충분히 학습된 뒤 예측 위험을 actor loss에
+  직접 더한다. 기본 프로필 값은 5,000 supervised update warm-up, 10,000 update 선형 ramp,
+  `weighted_mean` horizon 가중치 `[0.4, 0.3, 0.2, 0.1]`이다.
+- 두 기능은 독립적으로 on/off 가능하다. 둘 다 켠 `both_trajrisk_rbs_cf_st`는 네트워크와 replay
+  schema가 바뀌므로 기존 checkpoint/replay를 재사용하지 않는 fresh-run 전용이다.
+
+## 6. 실험 플래그(A1~A4)가 이 구조에서 바꾸는 지점
 
 | 실험 | 다이어그램상 위치 | 변경 | 기본값(baseline) |
 |---|---|---|---|
@@ -169,7 +185,7 @@ action 3축: `a[0]=r`(waypoint 거리), `a[1]=θ`(waypoint 각), `a[2]=yield`(�
 
 ---
 
-## 6. 관련 문서
+## 7. 관련 문서
 
 - `docs/design/aux_prediction_design.md` — auxiliary prediction 상세 설계
 - `docs/design/curriculum_design.md` — 10-stage 커리큘럼 승급 로직

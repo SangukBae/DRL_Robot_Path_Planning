@@ -75,9 +75,11 @@ actor/critic은 절대 바뀌지 않는다(`latent_dim`이 actor/critic 입력 �
 resume이 깨진다). 그래서 off-policy actor/critic 경로가 안정적으로 유지되고, v2 옵션은 config 플래그로 켜는
 additive head일 뿐이다. temporal/action context도 오직 aux head만 먹여 정책은 비순환으로 남는다.
 
-**현재 curriculum config에서 ON:** future min-distance head, 더 깊은 LayerNorm aux trunk,
-action-conditioned 변형, aux-only temporal context, beta warmup. (distributional risk와 encoder LayerNorm은
-연결됐지만 기본 off.)
+**프로필별 설정:** future min-distance head, 더 깊은 LayerNorm aux trunk,
+action-conditioned 변형과 beta warmup은 phase2 확장 프로필에서 사용할 수 있다. aux-only temporal
+context는 actor-visible frame stack과 중복될 수 있어 프로필별로 on/off하며,
+`phase2/both_trajrisk_rbs_cf_st`에서는 `temporal_enabled: false`다. distributional risk와 encoder
+LayerNorm은 연결돼 있지만 기본 off다.
 
 ### 3b. Action-conditioned aux
 v1은 **한** state `s_t`에서 미래를 예측하지만, 같은 `s_t`도 다음 action에 따라 다른 미래로 이어진다.
@@ -110,9 +112,11 @@ episode 경계를 가졌을 때만 이월되고, 아니면 fresh buffer로 degra
 - `rl/networks/aux_temporal.py` — `TemporalContextEncoder`
 - `env/observation/aux_prediction_labels.py` — privileged label 생성 + wire header
 
-최소 수정: `rl/algorithms/tqc/agent.py`(encoder + aux loss + save/load), `rl/replay/buffer.py`(aux target 저장 +
+연결 지점: `rl/algorithms/tqc/agent.py`(구성·추론·save/load),
+`rl/algorithms/tqc/update.py`(aux loss를 포함한 update), `rl/replay/buffer.py`(aux target 저장 +
 boundary-safe walk), `rl/checkpointing/tqc_io.py`(temporal encoder save/load), `env/environment_interface.py`
-(모든 클라이언트에서 label 분리), `training/train_tqc_curriculum.py`, `env/simulation/environment.py`, 관련 config.
+(모든 클라이언트에서 label 분리), `training/train_tqc_curriculum.py`,
+`env/simulation/risk_targets.py`(label wire 조립), 관련 config.
 
 ## 5. 학습 데이터 흐름
 

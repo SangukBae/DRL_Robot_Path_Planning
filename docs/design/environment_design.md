@@ -17,10 +17,11 @@
 | 상속 | 기반 클래스 (`Environment`) | 서브클래스 (`EnvironmentCurriculum`) |
 | reset | `reset_callback` (실제 배치·관측) | `reset_callback` 오버라이드 → stage 적용 후 `super()` 호출 |
 
-## How — 한 step의 내부 (`environment.py::step_callback`)
+## How — 한 step의 내부 (`step_pipeline.py::StepPipelineMixin`)
 1. 정규화 action → profile action mode에 따라 `waypoint_yield` 또는 `speed_steering` decode → `cmd_vel` publish
    (`waypoint_yield`의 MOVE/YIELD 계약과 `speed_steering` 2축 계약은 [state/action 표](../reference/state_action_reference.md#action-modes) 참고)
-2. Gazebo를 `time_delta`(0.1s) 진행, 보행자 20Hz 타이머가 사람 이동
+2. `gazebo_runtime.py`가 Gazebo를 `time_delta`(0.1s) 진행하고, 환경 노드의
+   20Hz human-motion 타이머가 obstacle pool의 사람을 이동
 3. LiDAR(`/scan`) → `obs_state`(전방 180° 80빈, 정책 입력) + 충돌용 360° 80빈 `environment_state`
 4. odom/joint → 실제 속도·요레이트·조향, 목표 거리/방향 계산
 5. goal 관측(state[80],[81])에 **localization noise** 주입(옵션), proprio 슬롯에 proprio noise(옵션)
@@ -43,7 +44,11 @@ Gazebo Ouster(RGL) → /ouster/points → pointcloud_to_laserscan → /scan → 
 | `environment_360.py` | Classic Gazebo | `gazebo_msgs/SetEntityState` |
 
 ## Where in code
-- `ros2_ws/src/drl_agent/drl_agent/env/simulation/environment.py` (step_callback, reset_callback, 보상, noise)
+- `ros2_ws/src/drl_agent/drl_agent/env/simulation/environment.py` (ROS node 구성, 공유 상태와 컴포넌트 조율)
+- `ros2_ws/src/drl_agent/drl_agent/env/simulation/step_pipeline.py` (`/step`, action decode, 관측·보상 연결)
+- `ros2_ws/src/drl_agent/drl_agent/env/simulation/reset_pipeline.py` (`/reset`, episode 초기화·배치)
+- `ros2_ws/src/drl_agent/drl_agent/env/simulation/gazebo_runtime.py` (world service, 물리 step, sensor freshness)
+- `ros2_ws/src/drl_agent/drl_agent/env/simulation/risk_targets.py` (directional/CF swept-path risk target)
 - `ros2_ws/src/drl_agent/drl_agent/env/curriculum/environment_curriculum.py` (stage selector)
 - 서비스/토픽 표: [../reference/ros_interface_reference.md](../reference/ros_interface_reference.md)
 - state/action 표: [../reference/state_action_reference.md](../reference/state_action_reference.md)

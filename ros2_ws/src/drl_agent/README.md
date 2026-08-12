@@ -13,15 +13,24 @@ Hunter SE 자율 주행을 위한 DRL(Deep Reinforcement Learning) 에이전트 
 # 1) Gazebo 시뮬레이션 먼저 실행 (별도 터미널)
 ros2 launch hunter_se_gazebo simulate_hunter_se_ignition.launch.py rviz:=false
 
-# 2) 커리큘럼 환경 노드 실행
-ros2 run drl_agent environment_curriculum.py
+# 2) profile 기반 커리큘럼 환경 노드 실행
+ros2 run drl_agent environment_curriculum_node.py --ros-args \
+  -p profile:=phase2/both_trajrisk_rbs_cf_st
 
-# 3) TQC 커리큘럼 학습
-ros2 run drl_agent train_tqc_curriculum.py
+# 3) 같은 profile로 TQC 커리큘럼 학습(fresh run)
+ros2 run drl_agent train_node.py --ros-args \
+  -p profile:=phase2/both_trajrisk_rbs_cf_st -p seed:=0
 
 # 4) TQC 테스트 (launch 파일)
 ros2 launch drl_agent test_tqc.launch.py
 ```
+
+이 프로필의 사람 장애물은 환경 노드 내부 obstacle pool/human-motion 로직이
+관리하므로 HuNav launch가 아니라 위의 일반 Ignition launch를 사용한다.
+`both_trajrisk_rbs_cf_st`는 새 네트워크/replay 계약을 사용하는 fresh-run
+프로필이므로 새 학습 명령에 `resume:=true`를 추가하지 않는다. 기본 config를
+직접 실행하는 저수준 진입점(`environment_curriculum.py`,
+`train_tqc_curriculum.py`)도 호환 목적으로 설치되어 있다.
 
 ## Interfaces
 
@@ -78,7 +87,8 @@ ros2 launch drl_agent test_tqc.launch.py
 ### 전제조건
 
 - Gazebo Ignition 시뮬레이션이 먼저 실행되어 있어야 함
-- 환경 노드(`environment_curriculum.py`)가 서비스 제공 상태여야 에이전트가 동작함
+- 환경 노드(`environment_curriculum_node.py -p profile:=...`, 또는 직접 실행
+  `environment_curriculum.py`)가 서비스 제공 상태여야 에이전트가 동작함
 - `drl_agent_interfaces` 패키지가 빌드되어 있어야 함
 
 ## Tests (ROS2 없이 실행)

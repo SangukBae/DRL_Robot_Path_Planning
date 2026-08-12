@@ -42,7 +42,7 @@
   `[-1,1]`로 내고, 환경이 profile action mode에 맞춰 물리 명령으로 바꾼다.
 - **step**: action 실행 → 0.1초 시뮬레이션 → 다음 state·보상·done.
 - **replay buffer**: 경험 `(s,a,s',r,done)`을 저장. off-policy 학습이라 과거 경험을 재사용한다. (`rl/replay/buffer.py`, LAP 우선순위)
-- **train**: 버퍼에서 미니배치를 뽑아 actor/critic(+aux head)을 1회 업데이트. (`rl/algorithms/tqc/agent.py::train`)
+- **train**: 버퍼에서 미니배치를 뽑아 actor/critic(+aux/risk head)을 1회 업데이트. (`rl/algorithms/tqc/update.py::UpdateMixin.train`)
 - **eval**: 학습을 멈추고 결정론적으로 평가. 지표가 기준을 넘으면 stage 진급.
 
 ## 어디에 무엇이 끼어드나
@@ -53,5 +53,8 @@
 ## Where in code
 - 학습 루프: `training/train_tqc_curriculum.py::train_online`
 - reset/step 서비스 클라이언트: `env/environment_interface.py`
-- 신경망 업데이트: `rl/algorithms/tqc/agent.py::train`
-- 환경 step/reset: `env/simulation/environment.py::step_callback`, `reset_callback`
+- 신경망 업데이트: `rl/algorithms/tqc/update.py::UpdateMixin.train`
+- TQC 구성·추론 API: `rl/algorithms/tqc/agent.py`
+- TQC metric flush: `rl/algorithms/tqc/metrics.py`
+- 환경 step/reset: `env/simulation/step_pipeline.py`, `reset_pipeline.py`
+- Gazebo 제어/CF target: `env/simulation/gazebo_runtime.py`, `risk_targets.py`
