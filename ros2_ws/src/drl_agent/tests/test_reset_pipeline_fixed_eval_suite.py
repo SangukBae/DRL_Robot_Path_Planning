@@ -20,6 +20,8 @@ import types
 
 import pytest
 
+from drl_agent.common import seed_utils
+from drl_agent.env.simulation import reset_pipeline
 from drl_agent.env.simulation.reset_pipeline import ResetPipelineMixin
 
 
@@ -61,11 +63,18 @@ def _make_fake_node(*, suite_enabled, eval_mode, suite_seed=777, suite_idx=3):
     return node
 
 
-def test_fixed_eval_suite_branch_derives_seed_without_nameerror():
+def test_fixed_eval_suite_branch_derives_seed_without_nameerror(monkeypatch):
     """The bug this guards against: seed_utils.derive_resume_seed /
     seed_utils.seed_basic_rngs raised NameError because reset_pipeline.py
     never imported drl_agent.common.seed_utils, even though the module was
-    used at these two call sites."""
+    used at these two call sites. Intercept the global-RNG seeding call so this
+    test cannot alter random/NumPy state observed by later tests."""
+    seeded_with = []
+    monkeypatch.setattr(
+        reset_pipeline.seed_utils,
+        "seed_basic_rngs",
+        lambda seed: seeded_with.append(int(seed)) or ["random", "numpy"],
+    )
     node = _make_fake_node(suite_enabled=True, eval_mode=True)
 
     with pytest.raises(_StopHere):
@@ -75,6 +84,7 @@ def test_fixed_eval_suite_branch_derives_seed_without_nameerror():
     # by the branch under test, not the ever-growing _episode_count.
     assert node._fixed_suite_episode_index == 1
     assert node._fixed_suite_last_episode_index == 0
+    assert seeded_with == [seed_utils.derive_resume_seed(777, 0)]
 
 
 def test_fixed_eval_suite_disabled_skips_seed_utils_branch():
