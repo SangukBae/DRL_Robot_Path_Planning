@@ -526,14 +526,23 @@ def test_debug_csv_row_write_references_new_keys_in_matching_order_and_count():
     """The per-step row-write is inline in _step_callback_impl (not a separate
     method), so this is a source-level structural check: the writerow(...)
     list must reference the 4 new reward_terms keys in the SAME relative
-    order as the header, and the total column count must still match."""
+    order as the header, and the total column count must still match.
+
+    The CSV header literal lives in Environment._rotate_debug_csv
+    (env/simulation/environment.py); the per-step writerow(...) call lives in
+    StepPipelineMixin._step_callback_impl (env/simulation/step_pipeline.py) —
+    split out of environment.py, see risk_targets/gazebo_runtime/step_pipeline/
+    reset_pipeline.py."""
+    import drl_agent.env.simulation.step_pipeline as step_pipeline_mod
+
     src = open(env_mod.__file__, "r").read()
+    step_src = open(step_pipeline_mod.__file__, "r").read()
 
     header_match = re.search(r"header = \[(.*?)\]\n", src, re.S)
     assert header_match, "header list literal not found"
     header_items = re.findall(r'"([a-zA-Z0-9_]+)"', header_match.group(1))
 
-    row_match = re.search(r"csv\.writer\(_f\)\.writerow\(\[(.*?)\]\)\n", src, re.S)
+    row_match = re.search(r"csv\.writer\(_f\)\.writerow\(\[(.*?)\]\)\n", step_src, re.S)
     assert row_match, "per-step row writerow(...) literal not found"
     row_body = row_match.group(1)
     row_keys_in_order = re.findall(r'reward_terms\["([a-zA-Z0-9_]+)"\]', row_body)
@@ -585,8 +594,13 @@ def test_reset_callback_impl_source_calls_the_real_reset_method():
     """Structural guard: _reset_callback_impl (the actual per-episode reset
     logic behind the reset_callback service wrapper) must actually CALL
     _reset_continuous_control_reward_state() (not reimplement the three
-    assignments inline, which could silently drift from the tested method)."""
-    src = open(env_mod.__file__, "r").read()
+    assignments inline, which could silently drift from the tested method).
+
+    _reset_callback_impl lives in ResetPipelineMixin
+    (env/simulation/reset_pipeline.py), split out of environment.py."""
+    import drl_agent.env.simulation.reset_pipeline as reset_pipeline_mod
+
+    src = open(reset_pipeline_mod.__file__, "r").read()
     reset_start = src.index("def _reset_callback_impl(")
     next_def = src.index("\n    def ", reset_start + 1)
     reset_body = src[reset_start:next_def]
