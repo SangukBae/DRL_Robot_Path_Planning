@@ -2,13 +2,16 @@
 """Unified DRL trainer launcher — select a registered model/trainer by name.
 
 Pure CLI/dispatch: MODEL_REGISTRY maps a flat model name to its canonical
-``drl_agent.training.<...>`` module + class (see below); every entry,
-including "tqc_curriculum", is imported lazily via importlib — no trainer's
-code is duplicated or defined here. This is a SEPARATE launcher from the
-profile system (``drl_agent.training.registry`` + ``ros2 run drl_agent
+``drl_agent.training.<...>`` module + class; every entry, including
+"tqc_curriculum", is imported lazily via importlib — no trainer's code is
+duplicated or defined here. MODEL_REGISTRY itself is DERIVED from
+``drl_agent.training.registry.TRAINERS`` (``registry.derive_model_registry()``)
+so the trainer module path is the single source of truth there, not
+re-listed here — see that module's docstring for the derivation rule. This
+is a SEPARATE launcher from the profile system (``ros2 run drl_agent
 train_node.py -p profile:=...``), which resolves trainer+env pairs by
-``(algorithm, trainer)`` instead of a flat model name; see that module's
-docstring for how the two registries relate.
+``(algorithm, trainer)`` instead of a flat model name, but both now read
+from the same TRAINERS table.
 
 What this file provides:
   - A model-name registry (MODEL_REGISTRY).
@@ -42,55 +45,20 @@ import importlib
 import rclpy
 
 from drl_agent.env.environment_interface import EnvServiceError
+import drl_agent.training.registry as registry
 
 
 # --------------------------------------------------------------------------- #
 #  Model registry                                                              #
 # --------------------------------------------------------------------------- #
-# Every entry names an EXISTING, canonical module ("tqc_curriculum" ->
-# drl_agent.training.train_tqc_curriculum, the primary trainer; every other
-# name -> its own drl_agent.training.baselines.<algo>_curriculum module) —
-# imported lazily via importlib so choosing one model never pulls in every
-# other trainer's deps (e.g. stable_baselines3 for a plain TQC run). Only add
-# an entry here once its class/module genuinely exists — do not invent
-# placeholders for algorithms that have no curriculum trainer yet.
-MODEL_REGISTRY = {
-    "tqc_curriculum": {
-        "module": "drl_agent.training.train_tqc_curriculum",
-        "class_name": "TrainTQCCurriculum",
-        "description": "TQC + 10-stage curriculum (primary training path).",
-    },
-    "sac_curriculum": {
-        "module": "drl_agent.training.baselines.sac_curriculum",
-        "class_name": "TrainSACCurriculum",
-        "description": "SAC curriculum baseline.",
-    },
-    "td7_curriculum": {
-        "module": "drl_agent.training.baselines.td7_curriculum",
-        "class_name": "TrainTD7Curriculum",
-        "description": "TD7 curriculum baseline.",
-    },
-    "tqc_ieqn_curriculum": {
-        "module": "drl_agent.training.baselines.tqc_ieqn_curriculum",
-        "class_name": "TrainTQCIEQNCurriculum",
-        "description": "TQC + IEQn (inequality constraint) curriculum variant.",
-    },
-    "a3c_curriculum": {
-        "module": "drl_agent.training.baselines.a3c_curriculum",
-        "class_name": "TrainA3CCurriculum",
-        "description": "A3C curriculum baseline.",
-    },
-    "sb3_sac_curriculum": {
-        "module": "drl_agent.training.baselines.sb3_sac_curriculum",
-        "class_name": "TrainSB3SACCurriculum",
-        "description": "Stable-Baselines3 SAC curriculum baseline.",
-    },
-    "sb3_td3_curriculum": {
-        "module": "drl_agent.training.baselines.sb3_td3_curriculum",
-        "class_name": "TrainSB3TD3Curriculum",
-        "description": "Stable-Baselines3 TD3 curriculum baseline.",
-    },
-}
+# Derived from drl_agent.training.registry.TRAINERS (the profile system's
+# own (algorithm, trainer) -> module table) so the trainer module path is
+# the single source of truth there, not duplicated here — see registry.py's
+# module docstring for the derivation rule (flat name = f"{algorithm}_
+# {trainer}"). Every entry is imported lazily via importlib (in
+# resolve_trainer_class below) so choosing one model never pulls in every
+# other trainer's deps (e.g. stable_baselines3 for a plain TQC run).
+MODEL_REGISTRY = registry.derive_model_registry()
 
 DEFAULT_RL_MODEL = "tqc_curriculum"
 
@@ -280,10 +248,15 @@ def main(args=None):
         # completion, KeyboardInterrupt, EnvServiceError, any other exception) --
         # mirrors train_tqc_curriculum.py's own main(); generic here (getattr)
         # since this launcher dispatches to whichever agent the resolved model
-        # actually built, not just TQC.
-        if node is not None and getattr(node, "rl_agent", None) is not None:
+        # actually built, not just TQC. Only TQC's agent currently has
+        # flush_logs() (SAC/TD7/SB3-* don't buffer JSON metrics the same way),
+        # so this is a callable() check, not a bare call — calling it
+        # unconditionally would raise AttributeError on every non-TQC run's
+        # shutdown and print a spurious "flush_logs() failed" line every time.
+        flush = getattr(getattr(node, "rl_agent", None), "flush_logs", None)
+        if callable(flush):
             try:
-                node.rl_agent.flush_logs()
+                flush()
             except Exception as fe:
                 print(f"[train_rl] flush_logs() failed during shutdown: {fe}")
         if node is not None:
