@@ -113,14 +113,20 @@ def test_tqc_curriculum_is_registered_and_default():
     assert "OK" in proc.stdout
 
 
-def test_resolve_tqc_curriculum_returns_local_callable_class():
+def test_resolve_tqc_curriculum_returns_canonical_imported_class():
+    """train_rl.py no longer defines its own TrainTQCCurriculum (that
+    content-identical copy was deduped away) — "tqc_curriculum" now resolves
+    to the SAME class object as drl_agent.training.train_tqc_curriculum's,
+    imported lazily via importlib like every other registered model."""
     proc = _run_snippet(
         "import drl_agent.training.train_rl as train_rl\n"
+        "import drl_agent.training.train_tqc_curriculum as train_tqc_curriculum\n"
         "cls, entry = train_rl.resolve_trainer_class('tqc_curriculum')\n"
-        "assert cls is train_rl.TrainTQCCurriculum\n"
+        "assert cls is train_tqc_curriculum.TrainTQCCurriculum\n"
         "assert callable(cls)\n"
         "assert entry['class_name'] == 'TrainTQCCurriculum'\n"
-        "assert entry['module'] is None\n"  # defined locally, not imported
+        "assert entry['module'] == 'drl_agent.training.train_tqc_curriculum'\n"
+        "assert not hasattr(train_rl, 'TrainTQCCurriculum')\n"
         "print('OK')\n"
     )
     assert proc.returncode == 0, proc.stderr
@@ -146,15 +152,15 @@ def test_resolve_unknown_model_raises_runtime_error_listing_available_models():
 
 
 def test_registry_entries_reference_real_canonical_modules():
-    """'실제 repo에 존재하지 않는 모델은 억지로 만들지 말고' — every non-local
-    registry entry must name a canonical drl_agent.training.baselines.<algo>
-    module that genuinely resolves to a real .py file."""
+    """'실제 repo에 존재하지 않는 모델은 억지로 만들지 말고' — every registry
+    entry must name a canonical drl_agent.training.<...> module (every entry
+    is imported lazily via importlib now, none are defined locally) that
+    genuinely resolves to a real .py file."""
     proc = _run_snippet(
         "import importlib.util, drl_agent.training.train_rl as train_rl\n"
         "missing = []\n"
         "for name, entry in train_rl.MODEL_REGISTRY.items():\n"
-        "    if entry['module'] is None:\n"
-        "        continue\n"
+        "    assert entry['module'] is not None, (name, entry)\n"
         "    assert entry['module'].startswith('drl_agent.'), (name, entry['module'])\n"
         "    spec = importlib.util.find_spec(entry['module'])\n"
         "    if spec is None or not (spec.origin and spec.origin.endswith('.py')):\n"
@@ -250,20 +256,22 @@ def test_arg_parser_ignores_ros_args_tail():
     assert "OK" in proc.stdout
 
 
-def test_train_rl_and_train_tqc_curriculum_share_cf_contract_helpers():
-    """Both entry points delegate validation and reset to the same helpers."""
+def test_train_rl_dispatches_to_the_one_true_tqc_curriculum_with_cf_contract_intact():
+    """train_rl.py no longer defines its own TrainTQCCurriculum copy, so
+    "sharing" the CF-contract helpers is now trivial identity (both entry
+    points literally run the same class object) — this checks that identity
+    AND that the sole implementation's train_online still wires the CF
+    validation/reset contract the way TAB (train_tqc_base) expects."""
     code = (
         "import inspect\n"
         "import drl_agent.training.train_rl as train_rl\n"
         "import drl_agent.training.train_tqc_curriculum as train_tqc_curriculum\n"
-        "assert (train_rl.read_and_validate_counterfactual_risk_targets\n"
-        "        is train_tqc_curriculum.read_and_validate_counterfactual_risk_targets)\n"
-        "src_rl = inspect.getsource(train_rl.TrainTQCCurriculum.train_online)\n"
-        "src_tqc = inspect.getsource(train_tqc_curriculum.TrainTQCCurriculum.train_online)\n"
-        "for src in (src_rl, src_tqc):\n"
-        "    assert 'read_and_validate_counterfactual_risk_targets(self)' in src\n"
-        "    assert 'self.rl_agent.reset_replay_for_action_contract_change()' in src\n"
-        "    assert 'reset_counterfactual_penalty_schedule()' not in src\n"
+        "cls, _entry = train_rl.resolve_trainer_class('tqc_curriculum')\n"
+        "assert cls is train_tqc_curriculum.TrainTQCCurriculum\n"
+        "src = inspect.getsource(train_tqc_curriculum.TrainTQCCurriculum.train_online)\n"
+        "assert 'read_and_validate_counterfactual_risk_targets(self)' in src\n"
+        "assert 'self.rl_agent.reset_replay_for_action_contract_change()' in src\n"
+        "assert 'reset_counterfactual_penalty_schedule()' not in src\n"
         "print('OK')\n"
     )
     proc = _run_snippet(code)

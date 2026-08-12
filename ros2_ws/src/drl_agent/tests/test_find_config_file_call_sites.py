@@ -44,7 +44,9 @@ _REPO_ROOT = os.path.abspath(
 
 _FILES_REQUIRING_HINT = [
     os.path.join(_REPO_ROOT, "training", "train_tqc_curriculum.py"),
-    os.path.join(_REPO_ROOT, "training", "train_rl.py"),
+    # train_rl.py is a pure CLI/registry launcher (no self._find_config_file(...)
+    # calls of its own) — the deduped TrainTQCCurriculum implementation it
+    # dispatches to lives solely in train_tqc_curriculum.py, checked above.
 ]
 
 
