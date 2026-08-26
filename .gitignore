@@ -17,11 +17,24 @@ ros2_ws/src/aws-robomaker-small-warehouse-world/models/
 ros2_ws/src/drl_obstacle_assets
 ros2_ws/src/drl_agent/runtime/
 ros2_ws/src/drl_agent/runs/
+ros2_ws/runtime/
+# item-5 (verification-reproducibility fix, 2026-08-26): hunter_kinodynamic_rl's
+# train_node.py/evaluation_node.py write runtime/experiments/<run>/ RELATIVE
+# to whatever CWD they were launched from -- when that's the repo root
+# (e.g. `cd ~/DRL_Robot_Path_Planning && ros2 run ...`) the output lands at
+# /runtime/ here, a DIFFERENT path than either line above (neither
+# `ros2_ws/src/hunter_kinodynamic_rl/runtime/` nor `ros2_ws/runtime/`
+# matches a repo-root-relative `runtime/`). Confirmed as a real gap: this
+# exact directory (multiple smoke_test run_dirs, checkpoints/logs/
+# tensorboard, tens of MB) was sitting untracked-and-NOT-ignored before
+# this line.
+/runtime/
 /runs/
 
 # Local presentation artifacts generated at the ROS workspace root
 /ros2_ws/*.pptx
 /ros2_ws/*.pptx.bak
+ros2_ws/src/hunter_kinodynamic_rl/
 ros2_ws/src/dataset_builder/
 ros2_ws/src/depth_d435/
 ros2_ws/src/depth_d455/
